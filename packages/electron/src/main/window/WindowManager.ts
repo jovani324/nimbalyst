@@ -4,7 +4,7 @@ import { join, basename } from 'path';
 import { existsSync } from 'fs';
 import { WindowState, FileTreeItem } from '../types';
 import { WINDOW_CASCADE_OFFSET } from '../utils/constants';
-import { getTheme, saveWorkspaceWindowState, getWorkspaceNavigationHistory, saveWorkspaceNavigationHistory } from '../utils/store';
+import { getTheme, saveWorkspaceWindowState, getWorkspaceNavigationHistory, saveWorkspaceNavigationHistory, isControllerMode } from '../utils/store';
 import { stopFileWatcher } from '../file/FileWatcher';
 import { stopWorkspaceWatcher, startWorkspaceWatcher } from '../file/WorkspaceWatcher.ts';
 import { getFolderContents } from '../utils/FileTree';
@@ -568,15 +568,27 @@ export function createWindow(
             }, 1000);
         });
 
-        // Show window when ready
+        // Show window when ready — UNLESS controller mode, where the app is a
+        // discreet menu-bar popover shell (CTRL-05): regular workspace windows
+        // must never appear, or hiding the popover would reveal one behind it.
         window.once('ready-to-show', () => {
             // console.log('[MAIN] Window ready to show at', new Date().toISOString(), 'elapsed:', Date.now() - startTime, 'ms');
+            if (isControllerMode()) return;
             if (options?.showInactive) {
                 window.showInactive();
             } else {
                 window.show();
             }
         });
+
+        // Belt-and-suspenders for CTRL-05: several startup/CLI paths call
+        // window.show() directly. In controller mode, immediately re-hide any
+        // regular window so only the tray popover is ever visible.
+        if (isControllerMode()) {
+            window.on('show', () => {
+                if (!window.isDestroyed()) window.hide();
+            });
+        }
 
         // Handle renderer process crashes
         window.webContents.on('render-process-gone', (event, details) => {
