@@ -255,8 +255,12 @@ function getDeviceId(userId: string): string {
   }
 
   // Use hostname + platform as a simple machine identifier
-  // This isn't perfect but gives reasonable stability
-  const machineId = `${os.hostname()}-${process.platform}`;
+  // This isn't perfect but gives reasonable stability.
+  // Controller mode gets a distinct suffix so a controller + host running on the
+  // SAME machine (e.g. dev:user2 alongside the host) don't hash to the same
+  // deviceId and collide on the sync server's per-session room. On two real
+  // machines hostnames already differ, so this suffix is harmless there.
+  const machineId = `${os.hostname()}-${process.platform}${isControllerMode() ? '-controller' : ''}`;
   const crypto = require('crypto');
   const hash = crypto.createHash('sha256')
     .update(`${userId}:${machineId}`)
@@ -287,7 +291,7 @@ function getDeviceInfo(userId: string): DeviceInfo {
 
   return {
     deviceId: getDeviceId(userId),
-    name: friendlyName || 'Desktop',
+    name: (friendlyName || 'Desktop') + (isControllerMode() ? ' (Controller)' : ''),
     // Controller mode masquerades as a mobile device so an unmodified host
     // treats this machine like a phone: it receives settings/model-list pushes
     // (host filters on type === 'mobile') and is never treated as a peer host.
