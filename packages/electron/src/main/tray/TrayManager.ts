@@ -15,7 +15,7 @@ import type { SessionStateEvent } from '@nimbalyst/runtime/ai/server/types/Sessi
 import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 import { findWindowByWorkspace } from '../window/WindowManager';
 import { getPackageRoot } from '../utils/appPaths';
-import { isShowTrayIcon, setShowTrayIcon, getSessionSyncConfig, setSessionSyncConfig } from '../utils/store';
+import { isShowTrayIcon, setShowTrayIcon, getSessionSyncConfig, setSessionSyncConfig, isControllerMode } from '../utils/store';
 import { logger } from '../utils/logger';
 import { isPreventingSleep, getSleepPreventionMode } from '../services/PowerSaveService';
 import { updateSleepPrevention, resolvePreventSleepMode, getSyncProvider } from '../services/SyncManager';
@@ -67,6 +67,8 @@ export class TrayManager {
   private lingerTimers: Map<string, NodeJS.Timeout> = new Map();
   private database: DatabaseWorker | null = null;
   private themeListener: (() => void) | null = null;
+  /** Controller mode: a left-click toggles the popover instead of a menu (CTRL-05). */
+  private trayClickHandler: (() => void) | null = null;
 
   private constructor() {}
 
@@ -161,7 +163,19 @@ export class TrayManager {
     const icon = this.getIconForState('idle');
     this.tray = new Tray(icon);
     this.tray.setToolTip('Nimbalyst');
+    // CTRL-05: in controller mode a left-click toggles the discreet popover.
+    this.tray.on('click', () => this.trayClickHandler?.());
     this.rebuildMenu();
+  }
+
+  /** Wire the controller-mode tray-click handler (CTRL-05). */
+  setTrayClickHandler(handler: (() => void) | null): void {
+    this.trayClickHandler = handler;
+  }
+
+  /** Tray icon bounds in screen coordinates, for anchoring the controller popover. */
+  getTrayBounds(): Electron.Rectangle | null {
+    return this.tray?.getBounds() ?? null;
   }
 
   private destroyTray(): void {
@@ -512,7 +526,9 @@ export class TrayManager {
     });
 
     const menu = Menu.buildFromTemplate(menuItems);
-    this.tray.setContextMenu(menu);
+    // CTRL-05: in controller mode the tray is a click-to-toggle popover button,
+    // so we leave the context menu unset and let the click handler fire.
+    this.tray.setContextMenu(isControllerMode() ? null : menu);
 
     // Update icon state
     this.updateIcon();

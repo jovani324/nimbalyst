@@ -423,3 +423,55 @@ body[data-dev-mode="true"] .nav-quick-access::before {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--nim-purple) 12%, transparent);
   border-radius: 4px;
 }
+
+/* ===== CTRL-05: discreet controller popover — terminal skin =====
+ * The Remote Sessions components style themselves through the `--nim-*`
+ * variables via inline styles, so re-defining those variables under the
+ * popover root (marked by index.tsx with `data-controller-popover`) re-skins
+ * the whole surface without touching component code. Plus a monospace pass.
+ */
+:root[data-controller-popover] {
+  --nim-bg: #0b0e14;
+  --nim-bg-secondary: #121722;
+  --nim-bg-tertiary: #0e1420;
+  --nim-text: #d7e0ec;
+  --nim-text-muted: #6b7a90;
+  --nim-border: #1c2430;
+  --nim-primary: #2f81f7;
+  --nim-success: #3fb950;
+  --nim-error: #f85149;
+  background: #0b0e14;
+}
+
+[data-controller-popover] body {
+  background: var(--nim-bg);
+  color: var(--nim-text);
+}
+
+[data-controller-popover],
+[data-controller-popover] input,
+[data-controller-popover] textarea,
+[data-controller-popover] button,
+[data-controller-popover] .remote-session-transcript,
+[data-controller-popover] .remote-sessions-view {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco,
+    "Cascadia Code", "Roboto Mono", monospace !important;
+  font-size: 12.5px;
+  letter-spacing: 0.1px;
+}
+
+/* Log-line transcript rhythm + dim gutter feel. */
+[data-controller-popover] .remote-session-transcript {
+  line-height: 1.5;
+}
+[data-controller-popover] .remote-session-composer {
+  background: var(--nim-bg-secondary);
+}
+/* A shell-prompt marker in front of the composer input. */
+[data-controller-popover] .remote-session-composer::before {
+  content: "\203A";
+  color: var(--nim-success);
+  align-self: center;
+  padding-left: 4px;
+  font-weight: 700;
+}

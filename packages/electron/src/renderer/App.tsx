@@ -570,6 +570,32 @@ export default function App() {
     }
   }, [activeMode, controllerMode, setActiveMode]);
 
+  // CTRL-05: the discreet popover window (marked by index.tsx) opens straight
+  // into remote-sessions mode and focuses the composer each time it is shown.
+  const isControllerPopover =
+    typeof document !== 'undefined' &&
+    document.documentElement.hasAttribute('data-controller-popover');
+  useEffect(() => {
+    if (isControllerPopover && controllerMode) {
+      setActiveMode('remote-sessions');
+    }
+  }, [isControllerPopover, controllerMode, setActiveMode]);
+  useEffect(() => {
+    if (!isControllerPopover) return;
+    const focusComposer = () => {
+      setTimeout(() => {
+        const el = document.querySelector<HTMLTextAreaElement>(
+          '[data-testid="remote-session-composer-input"]',
+        );
+        el?.focus();
+      }, 50);
+    };
+    const off = window.electronAPI?.on?.('controller-popover:shown', focusComposer);
+    return () => {
+      if (typeof off === 'function') off();
+    };
+  }, [isControllerPopover]);
+
   const openMarketplaceInstallRequest = useCallback((request: { extensionId: string; requestedAt?: string }) => {
     if (!request.extensionId) return;
 

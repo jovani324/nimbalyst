@@ -6,6 +6,13 @@
 // system for mounting editors and capturing screenshots via native capturePage().
 const isCaptureMode = new URLSearchParams(window.location.search).get('mode') === 'capture';
 
+// CTRL-05: the discreet controller popover loads this same renderer with
+// `?controllerPopover=1`. Mark the root so App can open straight into
+// remote-sessions mode and index.css can apply the terminal skin.
+if (new URLSearchParams(window.location.search).get('controllerPopover') === '1') {
+  document.documentElement.setAttribute('data-controller-popover', '1');
+}
+
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { Provider as JotaiProvider } from 'jotai';

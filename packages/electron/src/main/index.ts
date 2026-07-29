@@ -16,6 +16,12 @@ import { restoreSessionState, saveSessionState } from './session/SessionState';
 import { getRestartSignalPath } from './utils/appPaths';
 import { createWorkspaceManagerWindow, setupWorkspaceManagerHandlers, wasWorkspaceManagerManuallyClosed } from './window/WorkspaceManagerWindow.ts';
 import { setupTeamManagementHandlers } from './window/TeamManagementWindow';
+import {
+    createControllerPopover,
+    toggleControllerPopover,
+    registerControllerBossKey,
+    destroyControllerPopover,
+} from './window/ControllerPopoverWindow';
 import { showSplashScreen, closeSplashScreen } from './window/SplashScreen';
 import { registerFileHandlers } from './ipc/FileHandlers';
 import { registerRemoteSessionHandlers } from './ipc/RemoteSessionHandlers';
@@ -180,7 +186,7 @@ import { initTrackerSchemaService, updateTrackerSchemaWorkspace } from './servic
 import { initTrackerNavigationService } from './services/TrackerNavigationService';
 import { registerTeamHandlers, autoMatchTeamForWorkspace, getOrgScopedJwt, findTeamForWorkspace } from './services/TeamService';
 import { windowStates, windows, resolveActiveWorkspacePath } from './window/windowState';
-import { getRecentItems } from './utils/store';
+import { getRecentItems, isControllerMode } from './utils/store';
 import { registerOrgKeyHandlers, getOrgKey } from './services/OrgKeyService';
 import { registerDocumentSyncHandlers } from './ipc/DocumentSyncHandlers';
 import { getCollabOutboxDrainCoordinator } from './services/CollabOutboxDrainerService';
@@ -1643,6 +1649,19 @@ app.whenReady().then(async () => {
         const trayManager = TrayManager.getInstance();
         trayManager.setDatabase(database);
         await trayManager.initialize();
+
+        // CTRL-05: in controller mode, turn the app into a discreet menu-bar
+        // shell — hide the dock/app-switcher entry, create the frameless
+        // popover, wire the tray click + global boss-key to toggle it.
+        if (isControllerMode()) {
+            if (process.platform === 'darwin' && app.dock) {
+                app.dock.hide();
+            }
+            createControllerPopover();
+            trayManager.setTrayClickHandler(() => toggleControllerPopover());
+            registerControllerBossKey();
+            logger.main.info('[ControllerPopover] Controller shell initialized');
+        }
     } catch (error) {
         logger.main.error('[TrayManager] Failed to initialize:', error);
     }
@@ -2742,6 +2761,10 @@ app.on('before-quit', async (event) => {
     getCollabOutboxDrainCoordinator().stop();
     getCollabAssetOutboxDrainCoordinator().stop();
     console.log('[QUIT] before-quit event triggered');
+
+    // CTRL-05: release the global boss-key accelerator and destroy the popover
+    // so no orphaned accelerator survives the app.
+    destroyControllerPopover();
 
     // If auto-updater is updating, don't prevent quit
     if (AutoUpdaterService.isUpdatingApp()) {
