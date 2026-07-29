@@ -203,12 +203,13 @@ function handleControlMessage(
     }
 
     case 'prompt': {
-      // iOS has already written the prompt into queued_prompts via sync.
-      // The control message is the trigger: nudge the desktop to start
-      // processing so iOS sees the prompt actually run (otherwise the
-      // queue auto-trigger only fires on isLoading transitions, which
-      // can race or miss the idle case entirely).
-      void handlePromptTrigger(message.sessionId, callbacks);
+      // iOS writes the prompt into queued_prompts via index sync, then sends
+      // this control message purely as a trigger. The desktop controller
+      // (controller mode) can't write queued prompts over the index — the
+      // TS SyncProvider has no send path for that — so it carries the prompt
+      // text/id in the payload and we enqueue it here before triggering.
+      const payload = message.payload as unknown as PromptPayload | undefined;
+      void handlePromptTrigger(message.sessionId, payload, callbacks);
       break;
     }
 
@@ -229,6 +230,7 @@ function handleControlMessage(
  */
 async function handlePromptTrigger(
   sessionId: string,
+  payload: PromptPayload | undefined,
   callbacks: MobileSessionControlCallbacks
 ): Promise<void> {
   try {
@@ -237,6 +239,26 @@ async function handlePromptTrigger(
       log.warn('Received prompt control message for unknown session:', sessionId);
       return;
     }
+
+    // Self-sufficient enqueue: when the control message carries the prompt
+    // text/id, make sure it is in queued_prompts before we trigger. iOS relies
+    // on index sync to pre-populate the queue, but the desktop controller can't
+    // send queuedPrompts over the index, so the payload is authoritative for it.
+    // Idempotent by promptId; 'local-' ids are the host's own echoes and skipped.
+    if (payload?.promptId && payload.prompt && !payload.promptId.startsWith('local-')) {
+      try {
+        const { getQueuedPromptsStore } = await import('../RepositoryManager');
+        const queueStore = getQueuedPromptsStore();
+        const existing = await queueStore.get(payload.promptId);
+        if (!existing) {
+          await queueStore.create({ id: payload.promptId, sessionId, prompt: payload.prompt });
+          log.info('Enqueued prompt from control payload:', payload.promptId, 'for session:', sessionId);
+        }
+      } catch (enqueueErr) {
+        log.error('Failed to enqueue prompt from control payload:', enqueueErr);
+      }
+    }
+
     log.info('Triggering queue processing from mobile prompt control:', sessionId);
     await callbacks.triggerQueuedPromptProcessing(sessionId, session.workspacePath);
   } catch (err) {
