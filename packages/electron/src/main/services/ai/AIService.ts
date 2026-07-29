@@ -82,7 +82,8 @@ import {
   normalizeAIProviderOverrides,
   shouldShowCommunityPopup,
   wasCommunityPopupShownThisLaunch,
-  getDefaultEffortLevel
+  getDefaultEffortLevel,
+  isControllerMode
 } from '../../utils/store';
 import { mergeAISettings, getAIProviderOverridesWithWorktreeFallback } from '../../utils/aiSettingsMerge';
 import { DocumentContextService, type RawDocumentContext, type PreparedDocumentContext } from '@nimbalyst/runtime';
@@ -870,6 +871,19 @@ export class AIService {
   }
 
   private async tryInitializeMobileSyncHandler() {
+    // Controller mode: this machine is a remote controller, not a host.
+    // The host-role handlers registered below MUST NOT run here:
+    //  - onIndexChange queued-prompt insertion (would race the host to execute
+    //    prompts if a session/workspace also existed locally)
+    //  - onCreateSessionRequest (would race the host to create sessions when
+    //    the same repo is cloned at the same path on both machines)
+    //  - initMobileSessionControlHandler (cancel/archive/prompt_response are
+    //    for the machine that owns the running agent processes)
+    if (isControllerMode()) {
+      logger.main.info('[AIService] Controller mode active - skipping host-role mobile sync handlers');
+      return;
+    }
+
     try {
       const syncProvider = getSyncProvider();
 

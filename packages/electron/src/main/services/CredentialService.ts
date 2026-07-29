@@ -198,6 +198,63 @@ export function getEncryptionKeySeed(): string {
 }
 
 /**
+ * Pairing payload accepted by importCredentials. Matches the shape produced by
+ * generateQRPairingPayload on the host desktop (version 5).
+ */
+export interface ImportedPairingPayload {
+  version?: number;
+  serverUrl: string;
+  encryptionKeySeed: string;
+  expiresAt?: number;
+  analyticsId?: string;
+  syncEmail?: string;
+  personalOrgId?: string;
+  personalUserId?: string;
+}
+
+/**
+ * Import an encryption key seed from another desktop's pairing payload
+ * (controller mode). Replaces this machine's seed so it can decrypt the
+ * host's E2E-encrypted personal sync data.
+ *
+ * WARNING: This overwrites the local seed. Any devices paired against the
+ * OLD seed of this machine will stop decrypting its data. In controller mode
+ * this machine publishes nothing, so that is the intended outcome.
+ */
+export function importCredentials(payload: ImportedPairingPayload): SyncCredentials {
+  const seed = payload.encryptionKeySeed?.trim();
+
+  // Same entropy floor as getCredentials(): 32 bytes of base64 is 43+ chars.
+  const MIN_SEED_LENGTH = 43;
+  if (!seed || seed.length < MIN_SEED_LENGTH) {
+    throw new Error('Invalid pairing payload: encryption key seed missing or too short');
+  }
+
+  let decoded: Buffer;
+  try {
+    decoded = Buffer.from(seed, 'base64');
+  } catch {
+    throw new Error('Invalid pairing payload: encryption key seed is not valid base64');
+  }
+  if (decoded.length < 32) {
+    throw new Error('Invalid pairing payload: encryption key seed has insufficient entropy');
+  }
+
+  const credentials: SyncCredentials = {
+    encryptionKeySeed: seed,
+    createdAt: Date.now(),
+  };
+  saveCredentials(credentials);
+  cachedCredentials = credentials;
+
+  logger.main.info('[CredentialService] Imported encryption key seed from pairing payload', {
+    payloadVersion: payload.version ?? 'unknown',
+  });
+
+  return credentials;
+}
+
+/**
  * Check if safeStorage encryption is being used.
  */
 export function isUsingSecureStorage(): boolean {

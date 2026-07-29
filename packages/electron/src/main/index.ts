@@ -18,6 +18,7 @@ import { createWorkspaceManagerWindow, setupWorkspaceManagerHandlers, wasWorkspa
 import { setupTeamManagementHandlers } from './window/TeamManagementWindow';
 import { showSplashScreen, closeSplashScreen } from './window/SplashScreen';
 import { registerFileHandlers } from './ipc/FileHandlers';
+import { registerRemoteSessionHandlers } from './ipc/RemoteSessionHandlers';
 import { registerWorkspaceHandlers } from './ipc/WorkspaceHandlers.ts';
 import { registerSettingsHandlers } from './ipc/SettingsHandlers';
 import { registerWindowHandlers } from './ipc/WindowHandlers';
@@ -1558,6 +1559,7 @@ app.whenReady().then(async () => {
     registerWorkspaceHandlers();
     registerWorkspaceWatcherHandlers();
     registerSettingsHandlers();
+    registerRemoteSessionHandlers();
     registerWindowHandlers();
     registerEditorStateHandlers();
     await registerHistoryHandlers();

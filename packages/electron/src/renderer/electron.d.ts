@@ -607,7 +607,50 @@ interface ElectronAPI {
       serverUrl: string;
       encryptionKeySeed: string;
     }>;
+    /** Controller mode: import a pairing payload copied from another desktop's QR modal.
+     *  Accepts raw JSON or the nimbalyst://pair?data=... deep link. */
+    importPairingPayload: (rawPayload: string) => Promise<{
+      success: boolean;
+      requiresRestart: boolean;
+      syncEmail?: string;
+      serverUrl: string;
+    }>;
     isSecure: () => Promise<boolean>;
+  };
+
+  // Controller mode: drive sessions that live on the always-on host desktop.
+  remoteSessions: {
+    isController: () => Promise<{ controllerMode: boolean }>;
+    list: () => Promise<import('./types/remoteSessions').RemoteSessionIndexList>;
+    connect: (sessionId: string) => Promise<{ success: boolean }>;
+    disconnect: (sessionId: string) => Promise<{ success: boolean }>;
+    sendPrompt: (sessionId: string, prompt: string) => Promise<{ success: boolean; promptId: string }>;
+    create: (request: {
+      projectId: string;
+      initialPrompt?: string;
+      provider?: string;
+      model?: string;
+      sessionType?: string;
+      parentSessionId?: string;
+    }) => Promise<import('./types/remoteSessions').RemoteCreateResponse>;
+    cancel: (sessionId: string) => Promise<{ success: boolean }>;
+    archive: (sessionId: string, isArchived: boolean) => Promise<{ success: boolean }>;
+    respondPrompt: (
+      sessionId: string,
+      response: import('./types/remoteSessions').RemotePromptResponsePayload,
+    ) => Promise<{ success: boolean }>;
+    onIndexChange: (
+      callback: (data: { sessionId: string; entry: import('./types/remoteSessions').RemoteIndexChangeEntry }) => void,
+    ) => () => void;
+    onTranscriptChange: (
+      callback: (data: { sessionId: string; change: import('./types/remoteSessions').RemoteSessionChange }) => void,
+    ) => () => void;
+    onStatusChange: (
+      callback: (data: { sessionId: string; status: { connected: boolean } }) => void,
+    ) => () => void;
+    onCreateResponse: (
+      callback: (response: import('./types/remoteSessions').RemoteCreateResponse) => void,
+    ) => () => void;
   };
 
   // Network utilities

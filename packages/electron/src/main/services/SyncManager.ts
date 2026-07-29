@@ -17,7 +17,7 @@ import type { SessionStore } from '@nimbalyst/runtime';
 import { asPersonalMemberId } from '@nimbalyst/runtime';
 import type { DeviceInfo } from '@nimbalyst/runtime/sync';
 import * as syncModule from '@nimbalyst/runtime/sync';
-import { getSessionSyncConfig, setSessionSyncConfig, getReleaseChannel, getDefaultAIModel, getAlphaFeatures, getPreferredAgentLanguage, store, type SessionSyncConfig } from '../utils/store';
+import { getSessionSyncConfig, setSessionSyncConfig, getReleaseChannel, getDefaultAIModel, getAlphaFeatures, getPreferredAgentLanguage, isControllerMode, store, type SessionSyncConfig } from '../utils/store';
 import { logger } from '../utils/logger';
 import { getCredentials } from './CredentialService';
 import { getStytchUserId, isAuthenticated, getPersonalOrgId, getPersonalUserId, resolvePersonalUserId, getPersonalSessionJwt, refreshPersonalSession } from './StytchAuthService';
@@ -288,7 +288,10 @@ function getDeviceInfo(userId: string): DeviceInfo {
   return {
     deviceId: getDeviceId(userId),
     name: friendlyName || 'Desktop',
-    type: 'desktop',
+    // Controller mode masquerades as a mobile device so an unmodified host
+    // treats this machine like a phone: it receives settings/model-list pushes
+    // (host filters on type === 'mobile') and is never treated as a peer host.
+    type: isControllerMode() ? 'mobile' : 'desktop',
     platform,
     appVersion: app.getVersion(),
     connectedAt: connectionTime,
@@ -572,14 +575,22 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
     state.config = config;
     state.messageSyncHandler = messageSyncHandler;
 
-    // Wrap store with sync capabilities
-    const syncedStore = createSyncedSessionStore(baseStore, provider, {
-      autoConnect: true,
-    });
+    // Wrap store with sync capabilities.
+    // Controller mode: do NOT wrap -- this machine must never publish its
+    // local sessions into the shared personal index (it would pollute the
+    // host's index and could clobber entries). The provider is still created
+    // above and exposed via getSyncProvider() for the controller UI.
+    const controllerMode = isControllerMode();
+    const syncedStore = controllerMode
+      ? baseStore
+      : createSyncedSessionStore(baseStore, provider, {
+          autoConnect: true,
+        });
 
     // Sync existing sessions and projects to index using delta sync
     // logger.main.info('[SyncManager] Setting up incremental sync...');
-    setTimeout(async () => {
+    // Controller mode: read-only on the index -- never publish local sessions.
+    if (!controllerMode) setTimeout(async () => {
       const syncStart = performance.now();
       // logger.main.info('[SyncManager] Starting initial incremental sync...');
       // Prevent triggered syncs from overlapping with the initial sync
@@ -784,7 +795,8 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
     }, 2000); // Wait for index connection
 
     // Sync current OpenAI API key to mobile (in case mobile connects after key was set)
-    setTimeout(async () => {
+    // Controller mode: we RECEIVE settings from the host; never push them.
+    if (!controllerMode) setTimeout(async () => {
       try {
         const Store = (await import('electron-store')).default;
         const aiStore = new Store({ name: 'ai-settings' });
@@ -804,7 +816,7 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
     // Track which mobile devices are currently connected so we can detect when one joins
     let previousMobileDeviceIds = new Set<string>();
     let isFirstCallback = true;
-    if (provider.onDeviceStatusChange) {
+    if (!controllerMode && provider.onDeviceStatusChange) {
       provider.onDeviceStatusChange((devices) => {
         const mobileDevices = devices.filter(d => d.type === 'mobile');
         const currentMobileIds = new Set(mobileDevices.map(d => d.deviceId));
@@ -839,7 +851,8 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
     }
 
     // Initialize ProjectFileSyncService for mobile .md sync (alpha channel only)
-    if (getReleaseChannel() === 'alpha') {
+    // Controller mode: host-role service, skip.
+    if (!controllerMode && getReleaseChannel() === 'alpha') {
       try {
         const projectFileSync = getProjectFileSyncService();
         await projectFileSync.initialize();
@@ -999,6 +1012,11 @@ export async function reinitializeSync(baseStore: SessionStore): Promise<Session
  * Useful when a new project is enabled for sync.
  */
 export async function triggerIncrementalSync(): Promise<void> {
+  // Controller mode: this machine never publishes sessions to the index.
+  if (isControllerMode()) {
+    return;
+  }
+
   const provider = state.provider;
   if (!provider) {
     logger.main.warn('[SyncManager] Cannot trigger sync - provider not initialized');

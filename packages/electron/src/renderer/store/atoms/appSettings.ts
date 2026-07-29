@@ -774,6 +774,7 @@ export interface SyncConfig {
   }>;
   preventSleepWhenSyncing?: boolean; // DEPRECATED: migrated to preventSleepMode
   preventSleepMode?: 'off' | 'always' | 'pluggedIn'; // prevent system sleep while sync is active
+  controllerMode?: boolean; // this machine drives sessions on another (host) desktop; unlocks the Remote Sessions view
 }
 
 /**
@@ -839,6 +840,12 @@ export const syncEnabledProjectsAtom = atom((get) => get(syncConfigAtom).enabled
  * Idle timeout in minutes (default 5).
  */
 export const syncIdleTimeoutMinutesAtom = atom((get) => get(syncConfigAtom).idleTimeoutMinutes ?? 5);
+
+/**
+ * Controller mode: this machine acts as a remote controller for another (host)
+ * desktop. Gates the Remote Sessions view and its navigation entry.
+ */
+export const controllerModeAtom = atom((get) => get(syncConfigAtom).controllerMode ?? false);
 
 // === Setter atoms ===
 

@@ -21,6 +21,7 @@ import {
   terminalFeatureAvailableAtom,
   syncEnabledAtom,
   syncEnabledProjectsAtom,
+  controllerModeAtom,
 } from '../../store/atoms/appSettings';
 import {
   hiddenGutterItemsAtom,
@@ -190,6 +191,7 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
   // Check if mobile sync is configured for this workspace
   const syncEnabled = useAtomValue(syncEnabledAtom);
   const syncEnabledProjects = useAtomValue(syncEnabledProjectsAtom);
+  const controllerMode = useAtomValue(controllerModeAtom);
   const isSyncConfigured = syncEnabled && !!workspacePath && syncEnabledProjects.includes(workspacePath);
 
   // User is "connected" to this project if they have a team or mobile sync configured
@@ -367,6 +369,14 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
         contentMode: 'collab', testId: 'collab-mode-button',
         onReclick: () => onToggleCollabCollapsed?.(),
         decoration: <AlphaBadge size="dot" className="absolute top-0 right-0.5 pointer-events-none" />,
+      }),
+    }] : []),
+    ...(controllerMode ? [{
+      id: 'remote-sessions', section: 'modes' as GutterSection, icon: 'devices', label: 'Remote Sessions', hideable: true,
+      render: () => renderModeButton({
+        icon: 'devices',
+        label: 'Remote Sessions',
+        contentMode: 'remote-sessions', testId: 'remote-sessions-mode-button',
       }),
     }] : []),
   ];

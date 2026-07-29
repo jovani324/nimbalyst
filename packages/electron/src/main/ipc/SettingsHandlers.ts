@@ -46,7 +46,7 @@ import { SessionNamingService } from '../services/SessionNamingService';
 import { SoundNotificationService } from '../services/SoundNotificationService';
 import { autoUpdaterService } from '../services/autoUpdater';
 import type { OnboardingState } from '../utils/store';
-import { getCredentials, resetCredentials, generateQRPairingPayload, isUsingSecureStorage } from '../services/CredentialService';
+import { getCredentials, resetCredentials, generateQRPairingPayload, isUsingSecureStorage, importCredentials, type ImportedPairingPayload } from '../services/CredentialService';
 import {
     isSyncProviderReady,
     onSyncStatusChange,
@@ -1244,6 +1244,89 @@ export function registerSettingsHandlers() {
     // Check if secure storage (keychain) is available
     safeHandle('credentials:is-secure', () => {
         return isUsingSecureStorage();
+    });
+
+    // Import a pairing payload from another desktop (controller mode).
+    // Accepts either the raw JSON payload (as copied from the host's QR modal
+    // "Copy payload" button) or the full deep link `nimbalyst://pair?data=<base64>`.
+    // Stores the encryption key seed, flips this machine into controller mode,
+    // and persists the host's sync identity so room routing matches the host.
+    safeHandle('credentials:import-pairing-payload', (_event, rawPayload: string) => {
+        if (!rawPayload || typeof rawPayload !== 'string') {
+            throw new Error('Pairing payload is required');
+        }
+
+        let jsonText = rawPayload.trim();
+
+        // Deep-link form: nimbalyst://pair?data=<url-encoded base64 JSON>
+        if (jsonText.startsWith('nimbalyst://')) {
+            let dataParam: string | null = null;
+            try {
+                const url = new URL(jsonText);
+                dataParam = url.searchParams.get('data');
+            } catch {
+                throw new Error('Invalid pairing deep link');
+            }
+            if (!dataParam) {
+                throw new Error('Pairing deep link is missing the data parameter');
+            }
+            try {
+                jsonText = Buffer.from(decodeURIComponent(dataParam), 'base64').toString('utf8');
+            } catch {
+                throw new Error('Failed to decode pairing deep link payload');
+            }
+        }
+
+        let payload: ImportedPairingPayload;
+        try {
+            payload = JSON.parse(jsonText);
+        } catch {
+            throw new Error('Pairing payload is not valid JSON');
+        }
+
+        if (!payload.serverUrl || !payload.encryptionKeySeed) {
+            throw new Error('Pairing payload must contain serverUrl and encryptionKeySeed');
+        }
+
+        // Note: we deliberately do NOT enforce expiresAt here. The 15-minute QR
+        // expiry exists to limit how long a QR shown on a screen stays scannable;
+        // a copy-pasted payload between the user's own machines is a deliberate
+        // act. Log if stale so the user can regenerate if they prefer.
+        if (payload.expiresAt && payload.expiresAt < Date.now()) {
+            logger.main.warn('[SettingsHandlers] Imported pairing payload is past its QR expiry; accepting anyway (manual import)');
+        }
+
+        // 1. Replace this machine's encryption key seed with the host's.
+        importCredentials(payload);
+
+        // 2. Flip into controller mode and adopt the host's sync identity.
+        //    personalOrgId/personalUserId drive which index room we join --
+        //    they MUST match the host or we sync into an empty room.
+        const currentConfig = getSessionSyncConfig();
+        setSessionSyncConfig({
+            ...(currentConfig ?? { enabledProjects: [] }),
+            enabled: true,
+            serverUrl: payload.serverUrl,
+            controllerMode: true,
+            personalOrgId: payload.personalOrgId ?? currentConfig?.personalOrgId,
+            personalUserId: payload.personalUserId ?? currentConfig?.personalUserId,
+        });
+
+        logger.main.info('[SettingsHandlers] Controller-mode pairing imported', {
+            serverUrl: payload.serverUrl,
+            hasPersonalOrgId: !!payload.personalOrgId,
+            hasPersonalUserId: !!payload.personalUserId,
+            payloadVersion: payload.version,
+        });
+
+        // Sync must be reinitialized with the new seed + config. The seed feeds
+        // key derivation inside initializeSync, so a full restart is the safe path.
+        return {
+            success: true,
+            requiresRestart: true,
+            syncEmail: payload.syncEmail,
+            serverUrl: payload.serverUrl,
+        };
     });
 
     // Get local network IP for mobile pairing with local dev server

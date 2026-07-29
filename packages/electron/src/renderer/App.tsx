@@ -120,6 +120,7 @@ import { initPermissionListeners } from './store/listeners/permissionListeners';
 import { initSoundListeners } from './store/listeners/soundListeners';
 import { initStytchAuthListeners } from './store/listeners/stytchAuthListeners';
 import { initSyncListeners } from './store/listeners/syncListeners';
+import { initRemoteSessionsListeners } from './store/listeners/remoteSessionsListeners';
 import { initThemeListener } from './store/listeners/themeListeners';
 import { initThemeFallbackListener } from './store/listeners/themeFallbackListeners';
 import { initTrackerSyncListeners } from './store/listeners/trackerSyncListeners';
@@ -133,6 +134,7 @@ import { initWakeupListeners } from './store/listeners/wakeupListener';
 import { TrackerMode } from './components/TrackerMode';
 import { PullRequestMode } from './components/PullRequestMode';
 import { CollabMode, type CollabModeRef } from './components/CollabMode';
+import { RemoteSessionsView } from './components/RemoteSessions/RemoteSessionsView';
 import { TeamManagementApp } from './components/TeamMode';
 import { TerminalBottomPanel } from './components/TerminalBottomPanel';
 import { ProjectRail } from './components/ProjectRail';
@@ -180,6 +182,7 @@ import { toggleSessionHistoryCollapsedAtom, scrollToMessageAtom, initAgentModeLa
 import {
   developerModeAtom,
   setDeveloperFeatureSettingsAtom,
+  controllerModeAtom,
 } from './store/atoms/appSettings';
 import {
   agentInsertPlanReferenceRequestAtom,
@@ -331,6 +334,7 @@ export default function App() {
     const cleanupSound = initSoundListeners();
     const cleanupStytchAuth = initStytchAuthListeners();
     const cleanupSync = initSyncListeners();
+    const cleanupRemoteSessions = initRemoteSessionsListeners();
     const cleanupTheme = initThemeListener();
     const cleanupThemeFallback = initThemeFallbackListener();
     const cleanupTrackerSync = initTrackerSyncListeners();
@@ -361,6 +365,7 @@ export default function App() {
       cleanupSound?.();
       cleanupStytchAuth?.();
       cleanupSync?.();
+      cleanupRemoteSessions?.();
       cleanupTheme?.();
       cleanupThemeFallback?.();
       cleanupTrackerSync?.();
@@ -554,6 +559,16 @@ export default function App() {
       setActiveMode('files');
     }
   }, [activeMode, developerMode, setActiveMode]);
+
+  // Controller mode gates the Remote Sessions view. If a persisted
+  // 'remote-sessions' mode is restored while controller mode is off, bounce back
+  // to files so the user isn't stranded on an empty/hidden view.
+  const controllerMode = useAtomValue(controllerModeAtom);
+  useEffect(() => {
+    if (activeMode === 'remote-sessions' && !controllerMode) {
+      setActiveMode('files');
+    }
+  }, [activeMode, controllerMode, setActiveMode]);
 
   const openMarketplaceInstallRequest = useCallback((request: { extensionId: string; requestedAt?: string }) => {
     if (!request.extensionId) return;
@@ -2324,6 +2339,16 @@ export default function App() {
                   onFileOpen={handleWorkspaceFileSelect}
                 />
               )}
+            </div>
+
+            {/* Remote Sessions Mode (controller mode) - always mounted, visibility by display */}
+            <div
+              data-layout="remote-sessions-mode-wrapper"
+              className={`flex-1 flex-col overflow-hidden min-h-0 ${
+                activeMode === 'remote-sessions' && !isFullscreenPanelActive ? 'flex' : 'hidden'
+              }`}
+            >
+              {controllerMode && <RemoteSessionsView isActive={activeMode === 'remote-sessions'} />}
             </div>
 
             {/* Extension Fullscreen Panel Mode */}

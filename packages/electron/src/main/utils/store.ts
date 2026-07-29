@@ -1607,6 +1607,13 @@ export interface SessionSyncConfig {
   // Prevent system sleep while sync is active (uses Electron powerSaveBlocker).
   // 'off' = no sleep prevention, 'always' = always prevent, 'pluggedIn' = only when on AC power.
   preventSleepMode?: 'off' | 'always' | 'pluggedIn';
+  // Controller mode: this machine acts as a remote controller (like the mobile
+  // app) for another desktop that hosts the sessions. When true, all host-role
+  // sync subsystems are disabled: no publishing local sessions to the index,
+  // no executing queued prompts, no handling create-session requests, no
+  // settings-sync-to-mobile. The device also registers as type 'mobile' so the
+  // host treats it exactly like a phone (settings pushes, model lists, etc.).
+  controllerMode?: boolean;
 }
 
 // Stytch Auth Configuration (stored separately from session sync)
@@ -1626,6 +1633,15 @@ export function setSessionSyncConfig(config: SessionSyncConfig | undefined): voi
   } else {
     getAppStore().delete('sessionSync');
   }
+}
+
+/**
+ * Whether this machine is running as a remote controller for another desktop.
+ * Host-role sync subsystems must be disabled when this is true (see
+ * SessionSyncConfig.controllerMode).
+ */
+export function isControllerMode(): boolean {
+  return getSessionSyncConfig()?.controllerMode === true;
 }
 
 // Stytch Auth Configuration

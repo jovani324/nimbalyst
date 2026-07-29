@@ -1487,7 +1487,66 @@ contextBridge.exposeInMainWorld('electronAPI', {
     reset: () => ipcRenderer.invoke('credentials:reset'),
     generateQRPayload: (serverUrl: string) =>
       ipcRenderer.invoke('credentials:generate-qr-payload', serverUrl),
+    importPairingPayload: (rawPayload: string) =>
+      ipcRenderer.invoke('credentials:import-pairing-payload', rawPayload),
     isSecure: () => ipcRenderer.invoke('credentials:is-secure'),
+  },
+
+  // Controller mode: drive sessions that live on the always-on host desktop.
+  remoteSessions: {
+    isController: () => ipcRenderer.invoke('remote-sessions:is-controller'),
+    list: () => ipcRenderer.invoke('remote-sessions:list'),
+    connect: (sessionId: string) =>
+      ipcRenderer.invoke('remote-sessions:connect', { sessionId }),
+    disconnect: (sessionId: string) =>
+      ipcRenderer.invoke('remote-sessions:disconnect', { sessionId }),
+    sendPrompt: (sessionId: string, prompt: string) =>
+      ipcRenderer.invoke('remote-sessions:send-prompt', { sessionId, prompt }),
+    create: (request: {
+      projectId: string;
+      initialPrompt?: string;
+      provider?: string;
+      model?: string;
+      sessionType?: string;
+      parentSessionId?: string;
+    }) => ipcRenderer.invoke('remote-sessions:create', request),
+    cancel: (sessionId: string) =>
+      ipcRenderer.invoke('remote-sessions:cancel', { sessionId }),
+    archive: (sessionId: string, isArchived: boolean) =>
+      ipcRenderer.invoke('remote-sessions:archive', { sessionId, isArchived }),
+    respondPrompt: (
+      sessionId: string,
+      response: {
+        promptType:
+          | 'ask_user_question'
+          | 'exit_plan_mode'
+          | 'tool_permission'
+          | 'git_commit'
+          | 'request_user_input';
+        promptId: string;
+        response: Record<string, unknown>;
+      },
+    ) => ipcRenderer.invoke('remote-sessions:respond-prompt', { sessionId, response }),
+    onIndexChange: (callback: (data: { sessionId: string; entry: unknown }) => void) => {
+      const handler = (_event: unknown, data: { sessionId: string; entry: unknown }) => callback(data);
+      ipcRenderer.on('remote-sessions:index-change', handler);
+      return () => ipcRenderer.removeListener('remote-sessions:index-change', handler);
+    },
+    onTranscriptChange: (callback: (data: { sessionId: string; change: unknown }) => void) => {
+      const handler = (_event: unknown, data: { sessionId: string; change: unknown }) => callback(data);
+      ipcRenderer.on('remote-sessions:transcript-change', handler);
+      return () => ipcRenderer.removeListener('remote-sessions:transcript-change', handler);
+    },
+    onStatusChange: (callback: (data: { sessionId: string; status: unknown }) => void) => {
+      const handler = (_event: unknown, data: { sessionId: string; status: unknown }) => callback(data);
+      ipcRenderer.on('remote-sessions:status-change', handler);
+      return () => ipcRenderer.removeListener('remote-sessions:status-change', handler);
+    },
+    onCreateResponse: (callback: (response: unknown) => void) => {
+      const handler = (_event: unknown, response: unknown) => callback(response);
+      ipcRenderer.on('remote-sessions:create-response', handler);
+      return () => ipcRenderer.removeListener('remote-sessions:create-response', handler);
+    },
   },
 
   // Network utilities
