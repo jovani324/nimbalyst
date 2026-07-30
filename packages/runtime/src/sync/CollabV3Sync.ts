@@ -889,6 +889,12 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   let currentJwt: string | null = null;
   let currentUserId: string | null = null;
 
+  // Use the injected WebSocket factory (Electron main injects the `ws` package;
+  // its global WebSocket flakily drops the first connection) or fall back to the
+  // platform global in renderer / mobile / tests.
+  const makeWebSocket = (url: string): WebSocket =>
+    config.createWebSocket ? config.createWebSocket(url) : new WebSocket(url);
+
   // Helper to get fresh JWT and extract user ID.
   // Uses config.userId as the authoritative room routing ID.
   // The JWT sub claim is validated against config.userId -- if they differ,
@@ -1787,7 +1793,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     // Pass JWT via query parameter (WebSocket doesn't support custom headers in browsers)
     const wsUrl = appendSyncClientParams(`${url}?token=${encodeURIComponent(jwt)}`);
 
-    indexWs = new WebSocket(wsUrl);
+    indexWs = makeWebSocket(wsUrl);
 
     /**
      * Tracks whether THIS WebSocket instance ever fired `onopen`. Pre-open
@@ -2610,7 +2616,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     const wsUrl = appendSyncClientParams(`${url}?token=${encodeURIComponent(jwt)}`);
 
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(wsUrl);
+      const ws = makeWebSocket(wsUrl);
       let resolved = false;
 
       const timeout = setTimeout(() => {
@@ -3027,7 +3033,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       const wsUrl = appendSyncClientParams(`${url}?token=${encodeURIComponent(jwt)}`);
 
       return new Promise((resolve, reject) => {
-        const ws = new WebSocket(wsUrl);
+        const ws = makeWebSocket(wsUrl);
 
         const session: SessionConnection = {
           ws,

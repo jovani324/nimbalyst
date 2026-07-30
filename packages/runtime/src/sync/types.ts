@@ -43,6 +43,15 @@ export interface SyncConfig {
    * If provided, takes precedence over static deviceInfo.
    */
   getDeviceInfo?: () => DeviceInfo;
+
+  /**
+   * Optional WebSocket factory. Electron's main process historically pinned a
+   * Chromium-era global WebSocket whose first connection to a host flakily
+   * drops (1006); the desktop injects the `ws` package here for reliability,
+   * matching TrackerSyncManager / DocumentSyncHandlers. Falls back to the
+   * global `WebSocket` (renderer / mobile / tests) when not provided.
+   */
+  createWebSocket?: (url: string) => WebSocket;
 }
 
 /**

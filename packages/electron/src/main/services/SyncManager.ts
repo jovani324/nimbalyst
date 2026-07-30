@@ -13,6 +13,7 @@
  * The sync feature is completely optional. If not configured, nothing happens.
  */
 
+import WebSocketNode from 'ws';
 import type { SessionStore } from '@nimbalyst/runtime';
 import { asPersonalMemberId } from '@nimbalyst/runtime';
 import type { DeviceInfo } from '@nimbalyst/runtime/sync';
@@ -511,6 +512,9 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
       serverUrl,
       orgId: personalOrgId,
       userId: personalUserId,
+      // Electron main's global WebSocket flakily drops the first connection to
+      // a host (1006); inject the `ws` package like TrackerSyncManager does.
+      createWebSocket: ((url: string) => new WebSocketNode(url)) as unknown as (url: string) => WebSocket,
       getJwt: async () => {
         // Session sync uses the PERSONAL JWT -- its sub claim matches personalUserId
         // which the server validates against the room URL path. The team-scoped JWT
