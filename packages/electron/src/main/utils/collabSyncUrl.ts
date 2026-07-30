@@ -21,6 +21,16 @@ const DEVELOPMENT_WS_URL = 'ws://localhost:8790';
 
 export function getCollabSyncWsUrl(): string {
   const config = getSessionSyncConfig();
+
+  // Self-hosted relay (private-sync-plan): an explicit ws(s):// serverUrl in the
+  // sync config wins, so controller mode can run entirely on your own box (e.g.
+  // a Tailscale MagicDNS name). The pairing default of PRODUCTION_WS_URL does
+  // NOT count as an override — only a different, real URL redirects sync.
+  const custom = config?.serverUrl;
+  if (custom && /^wss?:\/\//.test(custom) && custom !== PRODUCTION_WS_URL) {
+    return custom;
+  }
+
   const isDev = process.env.NODE_ENV !== 'production';
   const env = isDev ? config?.environment : undefined;
   return env === 'development' ? DEVELOPMENT_WS_URL : PRODUCTION_WS_URL;
