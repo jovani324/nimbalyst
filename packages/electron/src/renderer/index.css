@@ -425,22 +425,24 @@ body[data-dev-mode="true"] .nav-quick-access::before {
 }
 
 /* ===== CTRL-05: discreet controller popover — terminal skin =====
- * The Remote Sessions components style themselves through the `--nim-*`
- * variables via inline styles, so re-defining those variables under the
- * popover root (marked by index.tsx with `data-controller-popover`) re-skins
- * the whole surface without touching component code. Plus a monospace pass.
+ * The popover loads the full renderer but must read as a dedicated controller,
+ * not the app shrunk down. index.tsx sets the `--nim-*` skin inline (so it wins
+ * over the theme's inline vars); here we strip the app chrome so only the
+ * Remote Sessions surface remains, plus a monospace pass.
  */
 :root[data-controller-popover] {
-  --nim-bg: #0b0e14;
-  --nim-bg-secondary: #121722;
-  --nim-bg-tertiary: #0e1420;
-  --nim-text: #d7e0ec;
-  --nim-text-muted: #6b7a90;
-  --nim-border: #1c2430;
-  --nim-primary: #2f81f7;
-  --nim-success: #3fb950;
-  --nim-error: #f85149;
-  background: #0b0e14;
+  background: #0a0d13;
+}
+
+/* Strip the app chrome: the left navigation gutter (which also carries the
+ * DEV label) and the multi-project rail have no place in the controller. */
+[data-controller-popover] .navigation-gutter,
+[data-controller-popover] .project-rail {
+  display: none !important;
+}
+/* Let the Remote Sessions surface fill the popover once the gutter is gone. */
+[data-controller-popover] [data-layout="main-column-container"] {
+  flex: 1 1 auto !important;
 }
 
 [data-controller-popover] body {

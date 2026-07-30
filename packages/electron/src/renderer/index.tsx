@@ -7,10 +7,27 @@
 const isCaptureMode = new URLSearchParams(window.location.search).get('mode') === 'capture';
 
 // CTRL-05: the discreet controller popover loads this same renderer with
-// `?controllerPopover=1`. Mark the root so App can open straight into
-// remote-sessions mode and index.css can apply the terminal skin.
+// `?controllerPopover=1`. Mark the root so App opens straight into
+// remote-sessions mode and index.css can hide the app chrome, then force the
+// terminal skin. The theme sets `--nim-*` INLINE on the root via JS, which
+// would beat a stylesheet rule — so set the skin inline with `!important`
+// priority so it wins even when the theme re-applies.
 if (new URLSearchParams(window.location.search).get('controllerPopover') === '1') {
-  document.documentElement.setAttribute('data-controller-popover', '1');
+  const root = document.documentElement;
+  root.setAttribute('data-controller-popover', '1');
+  const skin: Record<string, string> = {
+    '--nim-bg': '#0a0d13',
+    '--nim-bg-secondary': '#0f141d',
+    '--nim-bg-tertiary': '#0c1017',
+    '--nim-bg-hover': '#161c27',
+    '--nim-text': '#d7e0ec',
+    '--nim-text-muted': '#66748a',
+    '--nim-border': '#1b2330',
+    '--nim-primary': '#2f81f7',
+    '--nim-success': '#3fb950',
+    '--nim-error': '#f85149',
+  };
+  for (const [k, v] of Object.entries(skin)) root.style.setProperty(k, v, 'important');
 }
 
 import React from 'react';
