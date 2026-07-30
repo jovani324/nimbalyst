@@ -516,11 +516,17 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
         // which the server validates against the room URL path. The team-scoped JWT
         // (from getSessionJwt) has a different sub and would fail auth.
         const now = Date.now();
+        // A self-hosted relay (private-sync-plan) authenticates on the JWT's
+        // `sub` only — it does NOT verify signature or expiry — so we neither
+        // hammer Stytch to refresh (which can 401 forever on a stale personal
+        // session) nor hard-fail on an expired token. The `sub` in a cached,
+        // even-expired personal JWT is all our relay needs.
+        const isSelfHostedRelay = serverUrl !== PRODUCTION_SYNC_URL;
         const cachedJwt = getPersonalSessionJwt();
         const expiryMs = getJwtExpiryMs(cachedJwt);
         const cachedIsFresh = expiryMs !== null && expiryMs - now > REFRESH_SKEW_MS;
 
-        if (!cachedIsFresh) {
+        if (!cachedIsFresh && !isSelfHostedRelay) {
           // Avoid hammering Stytch in a tight reconnect loop when the prior
           // refresh just failed. The backoff is short enough that legitimate
           // recovery (network coming back after sleep) happens within a couple
@@ -544,7 +550,7 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
         }
 
         const freshExpiryMs = getJwtExpiryMs(freshJwt);
-        if (freshExpiryMs !== null && freshExpiryMs <= now) {
+        if (freshExpiryMs !== null && freshExpiryMs <= now && !isSelfHostedRelay) {
           // Returning an already-expired JWT guarantees the server rejects the
           // upgrade and the WS error loop never escapes. Throw so the caller's
           // reconnect-with-backoff path runs instead of the bad-token hammer.
