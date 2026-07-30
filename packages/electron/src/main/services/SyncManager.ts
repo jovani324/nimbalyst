@@ -338,7 +338,15 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
   // Derive server URL from environment - don't rely on persisted serverUrl as it may be stale
   // (e.g., user switched from dev to production but old localhost URL was persisted)
   let serverUrl: string;
-  if (effectiveEnvironment === 'development') {
+  const envSyncUrl = process.env.NIMBALYST_SYNC_URL;
+  const customSyncUrl = config.serverUrl;
+  if (envSyncUrl && /^wss?:\/\//.test(envSyncUrl)) {
+    // Self-hosted personal-lane relay (private-sync-plan): env override wins.
+    serverUrl = envSyncUrl;
+  } else if (customSyncUrl && /^wss?:\/\//.test(customSyncUrl) && customSyncUrl !== PRODUCTION_SYNC_URL) {
+    // Explicit non-default serverUrl in the sync config also redirects sync.
+    serverUrl = customSyncUrl;
+  } else if (effectiveEnvironment === 'development') {
     serverUrl = DEVELOPMENT_SYNC_URL;
   } else {
     serverUrl = PRODUCTION_SYNC_URL;
@@ -961,7 +969,13 @@ export function getPersonalDocSyncConfig(): {
 
   const isDev = process.env.NODE_ENV !== 'production';
   const env = isDev ? state.config.environment : undefined;
-  const serverUrl = env === 'development' ? 'ws://localhost:8790' : 'wss://sync.nimbalyst.com';
+  const envSyncUrl = process.env.NIMBALYST_SYNC_URL;
+  const customSyncUrl = state.config.serverUrl;
+  const serverUrl =
+    envSyncUrl && /^wss?:\/\//.test(envSyncUrl) ? envSyncUrl
+    : customSyncUrl && /^wss?:\/\//.test(customSyncUrl) && customSyncUrl !== 'wss://sync.nimbalyst.com' ? customSyncUrl
+    : env === 'development' ? 'ws://localhost:8790'
+    : 'wss://sync.nimbalyst.com';
 
   return {
     serverUrl,
