@@ -8,7 +8,7 @@ import * as path from 'path';
 import { join } from 'path';
 import * as fs from 'fs';
 import { appendFileSync, existsSync, renameSync, unlinkSync, writeFileSync } from 'fs';
-import { createWindow, findWindowByFilePath, findWindowByWorkspace, getMostRecentlyFocusedWorkspaceWindow } from './window/WindowManager';
+import { createWindow, findWindowByFilePath, findWindowByWorkspace, getMostRecentlyFocusedWorkspaceWindow, allowControllerWindowShow } from './window/WindowManager';
 import { loadFileIntoWindow } from './file/FileOperations';
 import { createApplicationMenu } from './menu/ApplicationMenu';
 import { updateNativeTheme, updateWindowTitleBars } from './theme/ThemeManager';
@@ -1659,6 +1659,21 @@ app.whenReady().then(async () => {
             }
             createControllerPopover();
             trayManager.setTrayClickHandler(() => toggleControllerPopover());
+            // Hybrid: right-click tray → open the full app window on demand.
+            trayManager.setOpenWindowHandler(() => {
+                allowControllerWindowShow();
+                if (process.platform === 'darwin' && app.dock) {
+                    void app.dock.show();
+                }
+                const existing = getMostRecentlyFocusedWorkspaceWindow();
+                if (existing && !existing.isDestroyed()) {
+                    existing.show();
+                    existing.focus();
+                } else {
+                    const win = createWindow();
+                    win.once('ready-to-show', () => { win.show(); win.focus(); });
+                }
+            });
             registerControllerBossKey();
             logger.main.info('[ControllerPopover] Controller shell initialized');
         }

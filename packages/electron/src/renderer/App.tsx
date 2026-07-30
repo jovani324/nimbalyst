@@ -575,11 +575,15 @@ export default function App() {
   const isControllerPopover =
     typeof document !== 'undefined' &&
     document.documentElement.hasAttribute('data-controller-popover');
+  // Hold remote-sessions mode continuously in the popover: the window-mode
+  // restore (initWindowMode) runs async on load and would otherwise reset a
+  // one-shot force back to the persisted mode (e.g. 'agent'). Re-asserting on
+  // any drift keeps the popover pinned to the controller view.
   useEffect(() => {
-    if (isControllerPopover && controllerMode) {
+    if (isControllerPopover && controllerMode && activeMode !== 'remote-sessions') {
       setActiveMode('remote-sessions');
     }
-  }, [isControllerPopover, controllerMode, setActiveMode]);
+  }, [isControllerPopover, controllerMode, activeMode, setActiveMode]);
   useEffect(() => {
     if (!isControllerPopover) return;
     const focusComposer = () => {

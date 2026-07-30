@@ -5,6 +5,17 @@ import { existsSync } from 'fs';
 import { WindowState, FileTreeItem } from '../types';
 import { WINDOW_CASCADE_OFFSET } from '../utils/constants';
 import { getTheme, saveWorkspaceWindowState, getWorkspaceNavigationHistory, saveWorkspaceNavigationHistory, isControllerMode } from '../utils/store';
+
+/**
+ * CTRL-05 hybrid: in controller mode we suppress auto-showing regular workspace
+ * windows during startup (the app is a menu-bar popover). This flag is lifted
+ * once the user explicitly opens the full window from the tray, so the normal
+ * app becomes usable on demand without a window flashing behind the popover.
+ */
+let controllerSuppressShow = true;
+export function allowControllerWindowShow(): void {
+    controllerSuppressShow = false;
+}
 import { stopFileWatcher } from '../file/FileWatcher';
 import { stopWorkspaceWatcher, startWorkspaceWatcher } from '../file/WorkspaceWatcher.ts';
 import { getFolderContents } from '../utils/FileTree';
@@ -568,12 +579,15 @@ export function createWindow(
             }, 1000);
         });
 
-        // Show window when ready — UNLESS controller mode, where the app is a
-        // discreet menu-bar popover shell (CTRL-05): regular workspace windows
-        // must never appear, or hiding the popover would reveal one behind it.
+        // Show window when ready. In controller mode the app boots as a discreet
+        // menu-bar popover shell (CTRL-05), so regular workspace windows must NOT
+        // auto-appear on startup (else hiding the popover reveals one behind it).
+        // This is startup-only: once the user explicitly opens the full window
+        // (tray → "Open Nimbalyst"), `allowControllerWindowShow()` lifts the
+        // suppression so the hybrid normal app works.
         window.once('ready-to-show', () => {
             // console.log('[MAIN] Window ready to show at', new Date().toISOString(), 'elapsed:', Date.now() - startTime, 'ms');
-            if (isControllerMode()) return;
+            if (isControllerMode() && controllerSuppressShow) return;
             if (options?.showInactive) {
                 window.showInactive();
             } else {
@@ -581,14 +595,13 @@ export function createWindow(
             }
         });
 
-        // Belt-and-suspenders for CTRL-05: several startup/CLI paths call
-        // window.show() directly. In controller mode, immediately re-hide any
-        // regular window so only the tray popover is ever visible.
-        if (isControllerMode()) {
-            window.on('show', () => {
-                if (!window.isDestroyed()) window.hide();
-            });
-        }
+        // Several startup/CLI paths call window.show() directly; re-hide those
+        // during the startup-suppression window only.
+        window.on('show', () => {
+            if (isControllerMode() && controllerSuppressShow && !window.isDestroyed()) {
+                window.hide();
+            }
+        });
 
         // Handle renderer process crashes
         window.webContents.on('render-process-gone', (event, details) => {

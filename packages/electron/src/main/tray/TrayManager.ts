@@ -69,6 +69,8 @@ export class TrayManager {
   private themeListener: (() => void) | null = null;
   /** Controller mode: a left-click toggles the popover instead of a menu (CTRL-05). */
   private trayClickHandler: (() => void) | null = null;
+  /** Controller mode: right-click menu action to open the full app window (hybrid). */
+  private openWindowHandler: (() => void) | null = null;
 
   private constructor() {}
 
@@ -163,14 +165,35 @@ export class TrayManager {
     const icon = this.getIconForState('idle');
     this.tray = new Tray(icon);
     this.tray.setToolTip('Nimbalyst');
-    // CTRL-05: in controller mode a left-click toggles the discreet popover.
+    // CTRL-05: in controller mode a left-click toggles the discreet popover,
+    // and a right-click opens a small menu (open full app / quit).
     this.tray.on('click', () => this.trayClickHandler?.());
+    this.tray.on('right-click', () => this.showControllerTrayMenu());
     this.rebuildMenu();
   }
 
   /** Wire the controller-mode tray-click handler (CTRL-05). */
   setTrayClickHandler(handler: (() => void) | null): void {
     this.trayClickHandler = handler;
+  }
+
+  /** Wire the controller-mode "open full window" action (hybrid). */
+  setOpenWindowHandler(handler: (() => void) | null): void {
+    this.openWindowHandler = handler;
+  }
+
+  /** Controller-mode right-click menu: open the full app or quit. */
+  private showControllerTrayMenu(): void {
+    if (!isControllerMode() || !this.tray) return;
+    const menu = Menu.buildFromTemplate([
+      {
+        label: 'Open Nimbalyst Window',
+        click: () => this.openWindowHandler?.(),
+      },
+      { type: 'separator' },
+      { label: 'Quit', click: () => app.quit() },
+    ]);
+    this.tray.popUpContextMenu(menu);
   }
 
   /** Tray icon bounds in screen coordinates, for anchoring the controller popover. */
