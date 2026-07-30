@@ -20,6 +20,12 @@ const PRODUCTION_WS_URL = 'wss://sync.nimbalyst.com';
 const DEVELOPMENT_WS_URL = 'ws://localhost:8790';
 
 export function getCollabSyncWsUrl(): string {
+  // Highest priority: an explicit env override, so a self-hosted relay can be
+  // targeted with a single env-prefixed launch and no persisted config change:
+  //   NIMBALYST_SYNC_URL=ws://localhost:8790 npm run dev
+  const envUrl = process.env.NIMBALYST_SYNC_URL;
+  if (envUrl && /^wss?:\/\//.test(envUrl)) return envUrl;
+
   const config = getSessionSyncConfig();
 
   // Self-hosted relay (private-sync-plan): an explicit ws(s):// serverUrl in the
