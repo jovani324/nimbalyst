@@ -78,6 +78,29 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
     ...[...sessionsByProject.keys()].filter((id) => !projects.some((p) => p.projectId === id)),
   ];
 
+  // Flattened session order for keyboard navigation — Arrow Up/Down moves the
+  // active session through the list (unless the user is typing in the composer).
+  const flatSessionIds: string[] = groupOrder.flatMap((projectId) =>
+    (sessionsByProject.get(projectId) ?? []).map((s) => s.sessionId),
+  );
+  useEffect(() => {
+    if (!isActive) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+      if (flatSessionIds.length === 0) return;
+      e.preventDefault();
+      const cur = activeSessionId ? flatSessionIds.indexOf(activeSessionId) : -1;
+      const delta = e.key === 'ArrowDown' ? 1 : -1;
+      const nextIdx = cur < 0 ? 0 : Math.min(flatSessionIds.length - 1, Math.max(0, cur + delta));
+      setActiveSessionId(flatSessionIds[nextIdx]);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isActive, flatSessionIds, activeSessionId, setActiveSessionId]);
+
   return (
     <div className="remote-sessions-view flex flex-1 min-h-0 overflow-hidden" data-testid="remote-sessions-view">
       {/* Left: session list */}

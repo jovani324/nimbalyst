@@ -625,6 +625,11 @@ interface ElectronAPI {
     connect: (sessionId: string) => Promise<{ success: boolean }>;
     disconnect: (sessionId: string) => Promise<{ success: boolean }>;
     resync: (sessionId: string) => Promise<{ success: boolean }>;
+    exportMarkdown: (
+      sessionId: string,
+      title: string | undefined,
+      markdown: string,
+    ) => Promise<{ success: boolean; filePath: string; error?: string }>;
     sendPrompt: (sessionId: string, prompt: string) => Promise<{ success: boolean; promptId: string }>;
     create: (request: {
       projectId: string;

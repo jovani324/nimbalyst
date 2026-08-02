@@ -4,16 +4,18 @@
  * Connects to the host's session room (over sync, via the main-process
  * RemoteSessionService), accumulates the raw AgentMessage stream into an atom,
  * projects it client-side into canonical TranscriptViewMessages (the exact same
- * pipeline the mobile apps use — no local DB), and renders it with the shared
- * RichTranscriptView. Pending interactive prompts (tool permissions, questions)
- * are detected from the stream and answered with InteractivePromptWidget, whose
- * response is relayed to the host as a `prompt_response` control message.
+ * pipeline the mobile apps use — no local DB), and renders it with the discreet
+ * summary-first CondensedRemoteTranscript (with Copy-as-Markdown / open-in-editor
+ * export). Pending interactive prompts (tool permissions, questions) are detected
+ * from the stream and answered with InteractivePromptWidget, whose response is
+ * relayed to the host as a `prompt_response` control message.
  */
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useAtomValue } from 'jotai';
-import { RichTranscriptView } from '@nimbalyst/runtime/ui/AgentTranscript/components/RichTranscriptView';
 import { InteractivePromptWidget } from '@nimbalyst/runtime/ui/AgentTranscript/components/InteractivePromptWidget';
+import { CondensedRemoteTranscript } from './CondensedRemoteTranscript';
+import { buildSessionMarkdown } from './condensedTranscript';
 import {
   parseInteractivePromptContent,
   type PermissionRequestContent,
@@ -95,6 +97,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   const [sending, setSending] = useState(false);
   const [promptSubmitting, setPromptSubmitting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [copiedAll, setCopiedAll] = useState(false);
 
   // Connect on mount / session change; disconnect on unmount. The component is
   // keyed by sessionId in the parent, so this maps 1:1 to the open session.
@@ -233,6 +236,27 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
 
   const isExecuting = !!session?.isExecuting;
 
+  // Export the whole session as clean Markdown — copy to the clipboard, or write
+  // it to a file and open it in the OS default editor.
+  const handleCopyMarkdown = async () => {
+    const md = buildSessionMarkdown(viewMessages, session?.title);
+    await navigator.clipboard.writeText(md);
+    setCopiedAll(true);
+    setTimeout(() => setCopiedAll(false), 1200);
+  };
+  const handleOpenInEditor = async () => {
+    const api = window.electronAPI?.remoteSessions;
+    if (!api?.exportMarkdown) return;
+    const md = buildSessionMarkdown(viewMessages, session?.title);
+    setActionError(null);
+    try {
+      const res = await api.exportMarkdown(sessionId, session?.title, md);
+      if (!res.success && res.error) setActionError(`Could not open export: ${res.error}`);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to export');
+    }
+  };
+
   return (
     <div className="remote-session-transcript flex flex-col flex-1 min-h-0" data-testid="remote-session-transcript">
       {/* Header */}
@@ -250,28 +274,42 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
             </span>
           )}
         </div>
-        {isExecuting && (
+        <div className="flex items-center gap-1 shrink-0">
           <button
             className="text-xs px-2 py-1 rounded"
-            style={{ color: 'var(--nim-error)', border: '1px solid var(--nim-border)' }}
-            onClick={() => void handleCancel()}
-            data-testid="remote-session-cancel-button"
+            style={{ color: 'var(--nim-text-muted)', border: '1px solid var(--nim-border)' }}
+            onClick={() => void handleCopyMarkdown()}
+            disabled={viewMessages.length === 0}
+            data-testid="remote-session-copy-md-button"
+            title="Copy the whole session as Markdown"
           >
-            Stop
+            {copiedAll ? 'Copied' : 'Copy MD'}
           </button>
-        )}
+          <button
+            className="text-xs px-2 py-1 rounded"
+            style={{ color: 'var(--nim-text-muted)', border: '1px solid var(--nim-border)' }}
+            onClick={() => void handleOpenInEditor()}
+            disabled={viewMessages.length === 0}
+            data-testid="remote-session-open-editor-button"
+            title="Open the session as a Markdown file in your editor"
+          >
+            Open
+          </button>
+          {isExecuting && (
+            <button
+              className="text-xs px-2 py-1 rounded"
+              style={{ color: 'var(--nim-error)', border: '1px solid var(--nim-border)' }}
+              onClick={() => void handleCancel()}
+              data-testid="remote-session-cancel-button"
+            >
+              Stop
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Transcript */}
-      <div className="flex-1 min-h-0 overflow-hidden">
-        <RichTranscriptView
-          sessionId={sessionId}
-          messages={viewMessages}
-          provider={provider}
-          isProcessing={isExecuting}
-          hasPendingInteractivePrompt={!!pendingPrompt}
-        />
-      </div>
+      <CondensedRemoteTranscript messages={viewMessages} isProcessing={isExecuting} />
 
       {/* Pending interactive prompt */}
       {pendingPrompt && (

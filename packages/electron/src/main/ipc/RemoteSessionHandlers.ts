@@ -5,6 +5,8 @@
  *   remote-sessions:list                 fetch decrypted session + project index
  *   remote-sessions:connect              connect a session room, start streaming its transcript
  *   remote-sessions:disconnect           stop streaming a session room
+ *   remote-sessions:resync               catch a session transcript up (reconnect if the socket dropped)
+ *   remote-sessions:export-markdown      write a session transcript to a .md file and open it
  *   remote-sessions:send-prompt          queue a prompt on a remote session
  *   remote-sessions:create               ask the host to create a new session
  *   remote-sessions:cancel               cancel the running agent on a remote session
@@ -19,6 +21,10 @@
  *   remote-sessions:create-response      a create-session request was answered
  */
 
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { app, shell } from 'electron';
 import { safeHandle } from '../utils/ipcRegistry';
 import { isControllerMode } from '../utils/store';
 import {
@@ -67,6 +73,27 @@ export function registerRemoteSessionHandlers() {
     await resyncRemoteSession(payload.sessionId);
     return { success: true };
   });
+
+  safeHandle(
+    'remote-sessions:export-markdown',
+    async (_event, payload: { sessionId: string; title?: string; markdown: string }) => {
+      if (!payload?.sessionId || typeof payload.markdown !== 'string') {
+        throw new Error('remote-sessions:export-markdown requires sessionId and markdown');
+      }
+      const slug = (payload.title || 'session')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 40) || 'session';
+      const dir = path.join(app.getPath('temp'), 'nimbalyst-controller-exports');
+      await fs.mkdir(dir, { recursive: true });
+      const filePath = path.join(dir, `${slug}-${payload.sessionId.slice(0, 8)}.md`);
+      await fs.writeFile(filePath, payload.markdown, 'utf8');
+      // shell.openPath returns '' on success, or an error string.
+      const openError = await shell.openPath(filePath);
+      return { success: !openError, filePath, error: openError || undefined };
+    },
+  );
 
   safeHandle('remote-sessions:send-prompt', async (_event, payload: { sessionId: string; prompt: string }) => {
     if (!payload?.sessionId) {
