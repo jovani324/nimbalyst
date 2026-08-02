@@ -76,6 +76,8 @@ interface RemoteSessionState {
   cleanupCreateResponse?: () => void;
   /** Per-session transcript subscription cleanups, keyed by sessionId. */
   transcriptCleanups: Map<string, () => void>;
+  /** Debounced disconnect timers, keyed by sessionId (StrictMode-safe teardown). */
+  pendingDisconnects: Map<string, ReturnType<typeof setTimeout>>;
   /** Pending create-session requests awaiting a response, keyed by requestId. */
   pendingCreates: Map<string, (response: CreateSessionResponse) => void>;
 }
@@ -83,6 +85,7 @@ interface RemoteSessionState {
 const state: RemoteSessionState = {
   indexSubscribed: false,
   transcriptCleanups: new Map(),
+  pendingDisconnects: new Map(),
   pendingCreates: new Map(),
 };
 
@@ -159,6 +162,16 @@ export async function connectRemoteSession(sessionId: string): Promise<void> {
   const provider = requireProvider();
   ensureRemoteSubscriptions();
 
+  // Cancel any debounced disconnect: React StrictMode (dev) mounts the
+  // transcript, unmounts it (scheduling a disconnect), then remounts. Cancelling
+  // here keeps the socket alive across that transient so it isn't torn down
+  // mid-connect (which surfaced as an immediate 1006 + connect timeout).
+  const pendingDisconnect = state.pendingDisconnects.get(sessionId);
+  if (pendingDisconnect) {
+    clearTimeout(pendingDisconnect);
+    state.pendingDisconnects.delete(sessionId);
+  }
+
   if (!state.transcriptCleanups.has(sessionId)) {
     const cleanupRemote = provider.onRemoteChange(sessionId, (change) => {
       broadcast(REMOTE_SESSION_CHANNELS.transcriptChange, { sessionId, change });
@@ -175,15 +188,25 @@ export async function connectRemoteSession(sessionId: string): Promise<void> {
   await provider.connect(sessionId);
 }
 
-/** Disconnect a session room and drop its transcript subscription. */
+/**
+ * Disconnect a session room and drop its transcript subscription — DEBOUNCED.
+ * A real navigation-away unmounts and never reconnects, so the teardown fires
+ * after the delay. A StrictMode dev remount (connect→disconnect→connect) cancels
+ * the pending teardown in connectRemoteSession, keeping the socket alive.
+ */
 export function disconnectRemoteSession(sessionId: string): void {
-  const cleanup = state.transcriptCleanups.get(sessionId);
-  if (cleanup) {
-    cleanup();
-    state.transcriptCleanups.delete(sessionId);
-  }
-  const provider = getSyncProvider();
-  provider?.disconnect(sessionId);
+  const existing = state.pendingDisconnects.get(sessionId);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    state.pendingDisconnects.delete(sessionId);
+    const cleanup = state.transcriptCleanups.get(sessionId);
+    if (cleanup) {
+      cleanup();
+      state.transcriptCleanups.delete(sessionId);
+    }
+    getSyncProvider()?.disconnect(sessionId);
+  }, 1500);
+  state.pendingDisconnects.set(sessionId, timer);
 }
 
 /**
@@ -320,6 +343,8 @@ export async function respondToRemotePrompt(
 export function shutdownRemoteSessionService(): void {
   state.cleanupIndex?.();
   state.cleanupCreateResponse?.();
+  for (const timer of state.pendingDisconnects.values()) clearTimeout(timer);
+  state.pendingDisconnects.clear();
   for (const cleanup of state.transcriptCleanups.values()) cleanup();
   state.transcriptCleanups.clear();
   state.pendingCreates.clear();
