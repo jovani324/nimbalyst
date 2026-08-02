@@ -172,6 +172,15 @@ export async function connectRemoteSession(sessionId: string): Promise<void> {
     state.pendingDisconnects.delete(sessionId);
   }
 
+  // Connect FIRST so the provider's per-session object exists. onRemoteChange /
+  // onStatusChange attach to `session.changeListeners` and NO-OP when the
+  // session isn't connected yet (CollabV3Sync.ts) — registering before connect
+  // left the session with zero listeners, so the decrypted syncResponse backlog
+  // was emitted to no one and the transcript stayed blank. The listeners are
+  // registered synchronously after the await, before the syncResponse (a later
+  // network macrotask) is processed, so no backlog is missed.
+  await provider.connect(sessionId);
+
   if (!state.transcriptCleanups.has(sessionId)) {
     const cleanupRemote = provider.onRemoteChange(sessionId, (change) => {
       broadcast(REMOTE_SESSION_CHANNELS.transcriptChange, { sessionId, change });
@@ -184,8 +193,6 @@ export async function connectRemoteSession(sessionId: string): Promise<void> {
       cleanupStatus();
     });
   }
-
-  await provider.connect(sessionId);
 }
 
 /**
