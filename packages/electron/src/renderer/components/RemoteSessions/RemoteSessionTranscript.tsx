@@ -109,6 +109,36 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
     };
   }, [sessionId]);
 
+  // Keep the transcript from silently going stale. Session sockets don't
+  // auto-reconnect on an unexpected drop the way the index does, so a dropped
+  // socket would stop delivering live messages until the next manual connect.
+  // Catch up (reconnecting if needed) whenever the user is likely looking — the
+  // popover being shown, the window regaining focus, the tab becoming visible —
+  // plus a light poll while this session is open as a safety net for a reply
+  // that streams in on a socket that dropped while we were staring at it.
+  useEffect(() => {
+    const api = window.electronAPI?.remoteSessions;
+    if (!api) return;
+    const resync = () => {
+      void api.resync(sessionId).catch(() => {
+        /* transient; the next tick retries */
+      });
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') resync();
+    };
+    window.addEventListener('focus', resync);
+    document.addEventListener('visibilitychange', onVisibility);
+    const offPopoverShown = window.electronAPI?.on?.('controller-popover:shown', resync);
+    const poll = window.setInterval(resync, 8000);
+    return () => {
+      window.removeEventListener('focus', resync);
+      document.removeEventListener('visibilitychange', onVisibility);
+      if (typeof offPopoverShown === 'function') offPopoverShown();
+      window.clearInterval(poll);
+    };
+  }, [sessionId]);
+
   // Project the raw stream into canonical view messages whenever it changes.
   // Guarded against out-of-order async completion with a token ref.
   const projectionToken = useRef(0);

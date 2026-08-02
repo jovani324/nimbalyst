@@ -100,6 +100,17 @@ export interface SyncProvider {
   /** Disconnect all sessions */
   disconnectAll(): void;
 
+  /**
+   * In-place catch-up for an actively-viewed session: request messages since the
+   * last-seen sequence when the socket is open. Returns true if the transcript
+   * is being caught up in place, false if the socket has dropped and the caller
+   * must reconnect through its own path (re-registering its transcript listener,
+   * since session sockets don't auto-reconnect). Viewers (e.g. controller mode)
+   * call this on focus / a light poll to avoid a stale transcript. Optional so
+   * providers that don't stream session transcripts can skip it.
+   */
+  resync?(sessionId: string): Promise<boolean>;
+
   /** Check if a session is connected */
   isConnected(sessionId: string): boolean;
 

@@ -25,6 +25,7 @@ import {
   listRemoteSessions,
   connectRemoteSession,
   disconnectRemoteSession,
+  resyncRemoteSession,
   sendRemotePrompt,
   createRemoteSession,
   cancelRemoteSession,
@@ -56,6 +57,14 @@ export function registerRemoteSessionHandlers() {
       throw new Error('remote-sessions:disconnect requires sessionId');
     }
     disconnectRemoteSession(payload.sessionId);
+    return { success: true };
+  });
+
+  safeHandle('remote-sessions:resync', async (_event, payload: { sessionId: string }) => {
+    if (!payload?.sessionId) {
+      throw new Error('remote-sessions:resync requires sessionId');
+    }
+    await resyncRemoteSession(payload.sessionId);
     return { success: true };
   });
 

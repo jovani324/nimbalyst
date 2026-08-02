@@ -624,6 +624,7 @@ interface ElectronAPI {
     list: () => Promise<import('./types/remoteSessions').RemoteSessionIndexList>;
     connect: (sessionId: string) => Promise<{ success: boolean }>;
     disconnect: (sessionId: string) => Promise<{ success: boolean }>;
+    resync: (sessionId: string) => Promise<{ success: boolean }>;
     sendPrompt: (sessionId: string, prompt: string) => Promise<{ success: boolean; promptId: string }>;
     create: (request: {
       projectId: string;

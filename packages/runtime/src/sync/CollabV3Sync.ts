@@ -3105,6 +3105,28 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       sessions.delete(sessionId);
     },
 
+    /**
+     * In-place catch-up for a session the caller is actively viewing: if the
+     * socket is OPEN, request everything after our last-seen sequence (the
+     * client dedups overlaps by message id) and return true. If the socket is
+     * CONNECTING, its onopen already sends a full sync — return true (no action
+     * needed). Otherwise the socket has dropped: return false so the CALLER can
+     * reconnect through its own path and re-register its transcript listener
+     * (session sockets don't auto-reconnect, and a bare connect() here would
+     * create a fresh session object with no listeners attached).
+     */
+    async resync(sessionId: string): Promise<boolean> {
+      const session = sessions.get(sessionId);
+      const readyState = session?.ws.readyState;
+      if (session && readyState === WebSocket.OPEN) {
+        const req: ClientMessage = { type: 'syncRequest', sinceSeq: session.lastSequence };
+        session.ws.send(JSON.stringify(req));
+        session.lastActivity = Date.now();
+        return true;
+      }
+      return readyState === WebSocket.CONNECTING;
+    },
+
     disconnectAll(): void {
       wantedSessions.clear();
       for (const sessionId of sessions.keys()) {

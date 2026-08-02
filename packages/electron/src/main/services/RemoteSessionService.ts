@@ -181,18 +181,25 @@ export async function connectRemoteSession(sessionId: string): Promise<void> {
   // network macrotask) is processed, so no backlog is missed.
   await provider.connect(sessionId);
 
-  if (!state.transcriptCleanups.has(sessionId)) {
-    const cleanupRemote = provider.onRemoteChange(sessionId, (change) => {
-      broadcast(REMOTE_SESSION_CHANNELS.transcriptChange, { sessionId, change });
-    });
-    const cleanupStatus = provider.onStatusChange(sessionId, (status) => {
-      broadcast(REMOTE_SESSION_CHANNELS.statusChange, { sessionId, status });
-    });
-    state.transcriptCleanups.set(sessionId, () => {
-      cleanupRemote();
-      cleanupStatus();
-    });
-  }
+  // Always (re)register the transcript listener against the CURRENT session
+  // object. onRemoteChange/onStatusChange attach to that object's listener sets;
+  // an earlier socket drop deletes the provider session (and its sets) while our
+  // cleanup entry lingers stale, so re-registering is required to re-attach to
+  // the fresh session after a reconnect. Clearing the prior entry first keeps
+  // already-connected reuse from stacking duplicate listeners (both cleanups are
+  // no-ops on a deleted session, so reconnects don't leak).
+  const priorCleanup = state.transcriptCleanups.get(sessionId);
+  if (priorCleanup) priorCleanup();
+  const cleanupRemote = provider.onRemoteChange(sessionId, (change) => {
+    broadcast(REMOTE_SESSION_CHANNELS.transcriptChange, { sessionId, change });
+  });
+  const cleanupStatus = provider.onStatusChange(sessionId, (status) => {
+    broadcast(REMOTE_SESSION_CHANNELS.statusChange, { sessionId, status });
+  });
+  state.transcriptCleanups.set(sessionId, () => {
+    cleanupRemote();
+    cleanupStatus();
+  });
 }
 
 /**
@@ -214,6 +221,29 @@ export function disconnectRemoteSession(sessionId: string): void {
     getSyncProvider()?.disconnect(sessionId);
   }, 1500);
   state.pendingDisconnects.set(sessionId, timer);
+}
+
+/**
+ * Catch a session's transcript up to the host — reconnecting its room if the
+ * socket silently dropped (session sockets don't auto-reconnect). The controller
+ * calls this on window focus and a light poll so the viewed transcript never
+ * goes stale between live pushes. Actively viewing also means "keep alive", so
+ * cancel any debounced disconnect first.
+ */
+export async function resyncRemoteSession(sessionId: string): Promise<void> {
+  const pendingDisconnect = state.pendingDisconnects.get(sessionId);
+  if (pendingDisconnect) {
+    clearTimeout(pendingDisconnect);
+    state.pendingDisconnects.delete(sessionId);
+  }
+  const provider = getSyncProvider();
+  // Try an in-place catch-up on the live socket first. If it reports the socket
+  // has dropped (false), reconnect through connectRemoteSession so the transcript
+  // listener is re-registered on the fresh session object.
+  const caughtUp = provider?.resync ? await provider.resync(sessionId) : false;
+  if (!caughtUp) {
+    await connectRemoteSession(sessionId);
+  }
 }
 
 /**

@@ -1500,6 +1500,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('remote-sessions:connect', { sessionId }),
     disconnect: (sessionId: string) =>
       ipcRenderer.invoke('remote-sessions:disconnect', { sessionId }),
+    resync: (sessionId: string) =>
+      ipcRenderer.invoke('remote-sessions:resync', { sessionId }),
     sendPrompt: (sessionId: string, prompt: string) =>
       ipcRenderer.invoke('remote-sessions:send-prompt', { sessionId, prompt }),
     create: (request: {
