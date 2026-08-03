@@ -16,6 +16,7 @@ import { useAtomValue } from 'jotai';
 import { InteractivePromptWidget } from '@nimbalyst/runtime/ui/AgentTranscript/components/InteractivePromptWidget';
 import { CondensedRemoteTranscript } from './CondensedRemoteTranscript';
 import { buildSessionMarkdown } from './condensedTranscript';
+import { useControllerPrivacy, AUTO_BLUR_IDLE_MS, type ControllerPrivacySettings } from './controllerPrivacy';
 import {
   type PermissionRequestContent,
   type AskUserQuestionRequestContent,
@@ -116,6 +117,33 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   const [actionError, setActionError] = useState<string | null>(null);
   const [copiedAll, setCopiedAll] = useState(false);
   const [masked, setMasked] = useState(false);
+  const [showPrivacyMenu, setShowPrivacyMenu] = useState(false);
+  const { settings: privacy, toggle: togglePrivacy } = useControllerPrivacy();
+
+  // Auto-blur when you look away: mask on window blur, on the popover hiding, and
+  // after an idle stretch. Any keypress/click/scroll resets the idle timer.
+  useEffect(() => {
+    if (!privacy.autoBlurOnUnfocus) return;
+    const mask = () => setMasked(true);
+    let idle = window.setTimeout(mask, AUTO_BLUR_IDLE_MS);
+    const bump = () => {
+      window.clearTimeout(idle);
+      idle = window.setTimeout(mask, AUTO_BLUR_IDLE_MS);
+    };
+    const offHidden = window.electronAPI?.on?.('controller-popover:hidden', mask);
+    window.addEventListener('blur', mask);
+    window.addEventListener('keydown', bump, true);
+    window.addEventListener('pointerdown', bump, true);
+    window.addEventListener('wheel', bump, { passive: true });
+    return () => {
+      window.clearTimeout(idle);
+      if (typeof offHidden === 'function') offHidden();
+      window.removeEventListener('blur', mask);
+      window.removeEventListener('keydown', bump, true);
+      window.removeEventListener('pointerdown', bump, true);
+      window.removeEventListener('wheel', bump);
+    };
+  }, [privacy.autoBlurOnUnfocus]);
 
   // Connect on mount / session change; disconnect on unmount. The component is
   // keyed by sessionId in the parent, so this maps 1:1 to the open session.
@@ -281,6 +309,8 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   };
 
   const isExecuting = !!session?.isExecuting;
+  // Whole-transcript blur (as opposed to per-message hover-reveal).
+  const globalBlur = masked && !privacy.hoverReveal;
 
   // Export the whole session as clean Markdown — copy to the clipboard, or write
   // it to a file and open it in the OS default editor.
@@ -320,7 +350,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
             </span>
           )}
         </div>
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex items-center gap-1 shrink-0 relative">
           <button
             className="text-xs px-2 py-1 rounded"
             style={{ color: masked ? 'var(--nim-primary)' : 'var(--nim-text-muted)', border: '1px solid var(--nim-border)' }}
@@ -331,6 +361,22 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
           >
             {masked ? '🙈' : '👁'}
           </button>
+          <button
+            className="text-xs px-2 py-1 rounded"
+            style={{ color: showPrivacyMenu ? 'var(--nim-primary)' : 'var(--nim-text-muted)', border: '1px solid var(--nim-border)' }}
+            onClick={() => setShowPrivacyMenu((s) => !s)}
+            data-testid="remote-session-privacy-button"
+            title="Privacy settings"
+          >
+            ⚙
+          </button>
+          {showPrivacyMenu && (
+            <PrivacyMenu
+              settings={privacy}
+              onToggle={togglePrivacy}
+              onClose={() => setShowPrivacyMenu(false)}
+            />
+          )}
           <button
             className="text-xs px-2 py-1 rounded"
             style={{ color: 'var(--nim-text-muted)', border: '1px solid var(--nim-border)' }}
@@ -364,15 +410,26 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
         </div>
       </div>
 
-      {/* Transcript (optionally blurred for privacy — like a banking app; the
-          header eye toggles it, and clicking the blurred area reveals it). */}
+      {/* Transcript (optionally blurred for privacy — like a banking app). The
+          eye toggles masking; with hover-reveal on, messages blur individually
+          and reveal on hover, otherwise the whole transcript blurs and a click
+          reveals it. Secret-looking strings are redacted independently. */}
       <div
         className="flex-1 min-h-0 flex flex-col"
-        style={{ filter: masked ? 'blur(7px)' : undefined, transition: 'filter 120ms ease', cursor: masked ? 'pointer' : undefined }}
-        onClick={masked ? () => setMasked(false) : undefined}
-        title={masked ? 'Click to reveal' : undefined}
+        style={{
+          filter: globalBlur ? 'blur(7px)' : undefined,
+          transition: 'filter 120ms ease',
+          cursor: globalBlur ? 'pointer' : undefined,
+        }}
+        onClick={globalBlur ? () => setMasked(false) : undefined}
+        title={globalBlur ? 'Click to reveal' : undefined}
       >
-        <CondensedRemoteTranscript messages={viewMessages} isProcessing={isExecuting} />
+        <CondensedRemoteTranscript
+          messages={viewMessages}
+          isProcessing={isExecuting}
+          redact={privacy.redactSecrets}
+          perMessageBlur={masked && privacy.hoverReveal}
+        />
       </div>
 
       {/* Pending interactive prompt */}
@@ -422,5 +479,47 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
         </button>
       </div>
     </div>
+  );
+}
+
+/** Small dropdown of on/off toggles for the controller's privacy features. */
+function PrivacyMenu({
+  settings,
+  onToggle,
+  onClose,
+}: {
+  settings: ControllerPrivacySettings;
+  onToggle: (key: keyof ControllerPrivacySettings) => void;
+  onClose: () => void;
+}) {
+  const rows: Array<{ key: keyof ControllerPrivacySettings; label: string }> = [
+    { key: 'autoBlurOnUnfocus', label: 'Auto-blur when idle / unfocused' },
+    { key: 'hoverReveal', label: 'Hover to reveal (per message)' },
+    { key: 'redactSecrets', label: 'Redact secrets (keys, emails…)' },
+  ];
+  return (
+    <>
+      <div className="privacy-menu-backdrop fixed inset-0 z-20" onClick={onClose} />
+      <div
+        className="privacy-menu absolute right-0 top-full mt-1 z-30 rounded p-1 text-xs"
+        style={{ background: 'var(--nim-bg-secondary)', border: '1px solid var(--nim-border)', minWidth: 224 }}
+        data-testid="remote-session-privacy-menu"
+      >
+        {rows.map((r) => (
+          <button
+            key={r.key}
+            className="flex items-center gap-2 w-full text-left px-2 py-1.5 rounded hover:opacity-90"
+            style={{ color: 'var(--nim-text)' }}
+            onClick={() => onToggle(r.key)}
+            aria-pressed={settings[r.key]}
+          >
+            <span style={{ color: settings[r.key] ? 'var(--nim-primary)' : 'var(--nim-text-muted)' }}>
+              {settings[r.key] ? '☑' : '☐'}
+            </span>
+            <span className="flex-1">{r.label}</span>
+          </button>
+        ))}
+      </div>
+    </>
   );
 }

@@ -471,8 +471,19 @@ body[data-dev-mode="true"] .nav-quick-access::before {
 [data-controller-popover] .remote-sessions-list-header button,
 [data-controller-popover] .remote-session-transcript-header button,
 [data-controller-popover] .remote-sessions-list-header input,
-[data-controller-popover] .remote-session-transcript-header input {
+[data-controller-popover] .remote-session-transcript-header input,
+[data-controller-popover] .privacy-menu,
+[data-controller-popover] .privacy-menu-backdrop {
   -webkit-app-region: no-drag;
+}
+
+/* Hover-to-reveal privacy mode: each message blurred until pointed at. */
+[data-controller-popover] .condensed-pm-blur {
+  filter: blur(6px);
+  transition: filter 120ms ease;
+}
+[data-controller-popover] .condensed-pm-blur:hover {
+  filter: none;
 }
 
 /* Log-line transcript rhythm + dim gutter feel. */

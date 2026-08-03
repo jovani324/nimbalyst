@@ -6,7 +6,7 @@
  * runs of tool calls fold into a single chip. Nothing here drives the session —
  * it only renders the projected view messages the parent already holds.
  */
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { MarkdownRenderer } from '@nimbalyst/runtime/ui/AgentTranscript/components/MarkdownRenderer';
 import type { TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/transcript';
 import {
@@ -16,13 +16,22 @@ import {
   toolGroupHasError,
   toolChipLabel,
 } from './condensedTranscript';
+import { redactSecrets } from './controllerPrivacy';
+
+/** Provides the active text transform (identity, or secret-redaction) to rows. */
+const RedactContext = createContext<(s: string) => string>((s) => s);
+const useRedact = () => useContext(RedactContext);
 
 interface CondensedRemoteTranscriptProps {
   messages: TranscriptViewMessage[];
   isProcessing: boolean;
+  /** Mask secret-looking strings in rendered text. */
+  redact?: boolean;
+  /** Blur each message until hovered (hover-to-reveal privacy mode). */
+  perMessageBlur?: boolean;
 }
 
-export function CondensedRemoteTranscript({ messages, isProcessing }: CondensedRemoteTranscriptProps) {
+export function CondensedRemoteTranscript({ messages, isProcessing, redact, perMessageBlur }: CondensedRemoteTranscriptProps) {
   const blocks = useMemo(() => toCondensedBlocks(messages), [messages]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const toggle = (key: string) =>
@@ -58,27 +67,39 @@ export function CondensedRemoteTranscript({ messages, isProcessing }: CondensedR
     );
   }
 
+  const blockClass = perMessageBlur ? 'condensed-pm-blur' : undefined;
   return (
-    <div
-      ref={scrollRef}
-      onScroll={onScroll}
-      className="condensed-transcript flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-2"
-      data-testid="condensed-remote-transcript"
-    >
-      {blocks.map((block, i) => {
-        if (block.kind === 'toolGroup') {
-          return <ToolGroupRow key={`tg-${i}`} tools={block.tools} expandedSet={expanded} onToggle={toggle} />;
-        }
-        const m = block.message;
-        if (m.type === 'user_message') return <UserRow key={m.id} message={m} />;
-        if (m.type === 'assistant_message')
-          return <AssistantRow key={m.id} message={m} expanded={expanded.has(`a-${m.id}`)} onToggle={() => toggle(`a-${m.id}`)} />;
-        if (m.type === 'interactive_prompt') return <PromptChip key={m.id} />;
-        if (m.type === 'subagent')
-          return <SubagentRow key={m.id} message={m} expanded={expanded.has(`s-${m.id}`)} onToggle={() => toggle(`s-${m.id}`)} />;
-        return null;
-      })}
-    </div>
+    <RedactContext.Provider value={redact ? redactSecrets : (s) => s}>
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        className="condensed-transcript flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-2"
+        data-testid="condensed-remote-transcript"
+      >
+        {blocks.map((block, i) => {
+          let node;
+          if (block.kind === 'toolGroup') {
+            node = <ToolGroupRow tools={block.tools} expandedSet={expanded} onToggle={toggle} />;
+          } else {
+            const m = block.message;
+            if (m.type === 'user_message') node = <UserRow message={m} />;
+            else if (m.type === 'assistant_message')
+              node = <AssistantRow message={m} expanded={expanded.has(`a-${m.id}`)} onToggle={() => toggle(`a-${m.id}`)} />;
+            else if (m.type === 'interactive_prompt') node = <PromptChip />;
+            else if (m.type === 'subagent')
+              node = <SubagentRow message={m} expanded={expanded.has(`s-${m.id}`)} onToggle={() => toggle(`s-${m.id}`)} />;
+            else node = null;
+          }
+          if (!node) return null;
+          const key = block.kind === 'toolGroup' ? `tg-${block.tools[0]?.id ?? i}` : block.message.id;
+          return (
+            <div key={key} className={blockClass}>
+              {node}
+            </div>
+          );
+        })}
+      </div>
+    </RedactContext.Provider>
   );
 }
 
@@ -91,6 +112,7 @@ function RoleLabel({ children, color }: { children: string; color: string }) {
 }
 
 function UserRow({ message }: { message: TranscriptViewMessage }) {
+  const redact = useRedact();
   return (
     <div
       className="condensed-user rounded px-2.5 py-2"
@@ -101,7 +123,7 @@ function UserRow({ message }: { message: TranscriptViewMessage }) {
         className="mt-1 text-sm whitespace-pre-wrap break-words select-text leading-snug"
         style={{ color: 'var(--nim-text)' }}
       >
-        {message.text?.trim()}
+        {redact(message.text?.trim() ?? '')}
       </div>
     </div>
   );
@@ -116,7 +138,8 @@ function AssistantRow({
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const summary = summarizeAssistant(message.text);
+  const redact = useRedact();
+  const summary = redact(summarizeAssistant(message.text));
   const [copied, setCopied] = useState(false);
   const copy = (e: MouseEvent) => {
     e.stopPropagation();
@@ -153,7 +176,7 @@ function AssistantRow({
       </div>
       {expanded && (
         <div className="pl-5 pt-1 text-sm select-text leading-relaxed" style={{ color: 'var(--nim-text)' }}>
-          <MarkdownRenderer content={message.text ?? ''} messageId={String(message.id)} />
+          <MarkdownRenderer content={redact(message.text ?? '')} messageId={String(message.id)} />
         </div>
       )}
     </div>
@@ -199,17 +222,18 @@ function ToolGroupRow({
 }
 
 function ToolDetail({ tool }: { tool: TranscriptViewMessage }) {
+  const redact = useRedact();
   const t = tool.toolCall;
   const isError = t?.status === 'error' || t?.isError;
   return (
     <div className="text-[12px]">
-      <div style={{ color: isError ? 'var(--nim-error)' : 'var(--nim-text)' }}>{toolChipLabel(tool)}</div>
+      <div style={{ color: isError ? 'var(--nim-error)' : 'var(--nim-text)' }}>{redact(toolChipLabel(tool))}</div>
       {t?.result && (
         <pre
           className="mt-0.5 max-h-40 overflow-auto rounded px-2 py-1 text-[11px] whitespace-pre-wrap break-words select-text"
           style={{ background: 'var(--nim-bg)', color: 'var(--nim-text-muted)', border: '1px solid var(--nim-border)' }}
         >
-          {t.result.slice(0, 4000)}
+          {redact(t.result.slice(0, 4000))}
         </pre>
       )}
     </div>
