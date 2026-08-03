@@ -62,7 +62,7 @@ export function CondensedRemoteTranscript({ messages, isProcessing }: CondensedR
     <div
       ref={scrollRef}
       onScroll={onScroll}
-      className="condensed-transcript flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-1.5"
+      className="condensed-transcript flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-2"
       data-testid="condensed-remote-transcript"
     >
       {blocks.map((block, i) => {
@@ -92,9 +92,15 @@ function RoleLabel({ children, color }: { children: string; color: string }) {
 
 function UserRow({ message }: { message: TranscriptViewMessage }) {
   return (
-    <div className="condensed-user flex gap-2 items-start rounded px-2 py-1.5" style={{ background: 'var(--nim-bg-secondary)' }}>
+    <div
+      className="condensed-user rounded px-2.5 py-2"
+      style={{ background: 'var(--nim-bg-secondary)', borderLeft: '2px solid var(--nim-primary)' }}
+    >
       <RoleLabel color="var(--nim-primary)">you</RoleLabel>
-      <div className="min-w-0 text-sm whitespace-pre-wrap break-words select-text" style={{ color: 'var(--nim-text)' }}>
+      <div
+        className="mt-1 text-sm whitespace-pre-wrap break-words select-text leading-snug"
+        style={{ color: 'var(--nim-text)' }}
+      >
         {message.text?.trim()}
       </div>
     </div>
@@ -111,7 +117,6 @@ function AssistantRow({
   onToggle: () => void;
 }) {
   const summary = summarizeAssistant(message.text);
-  const hasBody = !!message.text?.trim();
   const [copied, setCopied] = useState(false);
   const copy = (e: MouseEvent) => {
     e.stopPropagation();
@@ -123,37 +128,32 @@ function AssistantRow({
     }
   };
   return (
-    <div className="condensed-assistant rounded px-2 py-1">
+    <div className="condensed-assistant rounded px-1 py-0.5">
       <div
-        className="flex gap-2 items-start cursor-pointer group"
-        onClick={hasBody ? onToggle : undefined}
+        className="flex gap-2 items-baseline cursor-pointer group"
+        onClick={onToggle}
         data-testid="condensed-assistant-row"
       >
-        <span
-          className="shrink-0 mt-0.5 text-[11px] select-none"
-          style={{ color: 'var(--nim-text-muted)', width: 10 }}
-        >
-          {hasBody ? (expanded ? '▾' : '▸') : '·'}
+        <span className="shrink-0 text-[11px] select-none" style={{ color: 'var(--nim-text-muted)', width: 10 }}>
+          {expanded ? '▾' : '▸'}
         </span>
         <RoleLabel color="var(--nim-text-muted)">claude</RoleLabel>
         {!expanded && (
-          <span className="min-w-0 flex-1 truncate text-sm" style={{ color: 'var(--nim-text)' }}>
-            {summary || <span style={{ color: 'var(--nim-text-muted)' }}>(no text)</span>}
+          <span className="min-w-0 flex-1 truncate text-sm leading-snug" style={{ color: 'var(--nim-text)' }}>
+            {summary}
           </span>
         )}
-        {hasBody && (
-          <button
-            className="condensed-copy shrink-0 text-[11px] opacity-0 group-hover:opacity-100 px-1 rounded"
-            style={{ color: 'var(--nim-text-muted)' }}
-            onClick={copy}
-            title="Copy message"
-          >
-            {copied ? 'copied' : 'copy'}
-          </button>
-        )}
+        <button
+          className="condensed-copy shrink-0 text-[11px] opacity-0 group-hover:opacity-100 px-1 rounded"
+          style={{ color: 'var(--nim-text-muted)' }}
+          onClick={copy}
+          title="Copy message"
+        >
+          {copied ? 'copied' : 'copy'}
+        </button>
       </div>
-      {expanded && hasBody && (
-        <div className="pl-5 pt-1 text-sm select-text" style={{ color: 'var(--nim-text)' }}>
+      {expanded && (
+        <div className="pl-5 pt-1 text-sm select-text leading-relaxed" style={{ color: 'var(--nim-text)' }}>
           <MarkdownRenderer content={message.text ?? ''} messageId={String(message.id)} />
         </div>
       )}

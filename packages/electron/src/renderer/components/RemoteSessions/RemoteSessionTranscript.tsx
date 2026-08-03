@@ -133,7 +133,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
     window.addEventListener('focus', resync);
     document.addEventListener('visibilitychange', onVisibility);
     const offPopoverShown = window.electronAPI?.on?.('controller-popover:shown', resync);
-    const poll = window.setInterval(resync, 8000);
+    const poll = window.setInterval(resync, 4000);
     return () => {
       window.removeEventListener('focus', resync);
       document.removeEventListener('visibilitychange', onVisibility);
@@ -341,7 +341,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
             maxHeight: 160,
           }}
           rows={2}
-          placeholder="Send a message to this session on the host…"
+          placeholder="Reply to the host…  (Enter to send)"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleComposerKeyDown}

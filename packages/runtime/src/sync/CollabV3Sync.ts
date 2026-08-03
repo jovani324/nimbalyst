@@ -1639,6 +1639,20 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       const decrypted = await decryptMessage(broadcast.message, session.encryptionKey);
       decrypted.sessionId = sessionId;
 
+      // A live message decrypted fine but there's nobody to hand it to: the
+      // consumer's listener was orphaned (e.g. a resubscribe replaced this
+      // session object after the consumer attached). Do NOT advance lastSequence
+      // in that case — the message is effectively undelivered, and leaving the
+      // sequence where it is lets the next syncRequest{sinceSeq} re-fetch it once
+      // a listener re-attaches. Advancing here would strand the gap forever.
+      if (session.changeListeners.size === 0) {
+        console.warn(
+          `[CollabV3] messageBroadcast for ${sessionId} seq=${broadcast.message.sequence} ` +
+          `arrived with no transcript listeners attached — deferring (will re-fetch on resync)`,
+        );
+        return;
+      }
+
       // Update sequence tracking
       session.lastSequence = Math.max(session.lastSequence, broadcast.message.sequence);
 

@@ -180,14 +180,27 @@ export async function connectRemoteSession(sessionId: string): Promise<void> {
   // registered synchronously after the await, before the syncResponse (a later
   // network macrotask) is processed, so no backlog is missed.
   await provider.connect(sessionId);
+  ensureTranscriptListener(sessionId);
+}
 
-  // Always (re)register the transcript listener against the CURRENT session
-  // object. onRemoteChange/onStatusChange attach to that object's listener sets;
-  // an earlier socket drop deletes the provider session (and its sets) while our
-  // cleanup entry lingers stale, so re-registering is required to re-attach to
-  // the fresh session after a reconnect. Clearing the prior entry first keeps
-  // already-connected reuse from stacking duplicate listeners (both cleanups are
-  // no-ops on a deleted session, so reconnects don't leak).
+/**
+ * Attach (or re-attach) the transcript + status listeners to the CURRENT
+ * provider session object for `sessionId`. This MUST be idempotent and MUST run
+ * against whatever session object exists right now:
+ *
+ * onRemoteChange/onStatusChange add callbacks to that object's listener sets. A
+ * provider resubscribe after an index reconnect — or a socket drop — replaces
+ * the session object, orphaning any listener attached to the old one. When that
+ * happens the socket still receives the host's live `messageBroadcast`s, decrypts
+ * them, and emits to an EMPTY listener set: the bytes arrive but nothing reaches
+ * the renderer and the transcript silently stalls. So every connect AND every
+ * resync re-asserts the listener here. Clearing the prior entry first keeps
+ * already-attached reuse from stacking duplicates (a cleanup on a since-replaced
+ * session is a harmless no-op).
+ */
+function ensureTranscriptListener(sessionId: string): void {
+  const provider = getSyncProvider();
+  if (!provider) return;
   const priorCleanup = state.transcriptCleanups.get(sessionId);
   if (priorCleanup) priorCleanup();
   const cleanupRemote = provider.onRemoteChange(sessionId, (change) => {
@@ -237,13 +250,22 @@ export async function resyncRemoteSession(sessionId: string): Promise<void> {
     state.pendingDisconnects.delete(sessionId);
   }
   const provider = getSyncProvider();
-  // Try an in-place catch-up on the live socket first. If it reports the socket
-  // has dropped (false), reconnect through connectRemoteSession so the transcript
-  // listener is re-registered on the fresh session object.
-  const caughtUp = provider?.resync ? await provider.resync(sessionId) : false;
-  if (!caughtUp) {
+  if (!provider) return;
+
+  // If the socket dropped, a full reconnect re-registers the listener and
+  // re-syncs the whole backlog via onopen.
+  if (!provider.isConnected(sessionId)) {
     await connectRemoteSession(sessionId);
+    return;
   }
+
+  // Socket is live. Re-assert our transcript listener FIRST: a provider
+  // resubscribe (index reconnect) may have replaced the session object and
+  // orphaned it, in which case live broadcasts have been silently landing on an
+  // empty listener set. Then catch up on the open socket so anything missed
+  // while the listener was detached is re-delivered to the now-attached listener.
+  ensureTranscriptListener(sessionId);
+  if (provider.resync) await provider.resync(sessionId);
 }
 
 /**

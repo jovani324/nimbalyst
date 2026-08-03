@@ -35,7 +35,15 @@ export function toCondensedBlocks(messages: TranscriptViewMessage[]): CondensedB
       continue;
     }
     flush();
+    // Drop noise the controller shouldn't have to read: system/turn markers,
+    // standalone progress, and empty prose turns (an assistant turn that was
+    // pure tool-use, or a message whose text didn't decrypt) — those rendered as
+    // "(no text)" clutter otherwise. Blocks with their own UI (tool groups,
+    // interactive prompts, sub-agents) always pass through.
     if (m.type === 'system_message' || m.type === 'turn_ended' || m.type === 'tool_progress') {
+      continue;
+    }
+    if ((m.type === 'user_message' || m.type === 'assistant_message') && !m.text?.trim()) {
       continue;
     }
     blocks.push({ kind: 'message', message: m });

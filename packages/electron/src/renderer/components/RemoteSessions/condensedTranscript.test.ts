@@ -55,6 +55,17 @@ describe('toCondensedBlocks', () => {
     const firstGroup = blocks[2];
     expect(firstGroup.kind === 'toolGroup' && firstGroup.tools).toHaveLength(2);
   });
+
+  it('drops empty-text prose turns (the "(no text)" clutter)', () => {
+    const blocks = toCondensedBlocks([
+      msg({ type: 'assistant_message', text: '' }),
+      msg({ type: 'assistant_message', text: '   ' }),
+      msg({ type: 'user_message', text: 'still here' }),
+      msg({ type: 'assistant_message', text: 'reply' }),
+    ]);
+    expect(blocks).toHaveLength(2);
+    expect(blocks.every((b) => b.kind === 'message')).toBe(true);
+  });
 });
 
 describe('summarizeAssistant', () => {
