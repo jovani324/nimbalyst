@@ -17,9 +17,25 @@ import { AISessionsRepository } from '@nimbalyst/runtime';
 import { getSyncProvider } from '../SyncManager';
 import { logger } from '../../utils/logger';
 
+/**
+ * Full tool-permission payload synced to remote devices so they can render the
+ * approve UI and answer it (controller / mobile). Additive; other clients ignore it.
+ */
+export interface SyncedPendingPromptData {
+  promptType: 'permission_request';
+  requestId: string;
+  toolName: string;
+  rawCommand: string;
+  pattern: string;
+  patternDisplayName: string;
+  isDestructive: boolean;
+  warnings: string[];
+}
+
 export async function setSessionPendingPrompt(
   sessionId: string,
   hasPendingPrompt: boolean,
+  promptData?: SyncedPendingPromptData | null,
 ): Promise<void> {
   if (!sessionId) return;
 
@@ -37,9 +53,15 @@ export async function setSessionPendingPrompt(
   try {
     const sp = getSyncProvider();
     if (sp) {
+      const metadata: Record<string, unknown> = { hasPendingPrompt, updatedAt: Date.now() };
+      // Attach the full payload when given (a pending permission); clear it (null)
+      // when the prompt resolves. Leave it untouched otherwise so an unrelated
+      // pending-state toggle doesn't wipe a still-open prompt on the receiver.
+      if (promptData !== undefined) metadata.pendingPromptData = promptData;
+      else if (!hasPendingPrompt) metadata.pendingPromptData = null;
       sp.pushChange(sessionId, {
         type: 'metadata_updated',
-        metadata: { hasPendingPrompt, updatedAt: Date.now() } as any,
+        metadata: metadata as any,
       });
     }
   } catch (err) {

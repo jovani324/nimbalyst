@@ -509,6 +509,20 @@ export interface SyncedSessionMetadata {
   };
   /** Whether there are pending interactive prompts (permissions, questions, plan approvals, git commits) */
   hasPendingPrompt?: boolean;
+  /**
+   * Full payload of a pending tool-permission prompt so a remote device can render
+   * the approve UI and answer it. `null` clears it. Additive; older clients ignore it.
+   */
+  pendingPromptData?: {
+    promptType: 'permission_request';
+    requestId: string;
+    toolName: string;
+    rawCommand: string;
+    pattern: string;
+    patternDisplayName: string;
+    isDestructive: boolean;
+    warnings: string[];
+  } | null;
   /** Kanban phase: backlog, planning, implementing, validating, complete */
   phase?: string;
   /** Arbitrary tags for categorization */

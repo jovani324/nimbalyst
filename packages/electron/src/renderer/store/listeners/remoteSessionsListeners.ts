@@ -12,6 +12,8 @@ import {
   applyRemoteIndexChangeAtom,
   appendRemoteMessageAtom,
   setRemoteConnectionStatusAtom,
+  setRemotePendingPromptAtom,
+  type RemotePendingPromptData,
 } from '../atoms/remoteSessions';
 
 let initialized = false;
@@ -36,9 +38,18 @@ export function initRemoteSessionsListeners(): () => void {
     api.onTranscriptChange(({ sessionId, change }) => {
       if (change.type === 'message_added') {
         store.set(appendRemoteMessageAtom, { sessionId, message: change.message });
+        return;
       }
-      // metadata_updated / session_deleted are reflected via the index-change
-      // stream and the session list; no transcript mutation needed here.
+      if (change.type === 'metadata_updated') {
+        // The host syncs a pending tool-permission payload here so the controller
+        // can render the approve UI (SDK sessions surface permissions only this
+        // way). Only apply when the field is present: `null` clears, an object
+        // sets, and `undefined` means "unrelated update" — leave it as-is.
+        const metadata = (change as { metadata?: { pendingPromptData?: RemotePendingPromptData } }).metadata;
+        if (metadata && 'pendingPromptData' in metadata) {
+          store.set(setRemotePendingPromptAtom, { sessionId, data: metadata.pendingPromptData ?? null });
+        }
+      }
     }),
   );
 

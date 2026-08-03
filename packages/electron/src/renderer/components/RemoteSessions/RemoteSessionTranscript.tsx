@@ -27,7 +27,11 @@ import {
   type RawMessage,
   type TranscriptViewMessage,
 } from '@nimbalyst/runtime/ai/server/transcript';
-import { remoteSessionsAtom, remoteTranscriptAtomFamily } from '../../store/atoms/remoteSessions';
+import {
+  remoteSessionsAtom,
+  remoteTranscriptAtomFamily,
+  remotePendingPromptAtomFamily,
+} from '../../store/atoms/remoteSessions';
 
 type ViewMessages = Awaited<ReturnType<typeof projectRawMessagesToViewMessages>>;
 
@@ -183,7 +187,34 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
       });
   }, [rawMessages, provider]);
 
-  const pendingPrompt = useMemo(() => findPendingPrompt(viewMessages), [viewMessages]);
+  // Two sources for a pending prompt: (1) the projected transcript, which works
+  // for sessions that write the prompt into the message stream (e.g. CLI), and
+  // (2) a payload the host syncs via session metadata, which is the ONLY way SDK
+  // tool-permissions reach a remote device. Prefer the transcript one; fall back
+  // to the synced payload.
+  const syncedPending = useAtomValue(remotePendingPromptAtomFamily(sessionId));
+  const pendingPrompt = useMemo<PendingPrompt>(() => {
+    const fromTranscript = findPendingPrompt(viewMessages);
+    if (fromTranscript) return fromTranscript;
+    if (syncedPending && syncedPending.promptType === 'permission_request') {
+      return {
+        promptType: 'permission_request',
+        content: {
+          type: 'permission_request',
+          requestId: syncedPending.requestId,
+          toolName: syncedPending.toolName,
+          rawCommand: syncedPending.rawCommand,
+          pattern: syncedPending.pattern,
+          patternDisplayName: syncedPending.patternDisplayName,
+          isDestructive: syncedPending.isDestructive,
+          warnings: syncedPending.warnings,
+          timestamp: 0,
+          status: 'pending',
+        },
+      };
+    }
+    return null;
+  }, [viewMessages, syncedPending]);
 
   const handleSend = async () => {
     const text = draft.trim();

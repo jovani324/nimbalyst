@@ -816,8 +816,12 @@ export class MessageStreamingHandler {
     // for why we persist locally: the in-memory atom can desync from reality
     // if a resolve event is missed (renderer reload, HMR, late delivery),
     // and the only recovery is rehydrating from the DB on next list refresh.
-    const syncPendingPrompt = (sessionId: string, hasPendingPrompt: boolean) => {
-      void setSessionPendingPrompt(sessionId, hasPendingPrompt);
+    const syncPendingPrompt = (
+      sessionId: string,
+      hasPendingPrompt: boolean,
+      promptData?: import('./pendingPromptPersistence').SyncedPendingPromptData | null,
+    ) => {
+      void setSessionPendingPrompt(sessionId, hasPendingPrompt, promptData);
     };
 
     // Listen for ExitPlanMode confirmation requests and forward to renderer
@@ -920,7 +924,19 @@ export class MessageStreamingHandler {
     const onToolPermissionPending = async (data: { requestId: string; sessionId: string; workspacePath: string; request: any; timestamp: number }) => {
       logger.main.info('[AIService] Tool permission requested:', data.requestId);
       safeSend(event, 'ai:toolPermission', data);
-      syncPendingPrompt(data.sessionId, true);
+      // Sync the full permission payload so a remote device (controller/mobile)
+      // can render the approve UI and answer it — not just know a prompt is pending.
+      const req = data.request ?? {};
+      syncPendingPrompt(data.sessionId, true, {
+        promptType: 'permission_request',
+        requestId: data.requestId,
+        toolName: typeof req.toolName === 'string' ? req.toolName : '',
+        rawCommand: typeof req.rawCommand === 'string' ? req.rawCommand : '',
+        pattern: typeof req.pattern === 'string' ? req.pattern : '',
+        patternDisplayName: typeof req.patternDisplayName === 'string' ? req.patternDisplayName : '',
+        isDestructive: !!req.isDestructive,
+        warnings: Array.isArray(req.warnings) ? req.warnings : [],
+      });
       TrayManager.getInstance().onPromptCreated(data.sessionId);
 
       // Update session status so all windows show the pending indicator

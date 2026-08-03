@@ -38,6 +38,35 @@ export const remoteConnectionStatusAtomFamily = atomFamily((_sessionId: string) 
   atom<{ connected: boolean }>({ connected: false }),
 );
 
+/**
+ * A pending tool-permission prompt synced from the host (via session metadata),
+ * so the controller can render the approve UI and answer it. Null when none.
+ * SDK sessions surface permission prompts ONLY through this channel (they don't
+ * write them into the transcript), so this is the controller's source of truth
+ * for those.
+ */
+export type RemotePendingPromptData = {
+  promptType: 'permission_request';
+  requestId: string;
+  toolName: string;
+  rawCommand: string;
+  pattern: string;
+  patternDisplayName: string;
+  isDestructive: boolean;
+  warnings: string[];
+} | null;
+
+export const remotePendingPromptAtomFamily = atomFamily((_sessionId: string) =>
+  atom<RemotePendingPromptData>(null),
+);
+
+export const setRemotePendingPromptAtom = atom(
+  null,
+  (get, set, payload: { sessionId: string; data: RemotePendingPromptData }) => {
+    set(remotePendingPromptAtomFamily(payload.sessionId), payload.data);
+  },
+);
+
 // === Derived selectors ===
 
 /** Non-archived sessions grouped by projectId, each group sorted by recency. */

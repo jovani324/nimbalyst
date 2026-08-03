@@ -563,6 +563,23 @@ async function decryptTitle(
  * The server never reads this — only clients encrypt/decrypt it.
  * Add new display-only fields here without touching the server.
  */
+/**
+ * Full payload for a pending tool-permission prompt, carried inside the encrypted
+ * ClientMetadata so a remote device (controller / mobile) can render the approve
+ * UI and answer it — not just know a prompt is pending. Additive: older clients
+ * that don't understand this field simply ignore it. `null` clears it on resolve.
+ */
+export interface SyncedPendingPrompt {
+  promptType: 'permission_request';
+  requestId: string;
+  toolName: string;
+  rawCommand: string;
+  pattern: string;
+  patternDisplayName: string;
+  isDestructive: boolean;
+  warnings: string[];
+}
+
 interface ClientMetadata {
   currentContext?: {
     tokens: number;
@@ -570,6 +587,8 @@ interface ClientMetadata {
   };
   /** Whether there are pending interactive prompts (permissions, questions, plan approvals, git commits) */
   hasPendingPrompt?: boolean;
+  /** Full pending tool-permission payload for remote answering (controller/mobile). */
+  pendingPromptData?: SyncedPendingPrompt | null;
   /** Kanban phase: backlog, planning, implementing, validating, complete */
   phase?: string;
   /** Arbitrary tags for categorization */
@@ -865,6 +884,8 @@ interface CachedSessionIndex {
   };
   /** Whether there are pending interactive prompts (permissions or questions) waiting for response */
   hasPendingPrompt?: boolean;
+  /** Full pending tool-permission payload for remote answering (controller/mobile). */
+  pendingPromptData?: SyncedPendingPrompt | null;
   /** Kanban phase: backlog, planning, implementing, validating, complete */
   phase?: string;
   /** Arbitrary tags for categorization */
@@ -1699,6 +1720,12 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         const clientMeta = await decryptClientMetadata(broadcast.metadata.encryptedClientMetadata, broadcast.metadata.clientMetadataIv, session.encryptionKey);
         metadata.currentContext = clientMeta.currentContext;
         metadata.hasPendingPrompt = clientMeta.hasPendingPrompt;
+        // Only apply when present (null clears, an object sets). An unrelated
+        // metadata update carries pendingPromptData: undefined, which must NOT
+        // clear a still-pending prompt on the receiver.
+        if (clientMeta.pendingPromptData !== undefined) {
+          metadata.pendingPromptData = clientMeta.pendingPromptData;
+        }
         if (clientMeta.draftInput !== undefined) metadata.draftInput = clientMeta.draftInput;
         if (clientMeta.draftUpdatedAt !== undefined) metadata.draftUpdatedAt = clientMeta.draftUpdatedAt;
       } catch (err) {
@@ -3274,6 +3301,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
           }
           const hasClientMetaFields = ('currentContext' in change.metadata && change.metadata.currentContext) ||
             ('hasPendingPrompt' in change.metadata) ||
+            ('pendingPromptData' in change.metadata) ||
             ('phase' in change.metadata) ||
             ('tags' in change.metadata) ||
             ('draftInput' in change.metadata) ||
@@ -3283,6 +3311,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
             const clientMeta: ClientMetadata = {
               currentContext: ('currentContext' in change.metadata ? change.metadata.currentContext : cached?.currentContext) || undefined,
               hasPendingPrompt: 'hasPendingPrompt' in change.metadata ? change.metadata.hasPendingPrompt : cached?.hasPendingPrompt,
+              pendingPromptData: 'pendingPromptData' in change.metadata ? (change.metadata as any).pendingPromptData : cached?.pendingPromptData,
               phase: 'phase' in change.metadata ? (change.metadata as any).phase : cached?.phase,
               tags: 'tags' in change.metadata ? (change.metadata as any).tags : cached?.tags,
               draftInput: 'draftInput' in change.metadata ? (change.metadata as any).draftInput : cached?.draftInput,
