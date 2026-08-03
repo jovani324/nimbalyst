@@ -206,9 +206,23 @@ function ensureTranscriptListener(sessionId: string): void {
   const cleanupRemote = provider.onRemoteChange(sessionId, (change) => {
     if (change.type === 'message_added') {
       const m = change.message as { source?: string; direction?: string; content?: string };
-      log.info(
-        `[CTRLDBG] msg ${sessionId} src=${m.source} dir=${m.direction} len=${m.content?.length ?? 0} head=${JSON.stringify(String(m.content ?? '').slice(0, 160))}`,
-      );
+      let info = `src=${m.source} dir=${m.direction} len=${m.content?.length ?? 0}`;
+      try {
+        const p = JSON.parse(String(m.content ?? '')) as {
+          type?: string;
+          subtype?: string;
+          message?: { id?: string; content?: Array<{ type?: string; text?: string; thinking?: string }> };
+        };
+        if (p.type === 'assistant' && Array.isArray(p.message?.content)) {
+          const blocks = p.message!.content.map((b) => `${b.type}:${(b.text ?? b.thinking ?? '').length}`);
+          info += ` assistantId=${p.message!.id} blocks=[${blocks.join(', ')}]`;
+        } else {
+          info += ` type=${p.type} sub=${p.subtype ?? ''}`;
+        }
+      } catch {
+        info += ` (non-json)`;
+      }
+      log.info(`[CTRLDBG] msg ${sessionId} ${info}`);
     }
     broadcast(REMOTE_SESSION_CHANNELS.transcriptChange, { sessionId, change });
   });
