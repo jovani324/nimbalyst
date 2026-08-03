@@ -27,6 +27,7 @@ import path from 'node:path';
 import { app, shell } from 'electron';
 import { safeHandle } from '../utils/ipcRegistry';
 import { isControllerMode } from '../utils/store';
+import { setControllerPopoverOpacity } from '../window/ControllerPopoverWindow';
 import {
   listRemoteSessions,
   connectRemoteSession,
@@ -44,6 +45,11 @@ import {
 export function registerRemoteSessionHandlers() {
   safeHandle('remote-sessions:is-controller', () => {
     return { controllerMode: isControllerMode() };
+  });
+
+  safeHandle('controller-popover:set-opacity', (_event, opacity: number) => {
+    setControllerPopoverOpacity(typeof opacity === 'number' ? opacity : 1);
+    return { ok: true };
   });
 
   safeHandle('remote-sessions:list', async () => {

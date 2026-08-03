@@ -18,6 +18,13 @@ import { CondensedRemoteTranscript } from './CondensedRemoteTranscript';
 import { buildSessionMarkdown } from './condensedTranscript';
 import { useControllerPrivacy, AUTO_BLUR_IDLE_MS, type ControllerPrivacySettings } from './controllerPrivacy';
 import {
+  useControllerAppearance,
+  THEMES,
+  OPACITY_STEPS,
+  type ControllerAppearance,
+  type ControllerTheme,
+} from './controllerAppearance';
+import {
   type PermissionRequestContent,
   type AskUserQuestionRequestContent,
   type PermissionResponseContent,
@@ -118,7 +125,9 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   const [copiedAll, setCopiedAll] = useState(false);
   const [masked, setMasked] = useState(false);
   const [showPrivacyMenu, setShowPrivacyMenu] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const { settings: privacy, toggle: togglePrivacy } = useControllerPrivacy();
+  const { appearance, setTheme, setOpacity } = useControllerAppearance();
 
   // Auto-blur when you look away: mask on window blur, on the popover hiding, and
   // after an idle stretch. Any keypress/click/scroll resets the idle timer.
@@ -312,6 +321,21 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   // Whole-transcript blur (as opposed to per-message hover-reveal).
   const globalBlur = masked && !privacy.hoverReveal;
 
+  // Force a fresh pull of this session's latest state (transcript + queued/pending
+  // status): reconnect + full resync so the host re-broadcasts everything.
+  const handleRefresh = async () => {
+    const api = window.electronAPI?.remoteSessions;
+    if (!api) return;
+    setRefreshing(true);
+    try {
+      await api.resync(sessionId);
+    } catch {
+      /* transient */
+    } finally {
+      setTimeout(() => setRefreshing(false), 400);
+    }
+  };
+
   // Export the whole session as clean Markdown — copy to the clipboard, or write
   // it to a file and open it in the OS default editor.
   const handleCopyMarkdown = async () => {
@@ -353,6 +377,16 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
         <div className="flex items-center gap-1 shrink-0 relative">
           <button
             className="text-xs px-2 py-1 rounded"
+            style={{ color: 'var(--nim-text-muted)', border: '1px solid var(--nim-border)' }}
+            onClick={() => void handleRefresh()}
+            disabled={refreshing}
+            data-testid="remote-session-refresh-button"
+            title="Refresh — pull the latest state from the host"
+          >
+            {refreshing ? '…' : '⟳'}
+          </button>
+          <button
+            className="text-xs px-2 py-1 rounded"
             style={{ color: masked ? 'var(--nim-primary)' : 'var(--nim-text-muted)', border: '1px solid var(--nim-border)' }}
             onClick={() => setMasked((m) => !m)}
             data-testid="remote-session-mask-button"
@@ -371,9 +405,12 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
             ⚙
           </button>
           {showPrivacyMenu && (
-            <PrivacyMenu
+            <ControllerSettingsMenu
               settings={privacy}
               onToggle={togglePrivacy}
+              appearance={appearance}
+              onTheme={setTheme}
+              onOpacity={setOpacity}
               onClose={() => setShowPrivacyMenu(false)}
             />
           )}
@@ -482,14 +519,20 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   );
 }
 
-/** Small dropdown of on/off toggles for the controller's privacy features. */
-function PrivacyMenu({
+/** Dropdown: appearance (theme + transparency) and privacy toggles. */
+function ControllerSettingsMenu({
   settings,
   onToggle,
+  appearance,
+  onTheme,
+  onOpacity,
   onClose,
 }: {
   settings: ControllerPrivacySettings;
   onToggle: (key: keyof ControllerPrivacySettings) => void;
+  appearance: ControllerAppearance;
+  onTheme: (theme: ControllerTheme) => void;
+  onOpacity: (opacity: number) => void;
   onClose: () => void;
 }) {
   const rows: Array<{ key: keyof ControllerPrivacySettings; label: string }> = [
@@ -497,14 +540,55 @@ function PrivacyMenu({
     { key: 'hoverReveal', label: 'Hover to reveal (per message)' },
     { key: 'redactSecrets', label: 'Redact secrets (keys, emails…)' },
   ];
+  const heading = (text: string) => (
+    <div className="px-2 pt-2 pb-1 text-[10px] uppercase tracking-wide" style={{ color: 'var(--nim-text-muted)' }}>
+      {text}
+    </div>
+  );
   return (
     <>
       <div className="privacy-menu-backdrop fixed inset-0 z-20" onClick={onClose} />
       <div
         className="privacy-menu absolute right-0 top-full mt-1 z-30 rounded p-1 text-xs"
-        style={{ background: 'var(--nim-bg-secondary)', border: '1px solid var(--nim-border)', minWidth: 224 }}
-        data-testid="remote-session-privacy-menu"
+        style={{ background: 'var(--nim-bg-secondary)', border: '1px solid var(--nim-border)', minWidth: 236 }}
+        data-testid="remote-session-settings-menu"
       >
+        {heading('Look')}
+        <div className="flex flex-wrap gap-1 px-2 pb-1">
+          {THEMES.map((t) => (
+            <button
+              key={t.id}
+              className="px-2 py-1 rounded"
+              style={{
+                border: '1px solid var(--nim-border)',
+                background: appearance.theme === t.id ? 'var(--nim-bg-selected)' : 'transparent',
+                color: appearance.theme === t.id ? 'var(--nim-primary)' : 'var(--nim-text)',
+              }}
+              onClick={() => onTheme(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-1 px-2 pb-1">
+          <span style={{ color: 'var(--nim-text-muted)' }}>Opacity</span>
+          {OPACITY_STEPS.map((o) => (
+            <button
+              key={o}
+              className="px-1.5 py-0.5 rounded"
+              style={{
+                border: '1px solid var(--nim-border)',
+                background: appearance.opacity === o ? 'var(--nim-bg-selected)' : 'transparent',
+                color: appearance.opacity === o ? 'var(--nim-primary)' : 'var(--nim-text)',
+              }}
+              onClick={() => onOpacity(o)}
+            >
+              {o}%
+            </button>
+          ))}
+        </div>
+        <div className="my-1 h-px" style={{ background: 'var(--nim-border)' }} />
+        {heading('Privacy')}
         {rows.map((r) => (
           <button
             key={r.key}

@@ -434,6 +434,58 @@ body[data-dev-mode="true"] .nav-quick-access::before {
   background: #0a0d13;
 }
 
+/* --- Controller disguise themes: re-skin the popover so it doesn't obviously
+   read as "an app". Each overrides the --nim-* palette; the window opacity is a
+   separate control (main-process setOpacity). Midnight is the default (no rule). */
+:root[data-controller-popover][data-controller-theme='terminal'] {
+  background: #000000;
+}
+[data-controller-popover][data-controller-theme='terminal'] {
+  --nim-bg: #000000;
+  --nim-bg-secondary: #071807;
+  --nim-text: #35ff6a;
+  --nim-text-muted: #1f9f3f;
+  --nim-border: #0f3f1f;
+  --nim-primary: #9dff4d;
+  --nim-bg-selected: #0e2c14;
+  --nim-success: #35ff6a;
+  --nim-warning: #ffcc33;
+  --nim-error: #ff5f56;
+}
+
+:root[data-controller-popover][data-controller-theme='editor'] {
+  background: #1e1e1e;
+}
+[data-controller-popover][data-controller-theme='editor'] {
+  --nim-bg: #1e1e1e;
+  --nim-bg-secondary: #252526;
+  --nim-text: #d4d4d4;
+  --nim-text-muted: #858585;
+  --nim-border: #333333;
+  --nim-primary: #569cd6;
+  --nim-bg-selected: #094771;
+}
+
+:root[data-controller-popover][data-controller-theme='paper'] {
+  background: #faf8f3;
+}
+[data-controller-popover][data-controller-theme='paper'] {
+  --nim-bg: #faf8f3;
+  --nim-bg-secondary: #f0ece2;
+  --nim-text: #2b2b2b;
+  --nim-text-muted: #8a8378;
+  --nim-border: #e2dbcd;
+  --nim-primary: #b5651d;
+  --nim-bg-selected: #efe7d6;
+  --nim-success: #3a7d44;
+  --nim-warning: #b5651d;
+  --nim-error: #b00020;
+}
+[data-controller-popover][data-controller-theme='paper'] body {
+  background: #faf8f3;
+  color: #2b2b2b;
+}
+
 /* Strip the app chrome: the left navigation gutter (which also carries the
  * DEV label) and the multi-project rail have no place in the controller. */
 [data-controller-popover] .navigation-gutter,

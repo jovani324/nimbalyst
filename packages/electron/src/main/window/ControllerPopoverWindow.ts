@@ -172,6 +172,13 @@ function positionUnderTray(win: BrowserWindow): void {
   win.setPosition(x, y, false);
 }
 
+/** Set the popover's window opacity (0.4–1) for the appearance transparency control. */
+export function setControllerPopoverOpacity(opacity: number): void {
+  if (popoverWindow && !popoverWindow.isDestroyed()) {
+    popoverWindow.setOpacity(Math.max(0.4, Math.min(1, opacity)));
+  }
+}
+
 /** Show the popover under the tray and focus its composer. */
 export function showControllerPopover(): void {
   if (!isControllerMode()) return;
