@@ -1521,6 +1521,13 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
     return {
       id: parseInt(encrypted.id, 10) || 0,
+      // Carry the ORIGINAL (string) message id for dedup. `id` above is a lossy
+      // parseInt of a hex row id — non-numeric ids all collapse to 0, so two
+      // distinct messages (e.g. a thinking chunk and the text-reply chunk of the
+      // same streamed turn) would appear identical and one would be dropped as a
+      // "duplicate". The full string id is unique per row and is exactly what
+      // dedup needs. (Same wire id on re-delivery still dedups correctly.)
+      providerMessageId: encrypted.id,
       sessionId: '', // Filled in by caller
       source: encrypted.source,
       direction: encrypted.direction,
