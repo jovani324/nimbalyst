@@ -57,7 +57,7 @@ import { TrayManager } from '../../tray/TrayManager';
 import { logger } from '../../utils/logger';
 import { getSettingsService } from '../SettingsService';
 import { subscribeProviderSettingsInvalidation } from './providerSettingsCacheInvalidation';
-import { windowStates, findWindowByWorkspace, getWindowId, createWindow } from '../../window/WindowManager';
+import { windowStates, findWindowByWorkspace, getMostRecentlyFocusedWorkspaceWindow, getWindowId, createWindow } from '../../window/WindowManager';
 import { resolveActiveWorkspacePathForWindowId } from '../../window/windowState';
 import { sessionFileTracker } from '../SessionFileTracker';
 import { enrichTranscriptMessagesWithToolCallDiffs } from '../TranscriptToolCallEnricher';
@@ -284,7 +284,13 @@ export class AIService {
   }
 
   public async triggerQueuedPromptProcessingForSession(sessionId: string, workspacePath: string): Promise<boolean> {
-    const targetWindow = findWindowByWorkspace(workspacePath);
+    // Prefer a window already on this session's workspace, but fall back to ANY
+    // open window. The turn runs in the main process and only uses the window's
+    // webContents as a streaming target — so a remotely-driven prompt (from the
+    // controller/mobile) still executes when the host is parked on a different
+    // project. Without the fallback it would stall until the host opened that
+    // workspace. Only bail when there is no live window at all.
+    const targetWindow = findWindowByWorkspace(workspacePath) ?? getMostRecentlyFocusedWorkspaceWindow();
     if (!targetWindow || targetWindow.isDestroyed()) {
       return false;
     }
