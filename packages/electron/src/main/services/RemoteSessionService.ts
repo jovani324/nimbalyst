@@ -204,6 +204,12 @@ function ensureTranscriptListener(sessionId: string): void {
   const priorCleanup = state.transcriptCleanups.get(sessionId);
   if (priorCleanup) priorCleanup();
   const cleanupRemote = provider.onRemoteChange(sessionId, (change) => {
+    if (change.type === 'message_added') {
+      const m = change.message as { source?: string; direction?: string; content?: string };
+      log.info(
+        `[CTRLDBG] msg ${sessionId} src=${m.source} dir=${m.direction} len=${m.content?.length ?? 0} head=${JSON.stringify(String(m.content ?? '').slice(0, 160))}`,
+      );
+    }
     broadcast(REMOTE_SESSION_CHANNELS.transcriptChange, { sessionId, change });
   });
   const cleanupStatus = provider.onStatusChange(sessionId, (status) => {
