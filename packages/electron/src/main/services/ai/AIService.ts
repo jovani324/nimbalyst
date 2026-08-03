@@ -1281,6 +1281,15 @@ export class AIService {
                   workspacePath
                 });
               }
+
+              // Drive it from the main process too. The renderer only processes
+              // the queue for a session it has open, so a session created
+              // remotely (controller/mobile) would otherwise sit un-run until the
+              // host user clicked into it. This kicks the in-process dispatch so
+              // it executes immediately, streaming to whatever window is open.
+              void this.triggerQueuedPromptProcessingForSession(session.id, workspacePath).catch((err) =>
+                logger.main.error('[AIService] Failed to auto-trigger initial prompt after remote create:', err),
+              );
             }
 
             // Notify the window to show the new session
