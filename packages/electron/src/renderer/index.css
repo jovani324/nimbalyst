@@ -462,6 +462,19 @@ body[data-dev-mode="true"] .nav-quick-access::before {
   letter-spacing: 0.1px;
 }
 
+/* Make the popover draggable by its header bars (it's a frameless window).
+ * Interactive controls inside the headers opt back out so clicks still work. */
+[data-controller-popover] .remote-sessions-list-header,
+[data-controller-popover] .remote-session-transcript-header {
+  -webkit-app-region: drag;
+}
+[data-controller-popover] .remote-sessions-list-header button,
+[data-controller-popover] .remote-session-transcript-header button,
+[data-controller-popover] .remote-sessions-list-header input,
+[data-controller-popover] .remote-session-transcript-header input {
+  -webkit-app-region: no-drag;
+}
+
 /* Log-line transcript rhythm + dim gutter feel. */
 [data-controller-popover] .remote-session-transcript {
   line-height: 1.5;

@@ -36,6 +36,7 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showNewDialog, setShowNewDialog] = useState(false);
+  const [listCollapsed, setListCollapsed] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!window.electronAPI?.remoteSessions) return;
@@ -103,18 +104,51 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
 
   return (
     <div className="remote-sessions-view flex flex-1 min-h-0 overflow-hidden" data-testid="remote-sessions-view">
+      {/* Collapsed rail: just a burger to bring the list back. */}
+      {listCollapsed && (
+        <div
+          className="remote-sessions-list remote-sessions-list-header flex flex-col items-center w-9 min-w-9 border-r shrink-0"
+          style={{ borderColor: 'var(--nim-border)', background: 'var(--nim-bg-secondary)' }}
+        >
+          <button
+            className="h-11 w-9 flex items-center justify-center text-base"
+            style={{ color: 'var(--nim-text-muted)' }}
+            onClick={() => setListCollapsed(false)}
+            data-testid="remote-sessions-expand-button"
+            title="Show sessions"
+          >
+            ☰
+          </button>
+        </div>
+      )}
+
       {/* Left: session list */}
       <div
         className="remote-sessions-list flex flex-col w-72 min-w-56 border-r overflow-hidden"
-        style={{ borderColor: 'var(--nim-border)', background: 'var(--nim-bg-secondary)' }}
+        style={{
+          borderColor: 'var(--nim-border)',
+          background: 'var(--nim-bg-secondary)',
+          display: listCollapsed ? 'none' : undefined,
+        }}
       >
         <div
-          className="flex items-center justify-between px-3 h-11 border-b shrink-0"
+          className="remote-sessions-list-header flex items-center justify-between px-3 h-11 border-b shrink-0"
           style={{ borderColor: 'var(--nim-border)' }}
         >
-          <span className="text-sm font-semibold" style={{ color: 'var(--nim-text)' }}>
-            Remote Sessions
-          </span>
+          <div className="flex items-center gap-2 min-w-0">
+            <button
+              className="text-base shrink-0"
+              style={{ color: 'var(--nim-text-muted)' }}
+              onClick={() => setListCollapsed(true)}
+              data-testid="remote-sessions-collapse-button"
+              title="Hide session list"
+            >
+              ☰
+            </button>
+            <span className="text-sm font-semibold truncate" style={{ color: 'var(--nim-text)' }}>
+              Remote Sessions
+            </span>
+          </div>
           <div className="flex items-center gap-1">
             <button
               className="remote-sessions-new-btn text-xs px-2 py-1 rounded hover:opacity-90"

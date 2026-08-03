@@ -17,7 +17,6 @@ import { InteractivePromptWidget } from '@nimbalyst/runtime/ui/AgentTranscript/c
 import { CondensedRemoteTranscript } from './CondensedRemoteTranscript';
 import { buildSessionMarkdown } from './condensedTranscript';
 import {
-  parseInteractivePromptContent,
   type PermissionRequestContent,
   type AskUserQuestionRequestContent,
   type PermissionResponseContent,
@@ -26,9 +25,9 @@ import {
 import {
   projectRawMessagesToViewMessages,
   type RawMessage,
+  type TranscriptViewMessage,
 } from '@nimbalyst/runtime/ai/server/transcript';
 import { remoteSessionsAtom, remoteTranscriptAtomFamily } from '../../store/atoms/remoteSessions';
-import type { RemoteAgentMessage } from '../../types/remoteSessions';
 
 type ViewMessages = Awaited<ReturnType<typeof projectRawMessagesToViewMessages>>;
 
@@ -44,41 +43,55 @@ type PendingPrompt =
   | null;
 
 /**
- * Scan the raw message stream for a request that has no matching response.
- * Requests and responses both sync as their own persisted messages
- * (docs/INTERACTIVE_PROMPTS.md), so we pair them by requestId/questionId.
+ * Find a pending interactive prompt from the PROJECTED transcript. The projector
+ * surfaces a provider-agnostic `interactivePrompt` payload on `interactive_prompt`
+ * view messages (with requestId/status), which is the same representation the
+ * desktop widgets use — and it works regardless of whether the underlying prompt
+ * came from a persisted `permission_request` message or a synthetic ToolPermission
+ * tool_use. (The old raw-content scan only matched the former, so it missed most
+ * real prompts.) Returns the most recent still-pending request.
  */
-function findPendingPrompt(messages: RemoteAgentMessage[]): PendingPrompt {
-  const respondedIds = new Set<string>();
-  const requests: PendingPrompt[] = [];
+function findPendingPrompt(viewMessages: TranscriptViewMessage[]): PendingPrompt {
+  for (let i = viewMessages.length - 1; i >= 0; i--) {
+    const vm = viewMessages[i];
+    const p = vm.interactivePrompt;
+    if (vm.type !== 'interactive_prompt' || !p || p.status !== 'pending') continue;
 
-  for (const msg of messages) {
-    const parsed = parseInteractivePromptContent(msg.content);
-    if (!parsed) continue;
-    if (parsed.type === 'permission_response' || parsed.type === 'ask_user_question_response') {
-      const id =
-        parsed.type === 'permission_response'
-          ? parsed.requestId
-          : parsed.questionId;
-      if (id) respondedIds.add(id);
-    } else if (parsed.type === 'permission_request') {
-      requests.push({ promptType: 'permission_request', content: parsed });
-    } else if (parsed.type === 'ask_user_question_request') {
-      requests.push({ promptType: 'ask_user_question_request', content: parsed });
+    if (p.promptType === 'permission_request') {
+      return {
+        promptType: 'permission_request',
+        content: {
+          type: 'permission_request',
+          requestId: p.requestId,
+          toolName: p.toolName,
+          rawCommand: p.rawCommand,
+          pattern: p.pattern,
+          patternDisplayName: p.patternDisplayName,
+          isDestructive: p.isDestructive,
+          warnings: p.warnings,
+          timestamp: 0,
+          status: p.status,
+        },
+      };
     }
-  }
-
-  // Return the most recent request that is still pending and unresponded.
-  for (let i = requests.length - 1; i >= 0; i--) {
-    const req = requests[i];
-    if (!req) continue;
-    const id =
-      req.promptType === 'permission_request'
-        ? req.content.requestId
-        : req.content.questionId;
-    if (req.content.status === 'pending' && !respondedIds.has(id)) {
-      return req;
+    if (p.promptType === 'ask_user_question') {
+      return {
+        promptType: 'ask_user_question_request',
+        content: {
+          type: 'ask_user_question_request',
+          questionId: p.requestId,
+          questions: p.questions.map((q) => ({
+            question: q.question,
+            header: q.header,
+            options: (q.options ?? []).map((o) => ({ label: o.label, description: o.description ?? '' })),
+            multiSelect: q.multiSelect ?? false,
+          })),
+          timestamp: 0,
+          status: p.status,
+        },
+      };
     }
+    // git_commit_proposal and other types aren't answerable from the controller yet.
   }
   return null;
 }
@@ -170,7 +183,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
       });
   }, [rawMessages, provider]);
 
-  const pendingPrompt = useMemo(() => findPendingPrompt(rawMessages), [rawMessages]);
+  const pendingPrompt = useMemo(() => findPendingPrompt(viewMessages), [viewMessages]);
 
   const handleSend = async () => {
     const text = draft.trim();
@@ -261,7 +274,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
     <div className="remote-session-transcript flex flex-col flex-1 min-h-0" data-testid="remote-session-transcript">
       {/* Header */}
       <div
-        className="flex items-center justify-between px-4 h-11 border-b shrink-0"
+        className="remote-session-transcript-header flex items-center justify-between px-4 h-11 border-b shrink-0"
         style={{ borderColor: 'var(--nim-border)' }}
       >
         <div className="flex items-center gap-2 min-w-0">
