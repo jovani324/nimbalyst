@@ -137,7 +137,6 @@ function AssistantRow({
         <span className="shrink-0 text-[11px] select-none" style={{ color: 'var(--nim-text-muted)', width: 10 }}>
           {expanded ? '▾' : '▸'}
         </span>
-        <RoleLabel color="var(--nim-text-muted)">claude</RoleLabel>
         {!expanded && (
           <span className="min-w-0 flex-1 truncate text-sm leading-snug" style={{ color: 'var(--nim-text)' }}>
             {summary}

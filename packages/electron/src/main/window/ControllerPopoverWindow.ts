@@ -18,9 +18,39 @@
 import { app, BrowserWindow, globalShortcut, screen } from 'electron';
 import { join } from 'path';
 import { getPreloadPath } from '../utils/appPaths';
-import { isControllerMode } from '../utils/store';
+import { isControllerMode, store } from '../utils/store';
 import { logger } from '../utils/logger';
 import { TrayManager } from '../tray/TrayManager';
+
+const POPOVER_BOUNDS_KEY = 'controllerPopoverBounds';
+
+/** Remember where the user last dragged the popover. */
+function savePopoverPosition(win: BrowserWindow): void {
+  try {
+    const { x, y } = win.getBounds();
+    store.set(POPOVER_BOUNDS_KEY, { x, y });
+  } catch {
+    /* non-fatal */
+  }
+}
+
+/** Restore the last-dragged position if it's still on a visible display. */
+function restorePopoverPosition(win: BrowserWindow): boolean {
+  try {
+    const saved = store.get(POPOVER_BOUNDS_KEY) as { x: number; y: number } | undefined;
+    if (!saved || typeof saved.x !== 'number' || typeof saved.y !== 'number') return false;
+    const [width, height] = win.getSize();
+    // Only restore if the saved spot still lands on a real display (monitors change).
+    const display = screen.getDisplayNearestPoint({ x: saved.x, y: saved.y });
+    const a = display.workArea;
+    const x = Math.max(a.x, Math.min(saved.x, a.x + a.width - width));
+    const y = Math.max(a.y, Math.min(saved.y, a.y + a.height - height));
+    win.setPosition(x, y, false);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const POPOVER_WIDTH = 440;
 const POPOVER_HEIGHT = 540;
@@ -101,6 +131,11 @@ export function createControllerPopover(): BrowserWindow | null {
     }
   });
 
+  // Remember where the user drags it so the next show reopens there.
+  popoverWindow.on('moved', () => {
+    if (popoverWindow) savePopoverPosition(popoverWindow);
+  });
+
   popoverWindow.on('closed', () => {
     popoverWindow = null;
   });
@@ -142,7 +177,8 @@ export function showControllerPopover(): void {
   if (!isControllerMode()) return;
   const win = createControllerPopover();
   if (!win) return;
-  positionUnderTray(win);
+  // Reopen where the user last dragged it; fall back to under the tray.
+  if (!restorePopoverPosition(win)) positionUnderTray(win);
   win.show();
   win.focus();
   win.webContents.send('controller-popover:shown');

@@ -115,6 +115,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   const [promptSubmitting, setPromptSubmitting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [copiedAll, setCopiedAll] = useState(false);
+  const [masked, setMasked] = useState(false);
 
   // Connect on mount / session change; disconnect on unmount. The component is
   // keyed by sessionId in the parent, so this maps 1:1 to the open session.
@@ -233,7 +234,8 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   };
 
   const handleComposerKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // Shift+Enter sends; plain Enter inserts a newline.
+    if (e.key === 'Enter' && e.shiftKey) {
       e.preventDefault();
       void handleSend();
     }
@@ -321,6 +323,16 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
         <div className="flex items-center gap-1 shrink-0">
           <button
             className="text-xs px-2 py-1 rounded"
+            style={{ color: masked ? 'var(--nim-primary)' : 'var(--nim-text-muted)', border: '1px solid var(--nim-border)' }}
+            onClick={() => setMasked((m) => !m)}
+            data-testid="remote-session-mask-button"
+            title={masked ? 'Reveal messages' : 'Blur messages for privacy'}
+            aria-pressed={masked}
+          >
+            {masked ? '🙈' : '👁'}
+          </button>
+          <button
+            className="text-xs px-2 py-1 rounded"
             style={{ color: 'var(--nim-text-muted)', border: '1px solid var(--nim-border)' }}
             onClick={() => void handleCopyMarkdown()}
             disabled={viewMessages.length === 0}
@@ -352,8 +364,16 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
         </div>
       </div>
 
-      {/* Transcript */}
-      <CondensedRemoteTranscript messages={viewMessages} isProcessing={isExecuting} />
+      {/* Transcript (optionally blurred for privacy — like a banking app; the
+          header eye toggles it, and clicking the blurred area reveals it). */}
+      <div
+        className="flex-1 min-h-0 flex flex-col"
+        style={{ filter: masked ? 'blur(7px)' : undefined, transition: 'filter 120ms ease', cursor: masked ? 'pointer' : undefined }}
+        onClick={masked ? () => setMasked(false) : undefined}
+        title={masked ? 'Click to reveal' : undefined}
+      >
+        <CondensedRemoteTranscript messages={viewMessages} isProcessing={isExecuting} />
+      </div>
 
       {/* Pending interactive prompt */}
       {pendingPrompt && (
@@ -385,7 +405,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
             maxHeight: 160,
           }}
           rows={2}
-          placeholder="Reply to the host…  (Enter to send)"
+          placeholder="Reply to the host…  (Shift+Enter to send)"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleComposerKeyDown}
