@@ -106,6 +106,10 @@ vi.mock('../../utils/store', () => ({
   setShowTrayIcon: setShowTrayIconMock,
   getSessionSyncConfig: vi.fn(() => ({})),
   setSessionSyncConfig: vi.fn(),
+  // rebuildMenu reads this to decide whether to attach a context menu at all
+  // (controller mode uses click-to-toggle instead). Matches the real value for
+  // the mocked config above, where controllerMode is unset.
+  isControllerMode: vi.fn(() => false),
 }));
 
 vi.mock('../../utils/logger', () => ({
