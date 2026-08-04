@@ -18,7 +18,7 @@
  * stored alongside walkthrough state via the same IPC channels.
  */
 
-import React, { useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react';
+import React, { useEffect, useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useAtom, useAtomValue } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
 import type { ContentMode, TipDefinition, TipTriggerContext } from './types';
@@ -37,14 +37,7 @@ import { errorNotificationService } from '../services/ErrorNotificationService';
 import { worktreesFeatureAvailableAtom } from '../store/atoms/appSettings';
 import { emptyTranscriptVisibleCountAtom } from './atoms';
 import type { FeatureUsageRecord } from '../../shared/featureUsage';
-
-/**
- * Safety-net re-evaluation interval. Tips are evaluated immediately when the
- * empty-transcript surface mounts and when their gating state changes; this
- * interval only exists to pick up async-loaded conditions (feature usage, git
- * status) that aren't reactive.
- */
-const EVALUATION_INTERVAL_MS = 5_000;
+import { tipTargetsScreen } from './filesEmptyTipSelection';
 
 interface TipProviderProps {
   children: ReactNode;
@@ -59,8 +52,13 @@ export function TipProvider({ children, currentMode, workspacePath }: TipProvide
   const isWalkthroughActive = useAtomValue(isWalkthroughActiveAtom);
   const hasActiveDialogs = useAtomValue(hasActiveDialogsAtom);
   const isWorktreesAvailable = useAtomValue(worktreesFeatureAvailableAtom);
+  const emptyTranscriptVisibleCount = useAtomValue(emptyTranscriptVisibleCountAtom);
+  const hasEmptyTranscriptSurface = emptyTranscriptVisibleCount > 0;
 
   const [activeTipId, setActiveTipId] = useAtom(activeTipIdAtom);
+  const [featureUsage, setFeatureUsage] = useState<Record<string, FeatureUsageRecord>>({});
+  const [toolUsage, setToolUsage] = useState<Record<string, FeatureUsageRecord>>({});
+  const [isGitRepo, setIsGitRepo] = useState(false);
 
   // Refs for values the evaluation function reads. Keeping them in refs lets
   // the stable `evaluate` callback read the latest values without being
@@ -70,8 +68,6 @@ export function TipProvider({ children, currentMode, workspacePath }: TipProvide
   const hasActiveDialogsRef = useRef(hasActiveDialogs);
   const activeTipIdRef = useRef(activeTipId);
   const currentModeRef = useRef(currentMode);
-  const featureUsageRef = useRef<Record<string, FeatureUsageRecord>>({});
-  const isGitRepoRef = useRef(false);
   const isWorktreesAvailableRef = useRef(isWorktreesAvailable);
   const workspacePathRef = useRef(workspacePath);
 
@@ -85,47 +81,48 @@ export function TipProvider({ children, currentMode, workspacePath }: TipProvide
   workspacePathRef.current = workspacePath;
 
   useEffect(() => {
+    if (!hasEmptyTranscriptSurface) return undefined;
+
     let cancelled = false;
 
-    const loadFeatureUsage = async () => {
-      try {
-        const usage = await window.electronAPI.featureUsage.getAll();
-        if (!cancelled) {
-          featureUsageRef.current = usage ?? {};
-        }
-      } catch {
-        if (!cancelled) {
-          featureUsageRef.current = {};
-        }
+    const loadTipUsage = async () => {
+      const [nextFeatureUsage, nextToolUsage] = await Promise.all([
+        window.electronAPI.featureUsage.getAll().catch(() => ({})),
+        Promise.resolve(window.electronAPI.toolUsage?.getRollup())
+          .then((usage) => usage ?? {})
+          .catch(() => ({})),
+      ]);
+
+      if (!cancelled) {
+        setFeatureUsage(nextFeatureUsage);
+        setToolUsage(nextToolUsage);
       }
     };
 
-    loadFeatureUsage();
-    const intervalId = setInterval(loadFeatureUsage, EVALUATION_INTERVAL_MS);
+    void loadTipUsage();
 
     return () => {
       cancelled = true;
-      clearInterval(intervalId);
     };
-  }, []);
+  }, [hasEmptyTranscriptSurface]);
 
   useEffect(() => {
     let cancelled = false;
 
     const loadGitRepoStatus = async () => {
       if (!workspacePath || !window.electronAPI?.invoke) {
-        isGitRepoRef.current = false;
+        setIsGitRepo(false);
         return;
       }
 
       try {
         const result = await window.electronAPI.invoke('git:is-repo', workspacePath);
         if (!cancelled) {
-          isGitRepoRef.current = Boolean(result?.success && result.isRepo);
+          setIsGitRepo(Boolean(result?.success && result.isRepo));
         }
       } catch {
         if (!cancelled) {
-          isGitRepoRef.current = false;
+          setIsGitRepo(false);
         }
       }
     };
@@ -137,19 +134,20 @@ export function TipProvider({ children, currentMode, workspacePath }: TipProvide
   }, [workspacePath]);
 
   const buildTriggerContext = useCallback((): TipTriggerContext => {
-    const featureUsage = featureUsageRef.current;
-
     return {
       currentMode: currentModeRef.current,
       workspacePath: workspacePathRef.current,
-      isGitRepo: isGitRepoRef.current,
+      isGitRepo,
       isWorktreesAvailable: isWorktreesAvailableRef.current,
       featureUsage,
       hasBeenUsed: (feature: string) => (featureUsage[feature]?.count ?? 0) > 0,
       hasReachedCount: (feature: string, threshold: number) =>
         (featureUsage[feature]?.count ?? 0) >= threshold,
+      toolUsage,
+      hasUsedTool: (toolKey: string) => (toolUsage[toolKey]?.count ?? 0) > 0,
+      toolUseCount: (toolKey: string) => toolUsage[toolKey]?.count ?? 0,
     };
-  }, []);
+  }, [featureUsage, isGitRepo, toolUsage]);
 
   // Get active tip definition
   const activeTip = useMemo(() => {
@@ -173,7 +171,7 @@ export function TipProvider({ children, currentMode, workspacePath }: TipProvide
     [posthog, setActiveTipId]
   );
 
-  // Stable ref for showTip so the interval can call it
+  // Stable ref for showTip so eligibility evaluation can call it
   const showTipRef = useRef(showTip);
   showTipRef.current = showTip;
 
@@ -227,7 +225,7 @@ export function TipProvider({ children, currentMode, workspacePath }: TipProvide
     const eligible = tips
       .filter((tip) => {
         if (!shouldShowTip(state, tip)) return false;
-        const screenMatch = tip.trigger.screen === '*' || tip.trigger.screen === mode;
+        const screenMatch = tipTargetsScreen(tip, mode);
         if (!screenMatch) return false;
         if (!tip.trigger.condition(triggerContext)) return false;
         return true;
@@ -239,19 +237,11 @@ export function TipProvider({ children, currentMode, workspacePath }: TipProvide
     }
   }, [buildTriggerContext]);
 
-  // Slow safety-net interval: catches async-loaded, non-reactive conditions
-  // (feature usage, git status) that the reactive triggers below can't observe.
-  useEffect(() => {
-    const intervalId = setInterval(evaluate, EVALUATION_INTERVAL_MS);
-    return () => clearInterval(intervalId);
-  }, [evaluate]);
-
   // Immediate, reactive evaluation -- runs on mount and whenever a gating input
   // changes (an empty transcript appears, the active tip clears after an action,
   // or walkthrough/dialog state changes). No startup delay: a tip is empty-space
   // content and should fill the space at once, not 15 seconds later. The
   // activeTipId guard inside evaluate() makes the post-show re-run a no-op.
-  const emptyTranscriptVisibleCount = useAtomValue(emptyTranscriptVisibleCountAtom);
   useEffect(() => {
     evaluate();
   }, [evaluate, emptyTranscriptVisibleCount, activeTipId, walkthroughState, isWalkthroughActive, hasActiveDialogs]);

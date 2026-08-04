@@ -1,4 +1,5 @@
 import { BrowserWindow, safeStorage, session, dialog } from 'electron';
+import { applyAnalyticsEnabled } from '../services/analytics/applyAnalyticsEnabled';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import * as os from 'os';
 import * as fs from 'fs';
@@ -15,7 +16,8 @@ import {
     getRecentItems,
     getDefaultAIModel, setDefaultAIModel,
     getDefaultEffortLevel, setDefaultEffortLevel,
-    isAnalyticsEnabled, setAnalyticsEnabled,
+    getDefaultThinkingMode, setDefaultThinkingMode,
+    isAnalyticsEnabled,
     getSessionSyncConfig, setSessionSyncConfig, SessionSyncConfig,
     isExtensionDevToolsEnabled, setExtensionDevToolsEnabled,
     getAppSetting, setAppSetting,
@@ -34,6 +36,8 @@ import {
     isFeatureWalkthroughCompleted, setFeatureWalkthroughCompleted,
     isWorktreeOnboardingShown, setWorktreeOnboardingShown,
     getClaudeCodeSettings,
+    getAttachmentStagingConfig,
+    setAttachmentStagingConfig,
     setClaudeCodeProjectCommandsEnabled, setClaudeCodeUserCommandsEnabled,
     setClaudeCodeApiUpstreamUrl,
     getAgentWorkflowSourceSettings, getAgentWorkflowExportSettings,
@@ -43,6 +47,7 @@ import { getEnhancedPath } from '../services/CLIManager';
 import { logger } from '../utils/logger';
 import { getSettingsService, isSettingKey } from '../services/SettingsService';
 import { SessionNamingService } from '../services/SessionNamingService';
+import { getDialogDefaultPath, rememberDialogSelection } from '../utils/dialogPaths';
 import { SoundNotificationService } from '../services/SoundNotificationService';
 import { autoUpdaterService } from '../services/autoUpdater';
 import type { OnboardingState } from '../utils/store';
@@ -58,7 +63,7 @@ import * as StytchAuth from '../services/StytchAuthService';
 import { getRestartSignalPath } from '../utils/appPaths';
 import { TrayManager } from '../tray/TrayManager';
 import { STYTCH_CONFIG } from '@nimbalyst/runtime';
-import { type EffortLevel, parseEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { type EffortLevel, parseEffortLevel, parseThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
 import { repositoryManager } from '../services/RepositoryManager';
 import {
     migratePersonalSyncProfiles,
@@ -66,6 +71,7 @@ import {
     switchPersonalSyncProfile,
 } from '../services/PersonalSyncProfiles';
 import { purgeOfflineCollabAccounts } from '../services/CollabOfflineAccountLifecycle';
+import { listPersonalSyncDevices } from '../services/PersonalSyncDevicesService';
 
 // Track if we've subscribed to sync status changes
 let syncStatusListenerSetup = false;
@@ -91,6 +97,33 @@ function ensureStytchInitialized(): void {
     });
 
     stytchInitialized = true;
+}
+
+function parseAuthFlowOptions(
+    value: unknown,
+    fallbackIntent: StytchAuth.AuthIntent,
+): StytchAuth.AuthFlowOptions {
+    if (value === undefined) return { intent: fallbackIntent };
+    if (!value || typeof value !== 'object') {
+        throw new Error('Auth flow options must be an object');
+    }
+    const options = value as { intent?: unknown; targetPersonalOrgId?: unknown };
+    if (!['sign-in', 'add-account', 'reauth'].includes(String(options.intent))) {
+        throw new Error('Auth flow intent must be sign-in, add-account, or reauth');
+    }
+    if (options.targetPersonalOrgId !== undefined && typeof options.targetPersonalOrgId !== 'string') {
+        throw new Error('targetPersonalOrgId must be a string');
+    }
+    if (options.intent === 'reauth' && !options.targetPersonalOrgId) {
+        throw new Error('Reauth requires targetPersonalOrgId');
+    }
+    if (options.intent !== 'reauth' && options.targetPersonalOrgId) {
+        throw new Error('targetPersonalOrgId is only valid for reauth');
+    }
+    return {
+        intent: options.intent as StytchAuth.AuthIntent,
+        targetPersonalOrgId: options.targetPersonalOrgId as string | undefined,
+    };
 }
 
 /**
@@ -152,8 +185,18 @@ export function registerSettingsHandlers() {
         return getAppSetting(key);
     });
 
-    safeHandle('app-settings:set', (_event, key: string, value: unknown) => {
+    safeHandle('app-settings:set', (event, key: string, value: unknown) => {
         setAppSetting(key, value);
+        // Broadcast to every OTHER window so cross-window state (e.g.
+        // navigation-gutter customization) stays in lockstep without a reload.
+        // Exclude the sender: it already applied the change locally before
+        // invoking, and re-applying its own write would be redundant.
+        const payload = { key, value };
+        for (const win of BrowserWindow.getAllWindows()) {
+            if (win.isDestroyed()) continue;
+            if (win.webContents.id === event.sender.id) continue;
+            win.webContents.send('app-settings:changed', payload);
+        }
     });
 
     // Spellcheck toggle - controls Chromium's built-in spellchecker for all windows
@@ -422,6 +465,9 @@ export function registerSettingsHandlers() {
             buttonLabel: 'Use Sound',
             properties: ['openFile'],
             filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'] }],
+            // Deliberately window-less: sound files live in the user's music
+            // library, not inside the open workspace.
+            defaultPath: getDialogDefaultPath(),
         };
         const result = window
             ? await dialog.showOpenDialog(window, dialogOptions)
@@ -431,6 +477,7 @@ export function registerSettingsHandlers() {
         }
 
         const sourcePath = result.filePaths[0];
+        rememberDialogSelection(sourcePath, 'file');
 
         // Reject oversized files: the bytes are read into memory and cloned over
         // IPC on every completion, so a huge file means churn / OOM risk.
@@ -672,13 +719,22 @@ export function registerSettingsHandlers() {
         setDefaultEffortLevel(parseEffortLevel(level));
     });
 
+    // Default extended-thinking mode (composer "Extended" selector)
+    safeHandle('settings:get-default-thinking-mode', () => {
+        return getDefaultThinkingMode();
+    });
+
+    safeHandle('settings:set-default-thinking-mode', (_event, mode: string) => {
+        setDefaultThinkingMode(parseThinkingMode(mode));
+    });
+
     // Analytics settings
     safeHandle('analytics:is-enabled', () => {
         return isAnalyticsEnabled();
     });
 
-    safeHandle('analytics:set-enabled', (_event, enabled: boolean) => {
-        setAnalyticsEnabled(enabled);
+    safeHandle('analytics:set-enabled', async (_event, enabled: boolean) => {
+        await applyAnalyticsEnabled(enabled);
     });
 
     // NOTE: MockupLM settings handlers removed - MockupLM now managed via extension system
@@ -686,6 +742,18 @@ export function registerSettingsHandlers() {
     // Claude Code settings
     safeHandle('claudeCode:get-settings', async () => {
         return getClaudeCodeSettings();
+    });
+
+    safeHandle('attachment-staging:get-settings', async () => {
+        return getAttachmentStagingConfig();
+    });
+
+    safeHandle('attachment-staging:set-settings', async (_event, config: {
+        mode: 'temp' | 'workspace' | 'custom';
+        customPath?: string;
+    }) => {
+        setAttachmentStagingConfig(config);
+        return getAttachmentStagingConfig();
     });
 
     safeHandle('agentWorkflows:get-settings', async () => {
@@ -958,51 +1026,10 @@ export function registerSettingsHandlers() {
         }
     });
 
-    // Get connected devices from the sync server
-    safeHandle('sync:get-devices', async () => {
-        const config = getSessionSyncConfig();
-
-        if (!config?.enabled || !config.serverUrl) {
-            return { success: false, devices: [], error: 'Sync not configured' };
-        }
-
-        // Require Stytch authentication
-        const jwt = StytchAuth.getSessionJwt();
-        if (!jwt) {
-            return { success: false, devices: [], error: 'Not authenticated' };
-        }
-
-        try {
-            // Fetch via the /api/sessions endpoint which forwards to IndexRoom status
-            const httpUrl = config.serverUrl
-                .replace(/^ws:/, 'http:')
-                .replace(/^wss:/, 'https:')
-                .replace(/\/$/, '');
-
-            const response = await fetch(`${httpUrl}/api/sessions`, {
-                method: 'GET',
-                headers: {
-                    'Authorization': `Bearer ${jwt}`,
-                },
-                signal: AbortSignal.timeout(5000),
-            });
-
-            if (response.ok) {
-                const data = await response.json();
-                return {
-                    success: true,
-                    devices: data.devices || [],
-                    sessionCount: data.session_count || 0,
-                    projectCount: data.project_count || 0,
-                };
-            } else {
-                return { success: false, devices: [], error: `Server returned ${response.status}` };
-            }
-        } catch (error) {
-            const message = error instanceof Error ? error.message : 'Failed to get devices';
-            return { success: false, devices: [], error: message };
-        }
-    });
+    // Read the personal account's device list with the canonical derived sync
+    // URL and personal-org JWT. The stored config intentionally omits serverUrl
+    // when production is selected, and a team JWT targets a different member.
+    safeHandle('sync:get-devices', listPersonalSyncDevices);
 
     // Get sync status for the navigation gutter button
     safeHandle('sync:get-status', async (_event, workspacePath?: string) => {
@@ -1106,6 +1133,54 @@ export function registerSettingsHandlers() {
             const message = error instanceof Error ? error.message : 'Failed to get doc sync status';
             return { success: false, error: message };
         }
+    });
+
+    // Apply a whole project selection at once. The multi-select UI can change
+    // every project in one interaction; routing that through per-project
+    // toggles meant N read-modify-writes and up to N sync triggers.
+    safeHandle('sync:set-project-selection', async (
+        _event,
+        selection: { enabledProjects?: string[]; docSyncEnabledProjects?: string[] },
+    ) => {
+        const config = getSessionSyncConfig() ?? { enabled: false, serverUrl: '', enabledProjects: [] };
+        const previousEnabled = config.enabledProjects ?? [];
+        const previousDocSync = config.docSyncEnabledProjects ?? [];
+        const enabledProjects = [...new Set(selection?.enabledProjects ?? [])];
+        const docSyncEnabledProjects = [...new Set(selection?.docSyncEnabledProjects ?? [])];
+
+        const addedProjects = enabledProjects.filter((path) => !previousEnabled.includes(path));
+        const docSyncChanged = docSyncEnabledProjects.length !== previousDocSync.length
+            || docSyncEnabledProjects.some((path) => !previousDocSync.includes(path));
+
+        // One write for the whole selection.
+        setSessionSyncConfig(persistActivePersonalSyncProfile({
+            ...config,
+            enabledProjects,
+            docSyncEnabledProjects,
+            enabled: enabledProjects.length > 0,
+        }));
+        logger.store.info(
+            `[sync:set-project-selection] ${enabledProjects.length} project(s) enabled, `
+            + `${docSyncEnabledProjects.length} with document sync`,
+        );
+
+        // ...and one sync trigger. Doc-sync membership is applied during
+        // reinitialization; a project that only gained session sync just needs
+        // its sessions pushed.
+        try {
+            if (docSyncChanged || !isSyncProviderReady()) {
+                await repositoryManager.reinitializeSyncWithNewConfig();
+            } else if (addedProjects.length > 0) {
+                triggerIncrementalSync().catch(err => {
+                    logger.store.error('[sync:set-project-selection] Failed to trigger sync:', err);
+                });
+            }
+        } catch (error) {
+            logger.store.error('[sync:set-project-selection] Failed to apply sync config:', error);
+            return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
+
+        return { success: true, enabledProjects, docSyncEnabledProjects };
     });
 
     // Toggle sync for a specific project
@@ -1367,8 +1442,9 @@ export function registerSettingsHandlers() {
     });
 
     // Sign in with Google OAuth
-    safeHandle('stytch:sign-in-google', async () => {
+    safeHandle('stytch:sign-in-google', async (_event, rawOptions?: unknown) => {
         ensureStytchInitialized();
+        const options = parseAuthFlowOptions(rawOptions, 'sign-in');
         // Get the sync server URL from settings
         const syncConfig = getSessionSyncConfig();
         const isDev = process.env.NODE_ENV !== 'production';
@@ -1388,15 +1464,16 @@ export function registerSettingsHandlers() {
         // Convert WebSocket URLs to HTTP: wss:// -> https://, ws:// -> http://
         const httpUrl = serverUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
         logger.main.info('[stytch:sign-in-google] Auth URL:', httpUrl, 'effectiveEnvironment:', effectiveEnvironment);
-        return StytchAuth.signInWithGoogle(httpUrl);
+        return StytchAuth.signInWithGoogle(httpUrl, options);
     });
 
     // Send magic link for passwordless authentication
-    safeHandle('stytch:send-magic-link', async (_event, email: string) => {
+    safeHandle('stytch:send-magic-link', async (_event, email: string, rawOptions?: unknown) => {
         ensureStytchInitialized();
         if (!email) {
             return { success: false, error: 'Email is required' };
         }
+        const options = parseAuthFlowOptions(rawOptions, 'sign-in');
         // Get the sync server URL from settings
         const syncConfig = getSessionSyncConfig();
         const isDev = process.env.NODE_ENV !== 'production';
@@ -1416,7 +1493,7 @@ export function registerSettingsHandlers() {
         // Convert WebSocket URLs to HTTP: wss:// -> https://, ws:// -> http://
         const httpUrl = serverUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
         logger.main.info('[stytch:send-magic-link] Sending to:', httpUrl, 'effectiveEnvironment:', effectiveEnvironment);
-        return StytchAuth.sendMagicLink(email, httpUrl);
+        return StytchAuth.sendMagicLink(email, httpUrl, options);
     });
 
     // Sign out (all accounts)
@@ -1443,23 +1520,6 @@ export function registerSettingsHandlers() {
         }
         await StytchAuth.signOut();
         return { success: true };
-    });
-
-    // Add a new account (opens OAuth flow)
-    safeHandle('stytch:add-account', async () => {
-        ensureStytchInitialized();
-        const syncConfig = getSessionSyncConfig();
-        const isDev = process.env.NODE_ENV !== 'production';
-        const effectiveEnvironment = isDev ? syncConfig?.environment : undefined;
-        let serverUrl: string;
-        if (effectiveEnvironment === 'development') {
-            serverUrl = 'http://localhost:8790';
-        } else if (syncConfig?.serverUrl) {
-            serverUrl = syncConfig.serverUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
-        } else {
-            serverUrl = 'https://sync.nimbalyst.com';
-        }
-        return StytchAuth.addAccount(serverUrl);
     });
 
     // Remove a specific account by personalOrgId

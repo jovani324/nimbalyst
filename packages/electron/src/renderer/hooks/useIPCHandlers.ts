@@ -10,8 +10,12 @@ import {
   type FrontmatterData,
 } from '@nimbalyst/runtime';
 import { editorRegistry } from '@nimbalyst/runtime/ai/EditorRegistry';
-import { SearchReplaceStateManager } from '@nimbalyst/runtime';
+import {
+  collabCommentControllerRegistry,
+  CollabCommentControllerError,
+} from '@nimbalyst/runtime/editor';
 import { store } from '@nimbalyst/runtime/store';
+import type { CollabScope } from '@nimbalyst/collab-client/core';
 import { DocumentModelRegistry } from '../services/document-model/DocumentModelRegistry';
 import { aiApi } from '../services/aiApi';
 import { getFileName } from '../utils/pathUtils';
@@ -26,6 +30,8 @@ import {
   removeSharedFolder,
   collectFolderSubtree,
   sharedFoldersAtom,
+  allSharedDocumentsAtom,
+  activeCollabScopeAtom,
 } from '../store/atoms/collabDocuments';
 import { getCollaborativeDocumentTypeCatalog } from '../services/CollaborativeDocumentTypeCatalog';
 import { createCollaborativeDocument } from '../services/collaborativeDocumentCreationOrchestrator';
@@ -37,6 +43,15 @@ import {
   menuFindNextCommandAtom,
   menuFindPreviousCommandAtom,
 } from '../store/atoms/menuCommands';
+import { openEditorFind } from '../components/TabEditor/editorFindCommand';
+import { acquireHeadlessCollabCommentController } from '../services/HeadlessCollabCommentController';
+import {
+  trackDocumentAction,
+  trackFolderCreated,
+  trackFolderDeleted,
+  trackFolderMoved,
+  trackFolderRenamed,
+} from '../utils/collabIndexAnalytics';
 
 // Tracker field updates now go through the generic trackerStatus frontmatter format.
 // No hardcoded plan-specific field list needed.
@@ -47,7 +62,10 @@ import {
  * (the same path a person uses). Empty/blank path resolves to the root (null).
  * Used by the shared-index MCP tool listeners below.
  */
-async function resolveSharedFolderPath(folderPath: string | undefined): Promise<string | null> {
+async function resolveSharedFolderPath(
+  scope: CollabScope,
+  folderPath: string | undefined,
+): Promise<string | null> {
   const trimmed = (folderPath ?? '').trim();
   if (!trimmed) return null;
   const segments = trimmed.split('/').map((s) => s.trim()).filter(Boolean);
@@ -60,10 +78,16 @@ async function resolveSharedFolderPath(folderPath: string | undefined): Promise<
     if (existing) {
       parentId = existing.folderId;
     } else {
-      parentId = await createSharedFolder(segment, parentId);
+      parentId = await createSharedFolder(scope, segment, parentId);
     }
   }
   return parentId;
+}
+
+function requireActiveCollabScope(): CollabScope {
+  const scope = store.get(activeCollabScopeAtom);
+  if (!scope) throw new Error('No active collaboration scope is available.');
+  return scope;
 }
 
 function mergeFrontmatterData(
@@ -655,16 +679,149 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
       }));
     }
 
+    const handleCollabDocComment = async ({
+      operation,
+      targetFilePath,
+      input,
+      agent,
+      workspacePath: routedWorkspacePath,
+      resultChannel,
+    }: {
+      operation: 'list' | 'reply' | 'createAnchored';
+      targetFilePath: string;
+      input: any;
+      agent?: { sessionId: string; sessionName: string };
+      workspacePath?: string;
+      resultChannel: string;
+    }) => {
+        let headlessAcquisition:
+          | Awaited<ReturnType<typeof acquireHeadlessCollabCommentController>>
+          | undefined;
+        try {
+          if (!targetFilePath || !isCollabUri(targetFilePath)) {
+            throw new CollabCommentControllerError(
+              'DOCUMENT_NOT_MOUNTED',
+              `A collab:// URI is required. Got: ${targetFilePath ?? '(missing)'}`,
+            );
+          }
+          let controller =
+            collabCommentControllerRegistry.get(targetFilePath);
+          if (!controller) {
+            if (operation === 'createAnchored') {
+              throw new CollabCommentControllerError(
+                'DOCUMENT_NOT_MOUNTED',
+                `Creating an anchored comment requires ${targetFilePath} to be open in a collaborative editor.`,
+              );
+            }
+            const currentWorkspacePath =
+              routedWorkspacePath ?? propsRef.current.workspacePath;
+            if (!currentWorkspacePath) {
+              throw new CollabCommentControllerError(
+                'DOCUMENT_NOT_MOUNTED',
+                'No workspace is available to acquire the collaborative document.',
+              );
+            }
+            headlessAcquisition =
+              await acquireHeadlessCollabCommentController(
+                targetFilePath,
+                currentWorkspacePath,
+              );
+            controller = headlessAcquisition.controller;
+          }
+
+          let result: unknown;
+          if (operation === 'list') {
+            result = controller.list({
+              cursor: input?.cursor,
+              includeResolved: input?.includeResolved,
+              limit: input?.limit,
+            });
+          } else {
+            if (!agent?.sessionId || !agent?.sessionName) {
+              throw new Error(
+                'The main process did not provide a verified agent session identity.',
+              );
+            }
+            const actor = controller.createAgentActor(agent);
+            if (operation === 'reply') {
+              result = await controller.reply({
+                threadId: input?.threadId,
+                replyToCommentId: input?.replyToCommentId,
+                body: input?.body,
+                clientMutationId: input?.clientMutationId,
+                mentionedUserIds: input?.mentionedUserIds,
+              }, actor);
+            } else if (operation === 'createAnchored') {
+              result = await controller.createAnchored({
+                anchor: input?.anchor,
+                body: input?.body,
+                clientMutationId: input?.clientMutationId,
+                mentionedUserIds: input?.mentionedUserIds,
+              }, actor);
+            } else {
+              throw new Error(`Unknown collaborative comment operation: ${operation}`);
+            }
+          }
+
+          if (operation !== 'list') {
+            await headlessAcquisition?.flush();
+          }
+          window.electronAPI.sendMcpCollabDocCommentResult(resultChannel, {
+            success: true,
+            result,
+          });
+        } catch (error) {
+          window.electronAPI.sendMcpCollabDocCommentResult(resultChannel, {
+            success: false,
+            code:
+              error instanceof CollabCommentControllerError
+                ? error.code
+                : 'COMMENT_OPERATION_FAILED',
+            error:
+              error instanceof Error
+                ? error.message
+                : 'Unknown collaborative comment error',
+          });
+        } finally {
+          headlessAcquisition?.release();
+        }
+    };
+    if (window.electronAPI.onMcpReadCollabDocComments) {
+      cleanupFns.push(
+        window.electronAPI.onMcpReadCollabDocComments((data) => {
+          void handleCollabDocComment({ ...data, operation: 'list' });
+        }),
+      );
+    }
+    if (window.electronAPI.onMcpReplyToCollabDocComment) {
+      cleanupFns.push(
+        window.electronAPI.onMcpReplyToCollabDocComment((data) => {
+          void handleCollabDocComment({ ...data, operation: 'reply' });
+        }),
+      );
+    }
+    if (window.electronAPI.onMcpCreateCollabDocComment) {
+      cleanupFns.push(
+        window.electronAPI.onMcpCreateCollabDocComment((data) => {
+          void handleCollabDocComment({
+            ...data,
+            operation: 'createAnchored',
+          });
+        }),
+      );
+    }
+
     // Shared-index (first-class shared folders + documents) MCP tools. Each
     // routes through the SAME renderer functions a person uses so the AI's
     // changes sync to the team identically.
     if (window.electronAPI.onMcpCreateSharedDoc) {
       cleanupFns.push(window.electronAPI.onMcpCreateSharedDoc(async ({ title, documentType, parentFolderId, folderPath, initialContent, resultChannel }) => {
         try {
+          const scope = requireActiveCollabScope();
           // folderPath (by name, creates missing folders) wins over an explicit
           // parentFolderId when both are supplied.
           const targetParentId = folderPath !== undefined
-            ? await resolveSharedFolderPath(folderPath)
+            ? await resolveSharedFolderPath(scope, folderPath)
             : (parentFolderId ?? null);
 
           const requestedDocumentType = documentType || 'markdown';
@@ -674,10 +831,13 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
           if (resolution.state !== 'ready') throw new Error(resolution.reason);
 
           const document = await createCollaborativeDocument({
+            scope,
             descriptor: resolution.descriptor,
             requestedName: title,
             parentFolderId: targetParentId,
             sourceContent: initialContent ?? '',
+            analyticsSource: 'agent_tool',
+            analyticsActorType: 'agent',
           });
 
           window.electronAPI.sendMcpCollabIndexResult(resultChannel, {
@@ -696,10 +856,16 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
     if (window.electronAPI.onMcpCreateSharedFolder) {
       cleanupFns.push(window.electronAPI.onMcpCreateSharedFolder(async ({ name, parentFolderId, folderPath, resultChannel }) => {
         try {
+          const scope = requireActiveCollabScope();
           const targetParentId = folderPath !== undefined
-            ? await resolveSharedFolderPath(folderPath)
+            ? await resolveSharedFolderPath(scope, folderPath)
             : (parentFolderId ?? null);
-          const folderId = await createSharedFolder(name, targetParentId);
+          const folderId = await createSharedFolder(scope, name, targetParentId);
+          trackFolderCreated({
+            actorType: 'agent',
+            source: 'agent_tool',
+            nested: targetParentId !== null,
+          });
           window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true, folderId });
         } catch (error) {
           window.electronAPI.sendMcpCollabIndexResult(resultChannel, {
@@ -713,13 +879,27 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
     if (window.electronAPI.onMcpMoveSharedItem) {
       cleanupFns.push(window.electronAPI.onMcpMoveSharedItem(async ({ itemId, kind, newParentFolderId, folderPath, resultChannel }) => {
         try {
+          const scope = requireActiveCollabScope();
           const targetParentId = folderPath !== undefined
-            ? await resolveSharedFolderPath(folderPath)
+            ? await resolveSharedFolderPath(scope, folderPath)
             : (newParentFolderId ?? null);
           if (kind === 'doc') {
-            moveSharedDocument(itemId, targetParentId);
+            const movedType = store.get(allSharedDocumentsAtom)
+              .find(doc => doc.documentId === itemId)?.documentType;
+            moveSharedDocument(scope, itemId, targetParentId);
+            trackDocumentAction({
+              action: 'moved',
+              actorType: 'agent',
+              documentType: movedType,
+              entryPoint: 'agent_tool',
+            });
           } else {
-            moveSharedFolder(itemId, targetParentId);
+            moveSharedFolder(scope, itemId, targetParentId);
+            trackFolderMoved({
+              actorType: 'agent',
+              source: 'agent_tool',
+              toRoot: targetParentId === null,
+            });
           }
           window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true });
         } catch (error) {
@@ -734,10 +914,23 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
     if (window.electronAPI.onMcpRenameSharedItem) {
       cleanupFns.push(window.electronAPI.onMcpRenameSharedItem(async ({ itemId, kind, newName, resultChannel }) => {
         try {
+          const scope = requireActiveCollabScope();
           if (kind === 'doc') {
-            await updateSharedDocumentTitle(itemId, newName);
+            const renamedType = store.get(allSharedDocumentsAtom)
+              .find(doc => doc.documentId === itemId)?.documentType;
+            await updateSharedDocumentTitle(scope, itemId, newName);
+            trackDocumentAction({
+              action: 'renamed',
+              actorType: 'agent',
+              documentType: renamedType,
+              entryPoint: 'agent_tool',
+            });
           } else {
-            await renameSharedFolder(itemId, newName);
+            await renameSharedFolder(scope, itemId, newName);
+            trackFolderRenamed({
+              actorType: 'agent',
+              source: 'agent_tool',
+            });
           }
           window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true });
         } catch (error) {
@@ -752,13 +945,33 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
     if (window.electronAPI.onMcpDeleteSharedItem) {
       cleanupFns.push(window.electronAPI.onMcpDeleteSharedItem(async ({ itemId, kind, resultChannel }) => {
         try {
+          const scope = requireActiveCollabScope();
           if (kind === 'doc') {
-            removeSharedDocument(itemId);
+            const trashedType = store.get(allSharedDocumentsAtom)
+              .find(doc => doc.documentId === itemId)?.documentType;
+            removeSharedDocument(scope, itemId);
+            trackDocumentAction({
+              action: 'trashed',
+              actorType: 'agent',
+              documentType: trashedType,
+              entryPoint: 'agent_tool',
+            });
             window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true });
           } else {
             // Count the subtree before removal so we can report what was pruned.
-            const removedCount = collectFolderSubtree(store.get(sharedFoldersAtom), itemId).length;
-            removeSharedFolder(itemId);
+            // Mirrors the sidebar's count so agent and human deletions of the
+            // same folder report the same buckets.
+            const subtreeFolderIds = new Set(collectFolderSubtree(store.get(sharedFoldersAtom), itemId));
+            const removedCount = subtreeFolderIds.size;
+            const documentCount = store.get(allSharedDocumentsAtom)
+              .filter(doc => doc.parentFolderId && subtreeFolderIds.has(doc.parentFolderId)).length;
+            removeSharedFolder(scope, itemId);
+            trackFolderDeleted({
+              actorType: 'agent',
+              source: 'agent_tool',
+              documentCount,
+              subfolderCount: Math.max(0, removedCount - 1),
+            });
             window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true, removedCount });
           }
         } catch (error) {
@@ -1172,12 +1385,12 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
         (window as unknown as { __currentDocumentPath?: string | null }).__currentDocumentPath ||
         editorRegistry.getActiveFilePath();
       if (activeFilePath) {
-        SearchReplaceStateManager.toggle(activeFilePath);
+        openEditorFind(activeFilePath);
       }
     } else if (mode === 'collab') {
       const activeDocumentPath = collabModeRef.current?.getActiveDocumentPath?.();
       if (activeDocumentPath) {
-        SearchReplaceStateManager.toggle(activeDocumentPath);
+        openEditorFind(activeDocumentPath);
       }
     } else if (mode === 'agent') {
       window.dispatchEvent(new CustomEvent('menu:find'));

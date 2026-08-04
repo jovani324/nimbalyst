@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
 import { MaterialSymbol } from '@nimbalyst/runtime';
@@ -8,10 +8,16 @@ import { SettingsSidebar, type SettingsCategory } from './SettingsSidebar';
 import {
   getDefaultSettingsCategory,
   getSettingsRoutesForScope,
+  isExtensionSettingsRouteId,
   normalizeSettingsDestination,
   type SettingsDestination,
   type SettingsScope,
 } from './settingsRoutes';
+import {
+  ExtensionSettingsRoutePanel,
+  toSettingsRoute,
+  useExtensionSettingsRoutes,
+} from './ExtensionSettingsRoutes';
 import { pushNavigationEntryAtom, isRestoringNavigationAtom } from '../../store';
 
 // Import provider panels from GlobalSettings
@@ -42,6 +48,7 @@ import { ExtensionMarketplacePanel } from './panels/ExtensionMarketplacePanel';
 import { walkthroughs } from '../../walkthroughs';
 import {
   aiProviderSettingsAtom,
+  advancedSettingsAtom,
   developerModeAtom,
   setAIProviderSettingsAtom,
   setProviderConfigAtom,
@@ -51,8 +58,15 @@ import {
   type ProviderConfig,
   type AIModel,
 } from '../../store/atoms/appSettings';
+import { shouldShowDirectChatProviderSettings } from '../../utils/chatProviderVisibility';
+import { teamsConfiguredAtom } from '../../store/atoms/settingsDomains';
 import { omitModelsField } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
-import { AccountSettingsPanel } from './panels/AccountSettingsPanel';
+import {
+  AccountDevicesSettingsPanel,
+  AccountSettingsPanel,
+  AccountSharedLinksSettingsPanel,
+  MobileAppSettingsPanel,
+} from './panels/AccountSettingsPanel';
 import { ProjectSharingPanel, type ProjectSettingsTarget } from './panels/ProjectSharingPanel';
 import { ProjectAIProvidersPanel } from './panels/ProjectAIProvidersPanel';
 
@@ -240,6 +254,7 @@ export function SettingsView({
 }: SettingsViewProps) {
   const posthog = usePostHog();
   const developerMode = useAtomValue(developerModeAtom);
+  const teamsConfigured = useAtomValue(teamsConfiguredAtom);
 
   const normalizedInitialScope: SettingsScope = initialScope === 'user'
     ? 'application'
@@ -274,10 +289,16 @@ export function SettingsView({
       ? requestedDestination.target
       : (workspacePath ? { kind: 'workspace', workspacePath } : undefined),
   );
+  const loadedExtensionSettingsRoutes = useExtensionSettingsRoutes();
+  const extensionSettingsRoutes = useMemo(
+    () => loadedExtensionSettingsRoutes.map(toSettingsRoute),
+    [loadedExtensionSettingsRoutes],
+  );
 
 
   // AI Provider settings - using Jotai atoms (Phase 5b)
   const [aiProviderSettings] = useAtom(aiProviderSettingsAtom);
+  const advancedSettings = useAtomValue(advancedSettingsAtom);
   const [, updateAIProviderSettings] = useAtom(setAIProviderSettingsAtom);
   const [, updateProviderConfig] = useAtom(setProviderConfigAtom);
   const [, updateApiKey] = useAtom(setApiKeyAtom);
@@ -285,6 +306,10 @@ export function SettingsView({
 
   // Destructure for easier access (these update when atom updates)
   const { providers, apiKeys, availableModels } = aiProviderSettings;
+  const showDirectChatProviders = shouldShowDirectChatProviderSettings(
+    advancedSettings.showDirectChatProviders,
+    aiProviderSettings,
+  );
 
   // Local setters that wrap atom updates for backward compatibility
   const setProviders = useCallback((updater: Record<string, ProviderConfig> | ((prev: Record<string, ProviderConfig>) => Record<string, ProviderConfig>)) => {
@@ -370,14 +395,31 @@ export function SettingsView({
 
   // When scope changes, ensure selected category is valid for that scope
   useEffect(() => {
-    const validCategories = getSettingsRoutesForScope(scope, { developerMode }).map((route) => route.id);
+    const validCategories = getSettingsRoutesForScope(scope, {
+      developerMode,
+      showDirectChatProviders,
+      teamsConfigured,
+    }, extensionSettingsRoutes).map((route) => route.id);
     // Extension-contributed agent providers (e.g. antigravity-gemini-agent) are
     // valid selectable categories too; don't bounce the user off them.
     const isExtensionProvider = scope === 'application' && extAgentProviders.some((pr) => pr.id === selectedCategory);
     if (!isExtensionProvider && !validCategories.includes(selectedCategory as typeof validCategories[number])) {
-      setSelectedCategory(getDefaultSettingsCategory(scope));
+      // The scope's static default can itself be unavailable (project-sharing
+      // hides without a team) — land on the first visible route instead.
+      const fallback = getDefaultSettingsCategory(scope);
+      setSelectedCategory(
+        validCategories.includes(fallback) ? fallback : (validCategories[0] ?? fallback),
+      );
     }
-  }, [scope, selectedCategory, developerMode, extAgentProviders]);
+  }, [
+    scope,
+    selectedCategory,
+    developerMode,
+    extAgentProviders,
+    extensionSettingsRoutes,
+    showDirectChatProviders,
+    teamsConfigured,
+  ]);
 
   useEffect(() => {
     if (!developerMode && selectedCategory === 'github') {
@@ -775,6 +817,31 @@ export function SettingsView({
       return panel;
     };
 
+    const selectedCategoryId = String(selectedCategory);
+    if (isExtensionSettingsRouteId(selectedCategoryId)) {
+      const extensionRoute = loadedExtensionSettingsRoutes.find(
+        (route) => route.id === selectedCategoryId && route.scope === scope,
+      );
+      if (!extensionRoute) {
+        return (
+          <p className="settings-extension-route-unavailable text-sm text-[var(--nim-text-muted)]">
+            This extension settings route is no longer available.
+          </p>
+        );
+      }
+      return (
+        <ExtensionSettingsRoutePanel
+          route={extensionRoute}
+          workspacePath={
+            scope === 'project' && projectTarget?.kind === 'workspace'
+              ? projectTarget.workspacePath
+              : undefined
+          }
+          projectTarget={scope === 'project' ? projectTarget : undefined}
+        />
+      );
+    }
+
     switch (selectedCategory) {
       case 'claude':
         return wrapWithOverride('claude', 'Claude', <ClaudePanel {...commonProps} />);
@@ -868,14 +935,24 @@ export function SettingsView({
             workspacePath={scope === 'project' ? workspacePath ?? undefined : undefined}
           />
         );
+      // One account route, one panel — no stacked headers. Legacy personal-*
+      // ids resolve to the route that now owns that section.
       case 'account':
       case 'personal-accounts':
-      case 'personal-mobile':
-      case 'personal-devices':
-      case 'personal-shared-links':
-      case 'sync':
-      case 'shared-links':
         return <AccountSettingsPanel />;
+      // 'sync' is the mobile tips' deep link: they want pairing and the
+      // prevent-sleep control, which both live in the Mobile App panel.
+      case 'account-mobile':
+      case 'personal-mobile':
+      case 'sync':
+        return <MobileAppSettingsPanel />;
+      case 'account-devices':
+      case 'personal-devices':
+        return <AccountDevicesSettingsPanel />;
+      case 'account-shared-links':
+      case 'personal-shared-links':
+      case 'shared-links':
+        return <AccountSharedLinksSettingsPanel />;
       case 'themes':
         return (
           <ThemesPanel
@@ -1043,6 +1120,8 @@ export function SettingsView({
           onSelectCategory={setSelectedCategory}
           providerStatus={providerStatus}
           scope={scope}
+          showDirectChatProviders={showDirectChatProviders}
+          extensionRoutes={extensionSettingsRoutes}
           // releaseChannel now comes from Jotai atom in SettingsSidebar
         />
 

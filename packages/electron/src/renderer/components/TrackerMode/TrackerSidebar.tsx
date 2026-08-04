@@ -1,9 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime';
 import type { TrackerIdentity, TrackerItemType } from '@nimbalyst/runtime';
 import { trackerDataLoadedAtom, trackerItemsArrayAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin';
-import type { TrackerDataModel } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import type { TrackerDataModel, TrackerFilterSet } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import { generateKeyBetween } from '@nimbalyst/runtime/utils/fractionalIndex';
 import type { TrackerNavigationEntry, TrackerNavigationFolder, TrackerTypePlacement } from '@nimbalyst/runtime/sync';
 import type { TrackerFilterChip } from '../../store/atoms/trackers';
@@ -14,7 +14,21 @@ import { AlphaBadge } from '../common/AlphaBadge';
 import { FloatingPortal, useFloatingMenu, virtualElement } from '../../hooks/useFloatingMenu';
 import { buildTrackerNavigationTree } from './trackerNavigationTree';
 import { trackerSyncConnectionAtom } from '../../store/atoms/trackerSync';
+import { trackerSnoozedUntilByItemIdAtom } from '../../store/atoms/trackerPersonalState';
+import { countInboxItems, type InboxSignals } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import {
+  getRecordPriority,
+  getRecordStatus,
+  getFieldByRole,
+} from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { countFilteredTrackerItemsByTypes } from './trackerSavedViews';
+
+/** Same accessors the inbox view uses, so the badge and the queue can't disagree. */
+const INBOX_SIGNALS: InboxSignals = {
+  getStatus: getRecordStatus,
+  getPriority: getRecordPriority,
+  getAssignee: (record) => getFieldByRole(record, 'assignee'),
+};
 
 interface TrackerSidebarProps {
   workspacePath?: string;
@@ -30,33 +44,23 @@ interface TrackerSidebarProps {
   viewedAtByItemId: ReadonlyMap<string, number>;
   personalStateHydrated: boolean;
   recentlyViewedDays: 7 | 30 | 90 | null;
-  onRecentlyViewedDaysChange: (days: 7 | 30 | 90 | null) => void;
+  columnFilters: TrackerFilterSet | null;
   viewMode: ViewMode;
   onSelectType: (type: string | 'all') => void;
-  onToggleFilter: (filter: TrackerFilterChip) => void;
   onViewModeChange: (mode: ViewMode) => void;
   /** Saved views for this workspace (NIM-788). */
   savedViews: SavedView[];
+  /** View currently represented by the main header. */
+  activeSavedViewId: string | null;
   /** Apply a saved view's definition. */
   onApplyView: (view: SavedView) => void;
-  /** Save the current view state under a name. */
-  onSaveView: (name: string) => void;
-  /** Delete a saved view by id. */
-  onDeleteView: (viewId: string) => void;
+  /** Delete a saved view. Deleting a shared view removes it for the team. */
+  onDeleteView: (view: SavedView) => void;
+  /** Share the view with the team, or stop sharing it. */
+  onToggleShareView: (view: SavedView) => void;
   onSaveNavigationEntry: (entry: TrackerNavigationEntry) => Promise<void>;
   onDeleteFolder: (folderId: string) => Promise<void>;
 }
-
-const FILTER_CHIPS: { id: TrackerFilterChip; label: string; icon: string }[] = [
-  { id: 'mine', label: 'Mine', icon: 'person' },
-  { id: 'unassigned', label: 'Unassigned', icon: 'person_off' },
-  { id: 'high-priority', label: 'High Priority', icon: 'priority_high' },
-  { id: 'favorites', label: 'Favorites', icon: 'star' },
-  { id: 'recently-viewed', label: 'Recently Viewed', icon: 'visibility' },
-  { id: 'recently-edited-by-others', label: 'Edited by Others', icon: 'group' },
-  { id: 'recently-updated', label: 'Recent', icon: 'schedule' },
-  { id: 'archived', label: 'Archived', icon: 'archive' },
-];
 
 interface SidebarCountProps {
   activeFilters: TrackerFilterChip[];
@@ -67,6 +71,8 @@ interface SidebarCountProps {
   viewedAtByItemId: ReadonlyMap<string, number>;
   personalStateHydrated: boolean;
   recentlyViewedDays: 7 | 30 | 90 | null;
+  columnFilters: TrackerFilterSet | null;
+  nowMs: number;
 }
 
 /** Small component so each sidebar row subscribes to the tracker item store. */
@@ -80,21 +86,54 @@ function SidebarTypeCount({
   viewedAtByItemId,
   personalStateHydrated,
   recentlyViewedDays,
+  columnFilters,
+  nowMs,
 }: SidebarCountProps & { type: TrackerItemType }) {
   const loaded = useAtomValue(trackerDataLoadedAtom);
   const items = useAtomValue(trackerItemsArrayAtom);
   const count = useMemo(() => countFilteredTrackerItemsByTypes(
     items,
     [type],
-    { activeFilters, tagFilter, sourceFilter, recentlyViewedDays },
-    { identity: currentIdentity, favoriteItemIds, viewedAtByItemId },
-  ), [items, type, activeFilters, tagFilter, sourceFilter, currentIdentity, favoriteItemIds, viewedAtByItemId, recentlyViewedDays]);
+    { activeFilters, tagFilter, sourceFilter, recentlyViewedDays, columnFilters },
+    { identity: currentIdentity, favoriteItemIds, viewedAtByItemId, nowMs },
+  ), [items, type, activeFilters, tagFilter, sourceFilter, currentIdentity, favoriteItemIds, viewedAtByItemId, recentlyViewedDays, columnFilters, nowMs]);
   // NIM-631: before the tracker atoms finish hydrating, the count map is empty,
   // so populated types would flash "0" during a sync reconnect + renderer
   // reload. Suppress the badge until hydration completes rather than showing a
   // misleading zero.
-  if (!loaded || (!personalStateHydrated && activeFilters.some((filter) => filter === 'favorites' || filter === 'recently-viewed'))) return null;
+  if (!loaded || (!personalStateHydrated && (
+    activeFilters.some((filter) => filter === 'favorites' || filter === 'recently-viewed')
+    || (columnFilters?.clauses ?? []).some(clause => clause.field === 'favorite' || clause.field === 'viewed')
+  ))) return null;
   return <>{count}</>;
+}
+
+/**
+ * Corner badge on the inbox button: how many items are waiting on a decision,
+ * falling back to the alpha dot when there is nothing to triage. Subscribes to
+ * the item store itself so the rest of the sidebar doesn't re-render on every
+ * tracker write, and so the inbox announces work instead of waiting to be found.
+ */
+function InboxButtonBadge(): React.ReactElement {
+  const loaded = useAtomValue(trackerDataLoadedAtom);
+  const items = useAtomValue(trackerItemsArrayAtom);
+  const snoozedUntilByItemId = useAtomValue(trackerSnoozedUntilByItemIdAtom);
+  const count = useMemo(
+    () => countInboxItems(items, { ...INBOX_SIGNALS, snoozedUntilByItemId }),
+    [items, snoozedUntilByItemId],
+  );
+  // Suppress a "0" while the atoms hydrate -- it would read as inbox zero.
+  if (!loaded || count === 0) {
+    return <AlphaBadge size="dot" className="absolute -top-1 -right-1 pointer-events-none" />;
+  }
+  return (
+    <span
+      className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-[3px] flex items-center justify-center rounded-full text-[9px] font-medium text-white bg-[var(--nim-primary)] pointer-events-none"
+      data-testid="tracker-inbox-count"
+    >
+      {count > 99 ? '99+' : count}
+    </span>
+  );
 }
 
 function SidebarFolderCount({
@@ -107,16 +146,21 @@ function SidebarFolderCount({
   viewedAtByItemId,
   personalStateHydrated,
   recentlyViewedDays,
+  columnFilters,
+  nowMs,
 }: SidebarCountProps & { types: string[] }) {
   const loaded = useAtomValue(trackerDataLoadedAtom);
   const items = useAtomValue(trackerItemsArrayAtom);
   const count = useMemo(() => countFilteredTrackerItemsByTypes(
     items,
     types,
-    { activeFilters, tagFilter, sourceFilter, recentlyViewedDays },
-    { identity: currentIdentity, favoriteItemIds, viewedAtByItemId },
-  ), [items, types, activeFilters, tagFilter, sourceFilter, currentIdentity, favoriteItemIds, viewedAtByItemId, recentlyViewedDays]);
-  if (!loaded || (!personalStateHydrated && activeFilters.some((filter) => filter === 'favorites' || filter === 'recently-viewed'))) return null;
+    { activeFilters, tagFilter, sourceFilter, recentlyViewedDays, columnFilters },
+    { identity: currentIdentity, favoriteItemIds, viewedAtByItemId, nowMs },
+  ), [items, types, activeFilters, tagFilter, sourceFilter, currentIdentity, favoriteItemIds, viewedAtByItemId, recentlyViewedDays, columnFilters, nowMs]);
+  if (!loaded || (!personalStateHydrated && (
+    activeFilters.some((filter) => filter === 'favorites' || filter === 'recently-viewed')
+    || (columnFilters?.clauses ?? []).some(clause => clause.field === 'favorite' || clause.field === 'viewed')
+  ))) return null;
   return <>{count}</>;
 }
 
@@ -134,24 +178,22 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
   viewedAtByItemId,
   personalStateHydrated,
   recentlyViewedDays,
-  onRecentlyViewedDaysChange,
+  columnFilters,
   viewMode,
   onSelectType,
-  onToggleFilter,
   onViewModeChange,
   savedViews,
+  activeSavedViewId,
   onApplyView,
-  onSaveView,
   onDeleteView,
+  onToggleShareView,
   onSaveNavigationEntry,
   onDeleteFolder,
 }) => {
-  const [savingView, setSavingView] = useState(false);
   const trackerSyncConnection = useAtomValue(trackerSyncConnectionAtom);
   const isSharedLayout = !!workspacePath &&
     trackerSyncConnection?.workspacePath === workspacePath &&
     trackerSyncConnection.projectId !== null;
-  const [newViewName, setNewViewName] = useState('');
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
@@ -160,6 +202,15 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
   const [draggedEntryId, setDraggedEntryId] = useState<string | null>(null);
   const [contextFolder, setContextFolder] = useState<TrackerNavigationFolder | null>(null);
   const [contextPoint, setContextPoint] = useState({ x: 0, y: 0 });
+  const hasRelativeFilters = (columnFilters?.clauses ?? []).some(clause =>
+    clause.op === 'in-last' || clause.op === 'not-in-last');
+  const [filterClockMs, setFilterClockMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!hasRelativeFilters) return;
+    setFilterClockMs(Date.now());
+    const interval = window.setInterval(() => setFilterClockMs(Date.now()), 60_000);
+    return () => window.clearInterval(interval);
+  }, [hasRelativeFilters]);
   const contextReference = useMemo(
     () => virtualElement(contextPoint.x, contextPoint.y),
     [contextPoint],
@@ -298,18 +349,12 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
           viewedAtByItemId={viewedAtByItemId}
           personalStateHydrated={personalStateHydrated}
           recentlyViewedDays={recentlyViewedDays}
+          columnFilters={columnFilters}
+          nowMs={filterClockMs}
         />
       </span>
     </button>
   );
-
-  const commitSaveView = () => {
-    const name = newViewName.trim();
-    if (!name) return;
-    onSaveView(name);
-    setNewViewName('');
-    setSavingView(false);
-  };
 
   return (
     <div className="tracker-sidebar w-full h-full flex flex-col bg-nim-secondary overflow-hidden" data-testid="tracker-sidebar">
@@ -370,6 +415,19 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
                     <MaterialSymbol icon="sell" size={16} />
                     <AlphaBadge size="dot" className="absolute -top-1 -right-1 pointer-events-none" />
                   </button>
+                  <button
+                    className={`relative flex items-center justify-center w-7 h-6 border-l border-nim transition-colors ${
+                      viewMode === 'inbox'
+                        ? 'bg-nim-active text-nim'
+                        : 'bg-nim-secondary text-nim-muted hover:text-nim'
+                    }`}
+                    onClick={() => onViewModeChange('inbox')}
+                    title="Triage inbox (alpha)"
+                    data-testid="tracker-view-mode-inbox"
+                  >
+                    <MaterialSymbol icon="inbox" size={16} />
+                    <InboxButtonBadge />
+                  </button>
                 </div>
             </>
           }
@@ -380,112 +438,26 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {/* Filter chips (multi-select) */}
-        <div className="px-2 pt-2 pb-1">
-          <div className="text-[10px] font-semibold text-nim-faint uppercase tracking-wider px-1 mb-1.5">
-            Filters
-          </div>
-          {activeFilters.includes('recently-viewed') && (
-            <div className="mt-1.5 flex items-center gap-1" data-testid="tracker-recently-viewed-days">
-              {([7, 30, 90, null] as const).map((days) => (
-                <button
-                  key={days ?? 'any'}
-                  type="button"
-                  onClick={() => onRecentlyViewedDaysChange(days)}
-                  className={recentlyViewedDays === days
-                    ? 'px-1.5 py-0.5 rounded text-[10px] bg-nim-active text-nim'
-                    : 'px-1.5 py-0.5 rounded text-[10px] text-nim-faint hover:text-nim'}
-                >
-                  {days === null ? 'Any' : `${days}d`}
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="flex flex-wrap gap-1">
-            {FILTER_CHIPS.map((chip) => {
-              const isActive = activeFilters.includes(chip.id);
-              return (
-                <button
-                  key={chip.id}
-                  data-testid={`tracker-filter-${chip.id}`}
-                  className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors ${
-                    isActive
-                      ? 'bg-[var(--nim-primary)] text-white'
-                      : 'bg-nim-tertiary text-nim-muted hover:bg-nim-active hover:text-nim'
-                  }`}
-                  onClick={() => onToggleFilter(chip.id)}
-                >
-                  <MaterialSymbol icon={chip.icon} size={13} />
-                  {chip.label}
-                </button>
-              );
-            })}
-          </div>
-          {activeFilters.length > 0 && (
-            <button
-              className="mt-1 px-1 text-[10px] text-nim-faint hover:text-nim-muted transition-colors"
-              onClick={() => activeFilters.forEach(f => onToggleFilter(f))}
-            >
-              Clear filters
-            </button>
-          )}
-        </div>
-
         {/* Saved Views Section (NIM-788) */}
-        <div className="px-2 pt-2 pb-1 border-t border-nim mt-1" data-testid="tracker-saved-views">
+        <div className="px-2 pt-2 pb-1" data-testid="tracker-saved-views">
           <div className="flex items-center justify-between px-1 mb-1.5">
             <span className="text-[10px] font-semibold text-nim-faint uppercase tracking-wider">
               Saved Views
             </span>
-            <button
-              className="flex items-center gap-0.5 text-[10px] text-nim-faint hover:text-nim transition-colors"
-              onClick={() => setSavingView((v) => !v)}
-              title="Save current view"
-              data-testid="tracker-saved-view-add"
-            >
-              <MaterialSymbol icon="add" size={13} />
-            </button>
           </div>
 
-          {savingView && (
-            <div className="flex items-center gap-1 mb-1.5 px-1">
-              <input
-                autoFocus
-                type="text"
-                value={newViewName}
-                onChange={(e) => setNewViewName(e.target.value)}
-                onKeyDown={(e) => {
-                  e.stopPropagation();
-                  if (e.key === 'Enter') commitSaveView();
-                  if (e.key === 'Escape') { setSavingView(false); setNewViewName(''); }
-                }}
-                placeholder="View name..."
-                className="flex-1 min-w-0 px-2 py-1 text-[11px] bg-nim border border-nim rounded text-nim placeholder:text-nim-faint focus:outline-none focus:border-[var(--nim-primary)]"
-                data-testid="tracker-saved-view-name-input"
-              />
-              <button
-                className="px-1.5 py-1 text-[11px] text-white bg-[var(--nim-primary)] rounded hover:opacity-90 disabled:opacity-40"
-                onClick={commitSaveView}
-                disabled={!newViewName.trim()}
-                data-testid="tracker-saved-view-save"
-              >
-                Save
-              </button>
-            </div>
-          )}
-
           {savedViews.length === 0 ? (
-            !savingView && (
-              <div className="px-1 text-[10px] text-nim-faint italic">
-                Save the current filters and layout as a reusable view.
-              </div>
-            )
+            <div className="px-1 text-[10px] text-nim-faint italic">
+              Saved views will appear here.
+            </div>
           ) : (
             <div className="flex flex-col gap-0.5">
               {savedViews.map((view) => (
                 <div
                   key={view.id}
-                  className="group flex items-center gap-1 rounded-md hover:bg-nim-tertiary"
+                  className={`group flex items-center gap-1 rounded-md ${
+                    activeSavedViewId === view.id ? 'bg-nim-active' : 'hover:bg-nim-tertiary'
+                  }`}
                   data-testid="tracker-saved-view-item"
                 >
                   <button
@@ -495,11 +467,31 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
                   >
                     <MaterialSymbol icon="bookmark" size={13} className="shrink-0" />
                     <span className="flex-1 truncate">{view.name}</span>
+                    {view.shared && (
+                      <MaterialSymbol
+                        icon="group"
+                        size={12}
+                        className="shrink-0 text-nim-faint"
+                        title="Shared with this team"
+                      />
+                    )}
                   </button>
+                  {isSharedLayout && (
+                    <button
+                      className={view.shared
+                        ? 'px-1.5 text-[var(--nim-primary)]'
+                        : 'opacity-0 group-hover:opacity-100 px-1.5 text-nim-faint hover:text-nim transition-opacity'}
+                      onClick={() => onToggleShareView(view)}
+                      title={view.shared ? 'Stop sharing with the team' : 'Share view with the team'}
+                      data-testid="tracker-saved-view-share"
+                    >
+                      <MaterialSymbol icon={view.shared ? 'group' : 'group_add'} size={13} />
+                    </button>
+                  )}
                   <button
                     className="opacity-0 group-hover:opacity-100 px-1.5 text-nim-faint hover:text-[#ef4444] transition-opacity"
-                    onClick={() => onDeleteView(view.id)}
-                    title="Delete view"
+                    onClick={() => onDeleteView(view)}
+                    title={view.shared ? 'Delete view for the whole team' : 'Delete view'}
                     data-testid="tracker-saved-view-delete"
                   >
                     <MaterialSymbol icon="close" size={13} />
@@ -675,6 +667,8 @@ export const TrackerSidebar: React.FC<TrackerSidebarProps> = ({
                       viewedAtByItemId={viewedAtByItemId}
                       personalStateHydrated={personalStateHydrated}
                       recentlyViewedDays={recentlyViewedDays}
+                      columnFilters={columnFilters}
+                      nowMs={filterClockMs}
                     />
                   </span>
                   <button

@@ -59,8 +59,7 @@ describe('MCP tool budget characterization (current first-party surface)', () =>
     }
 
     // Per-tool eagerness: only CORE_ALWAYS_LOAD_TOOLS are charged eagerly.
-    // display_to_user / capture_editor_screenshot are eager because the prompt
-    // instructs the model to use them and it needs their schemas (NIM-1766).
+    // Lower-frequency core schemas stay registered but defer through ToolSearch.
     const report = buildToolBudgetReport(byServer, MCP_EAGER_CONFIG_KEYS, CORE_ALWAYS_LOAD_TOOLS);
 
     // Visible in test output for before/after comparison across phases.
@@ -72,9 +71,8 @@ describe('MCP tool budget characterization (current first-party surface)', () =>
 
     expect(report.totalToolCount).toBeGreaterThan(0);
     // The always-load core subset is the fixed tool floor every session pays.
-    // ~2.4K after display_to_user / capture_editor_screenshot rejoined the eager
-    // set (NIM-1766); the visual-tool schemas are the bulk. Ceiling leaves
-    // headroom for description churn but catches a fat schema creeping back in.
+    // The ceiling leaves headroom for description churn while catching a large
+    // schema creeping back into the eager set.
     expect(report.eagerEstTokens).toBeGreaterThan(0);
     expect(report.eagerEstTokens).toBeLessThan(3200);
   });
@@ -94,6 +92,29 @@ describe('MCP tool budget characterization (current first-party surface)', () =>
 
   it('confirms core is the only eager server', () => {
     expect(MCP_EAGER_CONFIG_KEYS).toEqual([MCP_CORE]);
+  });
+
+  it('registers explicit collaborative comment tools without caller-supplied identity', () => {
+    const editorTools = getEditorToolSchemas('characterization-session');
+    const byName = new Map(editorTools.map((tool) => [tool.name, tool]));
+
+    expect([
+      'readCollabDocComments',
+      'replyToCollabDocComment',
+      'createCollabDocComment',
+    ].every((name) => byName.has(name))).toBe(true);
+    for (const name of [
+      'replyToCollabDocComment',
+      'createCollabDocComment',
+    ]) {
+      const properties = byName.get(name)?.inputSchema?.properties ?? {};
+      expect(properties).not.toHaveProperty('actor');
+      expect(properties).not.toHaveProperty('sessionId');
+      expect(properties).not.toHaveProperty('onBehalfOfUserId');
+      expect(byName.get(name)?.inputSchema?.required).toContain(
+        'clientMutationId',
+      );
+    }
   });
 
   // Reverse of the mapping test above: guards against topology declaring a tool

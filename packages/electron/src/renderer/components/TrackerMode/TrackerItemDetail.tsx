@@ -12,18 +12,21 @@ import { useAtomValue, useSetAtom } from 'jotai';
 import { NimbalystEditor, MaterialSymbol, ProviderIcon } from '@nimbalyst/runtime';
 import type { EditorConfig } from '@nimbalyst/runtime/editor';
 import { $convertFromEnhancedMarkdownString, getEditorTransformers } from '@nimbalyst/runtime/editor';
-import { $getRoot } from 'lexical';
+import { $getRoot, $setSelection } from 'lexical';
 import * as Y from 'yjs';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
+import { isFileBackedRecord, isNativeItem, resolveTrackerContentMode } from './trackerContentMode';
 import { globalRegistry } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import type { FieldDefinition } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/TrackerDataModel';
-import { getRecordTitle, getRecordStatus, getRecordPriority, getRecordField, isSameIdentity, isItemSharedWithTeam } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
-import type { TrackerIdentity } from '@nimbalyst/runtime';
+import { getRecordTitle, getRecordStatus, getRecordPriority, getRecordField, isItemSharedWithTeam } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { TrackerFieldEditor, type TeamMemberOption } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerFieldEditor';
-import type { RelationshipCandidate } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/RelationshipFieldEditor';
+import { TrackerFieldPills } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerFieldPills';
+import { getTrackerTagsField, useTrackerChipFieldSections } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerChipFields';
+import { isTrackerFieldEmpty } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerFieldLayout';
+import { useTrackerRelationshipCandidates } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/useTrackerRelationshipCandidates';
 import { UserAvatar } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/UserAvatar';
 import { trackerItemByIdAtom, trackerItemsMapAtom, trackerDataLoadedAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
-import { resolveRelationshipType, isRelationshipField } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import { resolveRelationshipType } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import { refreshSessionListAtom, sessionRegistryAtom, type SessionMeta } from '../../store/atoms/sessions';
 import { resolveLinkedSessions } from '../../utils/resolveLinkedSessions';
 import { prRemoteAtom, navigateToPullRequest } from '../../store/atoms/pullRequests';
@@ -31,11 +34,24 @@ import { getRecordPrReferences } from '@nimbalyst/runtime/plugins/TrackerPlugin/
 import { buildTrackerDeepLink } from '../../store/atoms/collabDocuments';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
-import { useTrackerContentCollab } from '../../hooks/useTrackerContentCollab';
+import { trackerContentCollabKey, useTrackerContentCollab } from '../../hooks/useTrackerContentCollab';
 import { useColdPaintFallback } from '../../hooks/useColdPaintFallback';
+import { useCollabSyncCurtain } from '../../hooks/useCollabSyncCurtain';
 import { useMarkTrackerViewed } from '../../hooks/useTrackerUnread';
 import { useRecordTrackerOpened } from '../../hooks/useRecordTrackerOpened';
 import { reconcileExternalFieldChanges } from './trackerDetailFieldSync';
+import { sanitizeTitleInput, useAutoSizedTitle } from './trackerTitleAutoSize';
+import { TrackerCommentsSection } from './TrackerCommentsSection';
+import { resolveTrackerContentFocus } from './trackerContentFocus';
+import { TrackerCollabAvatars, TrackerCollabSyncDot } from './trackerCollabChrome';
+import { formatTrackerActivity } from './trackerActivityPresentation';
+import { createCollectionItem } from './createCollectionItem';
+import { TabEditor } from '../TabEditor/TabEditor';
+import {
+  collabAwarenessAtom,
+  collabProductStatusAtom,
+} from '../../store/atoms/collabEditor';
+import './TrackerItemDetail.css';
 
 interface TrackerItemDetailProps {
   itemId: string;
@@ -43,6 +59,8 @@ interface TrackerItemDetailProps {
   onClose: () => void;
   onSwitchToFilesMode?: () => void;
   onSwitchToAgentMode?: (sessionId: string) => void;
+  /** Select a file-linked session in the host's standard chat panel. */
+  onOpenSessionInChat?: (sessionId: string) => void;
   onLaunchSession?: (trackerItemId: string) => void;
   onLaunchWorktree?: (trackerItemId: string) => void;
   onArchive?: (itemId: string, archive: boolean) => void;
@@ -50,16 +68,39 @@ interface TrackerItemDetailProps {
   /** Open another tracker item (relationship pill / backlink click). */
   onOpenItem?: (itemId: string) => void;
   /**
-   * When true, show a content-focus toggle that expands the collaborative body
-   * to fill the surface (compact header, metadata sections hidden). Enabled by
-   * the workstream tab host for shared/collaborative bodies; off in Tracker Mode.
+   * When true, show a content-focus toggle that expands the body to fill the
+   * surface (compact header, metadata sections hidden). Enabled by the
+   * workstream tab host and by Tracker Mode's document view. Purely a layout
+   * concern, so it applies to local and file-backed bodies too -- only the
+   * collab chrome stays gated on a collaborative body.
    */
   enableContentFocus?: boolean;
   /** Controlled content-focus value (persisted per tab by the host). */
   contentFocus?: boolean;
   /** Called when the user toggles content focus (host persists it). */
   onContentFocusChange?: (focus: boolean) => void;
+  /**
+   * Suppress this component's own header. Set by hosts that already render the
+   * item's identity above it (Tracker Mode's focused document header), so the
+   * user doesn't read the same title, key, and status twice.
+   */
+  hideHeader?: boolean;
+  /**
+   * Report how the body is being edited, so a host rendering the header can
+   * decide whether to show the collaborative chrome (presence, sync dot).
+   */
+  onContentModeChange?: (mode: TrackerContentMode) => void;
+  /**
+   * Publish the body's Lexical editor to the host, so a host-rendered document
+   * header bar can offer the same editor-backed actions a collaborative doc has
+   * (table of contents, copy as markdown, export). Null when no rich body is
+   * mounted -- file-backed bodies render their own `TabEditor` header instead.
+   */
+  onBodyEditorReady?: (editor: unknown | null) => void;
 }
+
+/** How this item's body is edited -- see the `contentMode` memo below. */
+export type TrackerContentMode = 'file-backed' | 'local-pglite' | 'collaborative';
 
 const STATUS_COLORS: Record<string, string> = {
   'to-do': '#6b7280',
@@ -108,11 +149,6 @@ function formatTimestamp(value: string | Date | number | undefined): string {
     hour: '2-digit',
     minute: '2-digit',
   });
-}
-
-/** Whether this record is a native DB item (no file backing) */
-function isNativeItem(record: TrackerRecord): boolean {
-  return record.source === 'native' || !record.system.documentPath;
 }
 
 /** Whether this record's metadata fields are editable */
@@ -200,6 +236,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   onClose,
   onSwitchToFilesMode,
   onSwitchToAgentMode,
+  onOpenSessionInChat,
   onLaunchSession,
   onLaunchWorktree,
   onArchive,
@@ -208,6 +245,9 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   enableContentFocus = false,
   contentFocus: controlledContentFocus,
   onContentFocusChange,
+  hideHeader = false,
+  onContentModeChange,
+  onBodyEditorReady,
 }) => {
   // Content-focus layout: collapse metadata sections and let the collaborative
   // body fill the surface. Toggling this does NOT remount the editor (same
@@ -228,8 +268,6 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   // Whether the tracker store has finished its initial load — lets us show a
   // loading state vs. an "unavailable" state when `item` is absent.
   const trackerDataLoaded = useAtomValue(trackerDataLoadedAtom);
-  // Loaded items, used to build relationship-field typeahead candidates.
-  const itemsMap = useAtomValue(trackerItemsMapAtom);
   const sessionRegistry = useAtomValue(sessionRegistryAtom);
   const refreshSessionList = useSetAtom(refreshSessionListAtom);
 
@@ -443,6 +481,8 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
 
   // Local state for text fields (debounced save)
   const [localTitle, setLocalTitle] = useState(item ? getRecordTitle(item) : '');
+  // Title is a textarea so long titles wrap; it grows with its content (NIM-1615).
+  const titleRef = useAutoSizedTitle(localTitle);
   const [localDescription, setLocalDescription] = useState(item ? (item.fields.description as string ?? '') : '');
   const [localCustomFields, setLocalCustomFields] = useState<Record<string, any>>({});
   // Per-field debounce timers (not one shared timer) so editing one field never
@@ -604,7 +644,9 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   // Escape to close
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      // Grid editors prevent Escape after using it to cancel the active cell
+      // edit. Do not also close the detail panel on that same keystroke.
+      if (e.key === 'Escape' && !e.defaultPrevented) onClose();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
@@ -626,20 +668,58 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     return isItemSharedWithTeam(item);
   }, [item]);
 
-  const contentMode = useMemo(() => {
-    if (!item || !isNativeItem(item)) return 'file-backed' as const;
-    if (syncMode === 'local') return 'local-pglite' as const;
-    // Hybrid trackers are per-item: an unshared hybrid item edits locally and
-    // never connects its body room. (Sharing flips this to collaborative.)
-    if (syncMode === 'hybrid' && !isItemShared) return 'local-pglite' as const;
-    // Shared/hybrid trackers need a team for collaborative editing. Without
-    // one, content is purely local. While the team check is still pending
-    // (`teamOrgId === undefined`) stay in collaborative mode so the loading
-    // UI runs -- otherwise the local editor would mount and risk being
-    // clobbered if a team is then discovered.
-    if (teamOrgId === null) return 'local-pglite' as const;
-    return 'collaborative' as const;
-  }, [item, syncMode, teamOrgId, isItemShared]);
+  const contentMode = useMemo(
+    () => resolveTrackerContentMode({ item, syncMode, isItemShared, teamOrgId }),
+    [item, syncMode, teamOrgId, isItemShared],
+  );
+
+  const fileBackedDocumentPath = useMemo(() => {
+    const documentPath = item?.system.documentPath;
+    if (!documentPath) return null;
+    if (documentPath.startsWith('/') || !workspacePath) return documentPath;
+    return `${workspacePath.replace(/\/$/, '')}/${documentPath}`;
+  }, [item?.system.documentPath, workspacePath]);
+  const [fileBackedDocument, setFileBackedDocument] = useState<{
+    path: string;
+    content: string;
+  } | null>(null);
+  const [fileBackedDocumentError, setFileBackedDocumentError] = useState<string | null>(null);
+
+  // Expanded file-backed items are real editor instances, not a path-only
+  // placeholder. Loading stays lazy so the ordinary tracker detail view keeps
+  // its current lightweight behavior.
+  useEffect(() => {
+    if (contentMode !== 'file-backed' || !contentFocus || !fileBackedDocumentPath) return;
+    let cancelled = false;
+    setFileBackedDocument(null);
+    setFileBackedDocumentError(null);
+    void window.electronAPI.readFileContent(fileBackedDocumentPath)
+      .then((result) => {
+        if (cancelled) return;
+        if (!result?.success) {
+          setFileBackedDocumentError(result?.error || 'Could not load this document.');
+          return;
+        }
+        setFileBackedDocument({
+          path: fileBackedDocumentPath,
+          content: typeof result.content === 'string' ? result.content : '',
+        });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error('[TrackerItemDetail] Failed to load file-backed document:', error);
+        setFileBackedDocumentError('Could not load this document.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [contentFocus, contentMode, fileBackedDocumentPath]);
+
+  // A host that renders its own header (document view) still wants the collab
+  // chrome, and only this component knows how the body is actually edited.
+  useEffect(() => {
+    onContentModeChange?.(contentMode);
+  }, [contentMode, onContentModeChange]);
 
   // The per-item "Share with team" toggle is offered only for hybrid native
   // items in a workspace that has a team. `shared` types are always shared (no
@@ -658,14 +738,14 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   // deletes the local row, so unsharing a native item would lose it. So a
   // shared native item's toggle is locked (share is one-way until the engine
   // gains a "remove from room, keep local" primitive).
-  const isFileBacked = Boolean(item && (item.source === 'frontmatter' || item.source === 'import'));
+  const isFileBacked = Boolean(item && isFileBackedRecord(item));
   const unshareLocked = isItemShared && !isFileBacked;
   const [sharePending, setSharePending] = useState(false);
   const handleToggleShare = useCallback(async () => {
     if (!item || sharePending) return;
     const next = !isItemShared;
     // Guard: never attempt to unshare a native item (would delete it).
-    if (!next && !(item.source === 'frontmatter' || item.source === 'import')) return;
+    if (!next && !isFileBackedRecord(item)) return;
     setSharePending(true);
     try {
       const res = await window.electronAPI.documentService.setTrackerItemShared({
@@ -699,6 +779,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     loading: collabLoading,
     status: collabStatus,
     syncProvider,
+    commentsConfig,
     reviewState,
     acceptRemoteChanges,
     rejectRemoteChanges,
@@ -714,19 +795,16 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     itemShared: isItemShared,
   });
 
-  // Track whether the collab provider has ever reached 'connected' for this
-  // item/provider lifecycle. We show a static loading indicator over the
-  // editor until then, because the editor may mount with an empty Y.Doc
-  // while the WebSocket sync is still in flight -- without this the user
-  // would see a blank editor and mistake it for "no content".
-  const [hasSyncedOnce, setHasSyncedOnce] = useState(false);
-  useEffect(() => {
-    // Reset when a fresh provider is created (new item or new session).
-    setHasSyncedOnce(false);
-  }, [providerEpoch]);
-  useEffect(() => {
-    if (collabStatus === 'connected') setHasSyncedOnce(true);
-  }, [collabStatus]);
+  // Whether the collab provider has reached 'connected' for the CURRENT
+  // provider generation. We show a static loading indicator over the editor
+  // until then, because the editor may mount with an empty Y.Doc while the
+  // WebSocket sync is still in flight -- without this the user would see a
+  // blank editor and mistake it for "no content".
+  //
+  // NIM-1985: this must be epoch-aware, not two order-dependent effects.
+  // See useCollabSyncCurtain's doc comment for the warm-reopen inversion
+  // that left the curtain permanently covering a fully-painted body.
+  const hasSyncedOnce = useCollabSyncCurtain(collabStatus, providerEpoch);
 
   // Defensive cold-paint fallback for shared `fullDocument` trackers.
   //
@@ -748,6 +826,16 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   // on a large/slow-to-render doc, so this fires paint only after two
   // spaced-apart empty reads, and at most once per provider lifecycle.
   const collabEditorInstanceRef = useRef<any>(null);
+
+  // The host's document header bar needs the body editor for its TOC and
+  // editor-backed actions. Held in a ref so the editor configs (memos) don't
+  // re-create -- a new config identity remounts the editor and drops the
+  // Y.Doc binding -- and republished on unmount so a stale editor never
+  // outlives the item.
+  const bodyEditorReadyRef = useRef(onBodyEditorReady);
+  bodyEditorReadyRef.current = onBodyEditorReady;
+  useEffect(() => () => bodyEditorReadyRef.current?.(null), [itemId]);
+
   useColdPaintFallback({
     collabStatus,
     bodyCacheMarkdown,
@@ -780,6 +868,9 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
         { itemId, mdLen: bodyCacheMarkdown.length, providerEpoch },
       );
       editor.update(() => {
+        // Clearing a selected node without moving selection first makes
+        // Lexical throw "selection has been lost ..." (NIM-2005).
+        $setSelection(null);
         const root = $getRoot();
         root.clear();
         $convertFromEnhancedMarkdownString(bodyCacheMarkdown, getEditorTransformers());
@@ -974,59 +1065,38 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     }
   }, [item, refreshSessionList]);
 
-  // Separate fields into categories for layout
-  const { primaryFields, customFields } = useMemo(() => {
-    if (!model) return { primaryFields: [] as FieldDefinition[], customFields: [] as FieldDefinition[] };
-
-    const builtinNames = new Set(['title', 'description', 'created', 'updated']);
-    // Resolve primary field names from schema roles instead of hardcoding
-    const primaryNames = new Set<string>();
-    for (const role of ['workflowStatus', 'priority', 'assignee', 'reporter', 'dueDate'] as const) {
-      const fieldName = model.roles?.[role];
-      if (fieldName) primaryNames.add(fieldName);
-    }
-    // Fallback conventional names when roles aren't declared
-    if (primaryNames.size === 0) {
-      for (const name of ['status', 'priority', 'owner', 'assigneeEmail', 'reporterEmail', 'dueDate']) {
-        if (model.fields.some(f => f.name === name)) primaryNames.add(name);
-      }
-    }
-    const primary: FieldDefinition[] = [];
-    const custom: FieldDefinition[] = [];
-
-    for (const field of model.fields) {
-      if (builtinNames.has(field.name)) continue;
-      if (primaryNames.has(field.name)) {
-        primary.push(field);
-      } else {
-        custom.push(field);
-      }
-    }
-
-    return { primaryFields: primary, customFields: custom };
-  }, [model]);
-
   /**
-   * Candidate target items for a relationship field's typeahead: every loaded
-   * item except this one, narrowed to the field's allowed target tracker types.
+   * Tags are the one field that stays an always-open row: they're edited far
+   * more often than they're read, so a chip that has to be opened first would
+   * cost a click on every edit.
    */
-  const buildRelationshipCandidates = useCallback((field: FieldDefinition): RelationshipCandidate[] => {
-    const targets = field.targetTrackerTypes;
-    const candidates: RelationshipCandidate[] = [];
-    for (const rec of itemsMap.values()) {
-      if (rec.id === itemId) continue;
-      if (targets && targets !== '*' && !targets.includes(rec.primaryType)) continue;
-      candidates.push({
-        itemId: rec.id,
-        // Resolve the display title via the schema's title role -- custom types
-        // (e.g. customer-contact) store their title under a non-"title" field.
-        title: getRecordTitle(rec) || undefined,
-        issueKey: rec.issueKey || undefined,
-        trackerType: rec.primaryType,
-      });
-    }
-    return candidates;
-  }, [itemsMap, itemId]);
+  const tagsField = useMemo(
+    () => getTrackerTagsField(item?.primaryType ?? ''),
+    [item?.primaryType],
+  );
+
+  // The chip row and its leftovers come from the shared layout rules, so this
+  // pane shows the same fields in the same order as every other surface.
+  const { chipFields, overflowFields } = useTrackerChipFieldSections(
+    item?.primaryType ?? '',
+    tagsField ? [tagsField.name] : [],
+  );
+
+  const relationshipCandidates = useTrackerRelationshipCandidates(item, chipFields);
+
+  /** Field values with any in-progress local edit applied. */
+  const chipValues = useMemo(
+    () => ({ ...(item?.fields ?? {}), ...localCustomFields }),
+    [item?.fields, localCustomFields],
+  );
+
+  /** Overflow fields that actually hold a value; empty ones add nothing. */
+  const overflowValues = useMemo(
+    () => overflowFields
+      .map((field) => ({ field, value: chipValues[field.name] }))
+      .filter(({ value }) => !isTrackerFieldEmpty(value)),
+    [overflowFields, chipValues],
+  );
 
   /** Get field value -- use in-progress local state for text fields, atom for select/etc */
   const getFieldValue = useCallback((fieldName: string): any => {
@@ -1049,6 +1119,26 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     }
   }, [handleTextFieldChange, handleImmediateFieldChange]);
 
+  /** Persist one chip edit through the ordinary field save path. */
+  const handleChipSave = useCallback((fieldName: string, value: unknown) => {
+    const field = chipFields.find((candidate) => candidate.name === fieldName);
+    if (!field) return;
+    handleFieldChange(field, value);
+  }, [chipFields, handleFieldChange]);
+
+  const handleCreateCollection = useCallback((title: string, type: string) => {
+    if (!workspacePath) return Promise.resolve(null);
+    return createCollectionItem({ workspacePath, title, type });
+  }, [workspacePath]);
+
+  // Focus is a layout state; the collab chrome is the part that needs a
+  // collaborative body. See trackerContentFocus.ts for the rule and its tests.
+  const { showFocusToggle, focusActive } = resolveTrackerContentFocus({
+    enableContentFocus,
+    contentFocus,
+    contentMode,
+  });
+
   /** Editor config for local PGLite mode (non-team native items only) */
   const localEditorConfig = useMemo((): EditorConfig | null => {
     if (contentMode !== 'local-pglite' || !contentLoaded) return null;
@@ -1056,6 +1146,10 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
       isRichText: true,
       editable: true,
       showToolbar: false,
+      // Focused tracker bodies are full document surfaces. Keep the same
+      // draggable-block and selection toolbar controls as other editor tabs,
+      // even when the three-pane layout makes the center pane narrow.
+      forceFloatingToolbar: focusActive,
       isCodeHighlighted: true,
       hasLinkAttributes: true,
       markdownOnly: true,
@@ -1069,8 +1163,11 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
           saveContent(markdown);
         }
       },
+      onEditorReady: (editor: any) => {
+        bodyEditorReadyRef.current?.(editor);
+      },
     };
-  }, [contentMode, contentLoaded, contentMarkdown, saveContent]);
+  }, [contentMode, contentLoaded, contentMarkdown, focusActive, saveContent]);
 
   /** Editor config for collaborative mode (team-synced native items) */
   const collabEditorConfig = useMemo((): EditorConfig | null => {
@@ -1092,6 +1189,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
       isRichText: true,
       editable: true,
       showToolbar: false,
+      forceFloatingToolbar: focusActive,
       isCodeHighlighted: true,
       hasLinkAttributes: true,
       markdownOnly: true,
@@ -1102,6 +1200,9 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
             ? () => {
                 console.log('[TrackerItemDetail] initialEditorState fn CALLED',
                   { itemId: item?.id, mdContentLen: mdContent.length });
+                // Clearing a selected node without moving selection first makes
+                // Lexical throw "selection has been lost ..." (NIM-2005).
+                $setSelection(null);
                 const root = $getRoot();
                 root.clear();
                 $convertFromEnhancedMarkdownString(mdContent, getEditorTransformers());
@@ -1109,6 +1210,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
               }
             : undefined),
       },
+      comments: commentsConfig ?? undefined,
       onGetContent: (getContentFn: () => string) => {
         getContentFnRef.current = getContentFn;
       },
@@ -1125,15 +1227,10 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
         // editor reference we cannot recover when CollaborationPlugin's
         // bootstrap check declines to fire `initialEditorState`.
         collabEditorInstanceRef.current = editor;
+        bodyEditorReadyRef.current?.(editor);
       },
     };
-  }, [contentMode, collabConfig, collabLoading, contentLoaded, contentMarkdown, saveContent]);
-
-  // Content-focus is only offered for collaborative (shared) bodies in the
-  // workstream tab host. focusActive gates the layout, so if the mode changes
-  // away from collaborative the focus layout collapses automatically.
-  const showFocusToggle = enableContentFocus && contentMode === 'collaborative';
-  const focusActive = contentFocus && showFocusToggle;
+  }, [contentMode, collabConfig, collabLoading, commentsConfig, contentLoaded, contentMarkdown, focusActive, saveContent]);
 
   // No item in the atom: distinguish "still loading" (tracker store not yet
   // hydrated — e.g. a restored tab before sync completes) from "unavailable"
@@ -1157,24 +1254,33 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
       className="tracker-item-detail flex flex-col h-full bg-nim overflow-hidden"
       data-testid="tracker-item-detail"
     >
-      {/* Header */}
-      <div className="flex items-start gap-2 px-4 pt-4 pb-3 border-b border-nim shrink-0">
+      {/* Header (suppressed when the host renders the item's identity itself) */}
+      {!hideHeader && (
+      <div className="tracker-item-detail-header flex items-start gap-2 px-4 pt-4 pb-3 border-b border-nim shrink-0">
         <span className="mt-1 shrink-0" style={{ color: typeColor }}>
           <MaterialSymbol icon={icon} size={20} />
         </span>
         <div className="flex-1 min-w-0">
           {editable ? (
-            <input
-              type="text"
+            <textarea
+              ref={titleRef}
+              rows={1}
               value={localTitle}
-              onChange={(e) => handleTextFieldChange('title', e.target.value)}
-              onKeyDown={(e) => e.stopPropagation()}
-              className="w-full bg-transparent border-none outline-none text-base font-semibold text-nim placeholder:text-nim-faint p-0"
+              onChange={(e) => handleTextFieldChange('title', sanitizeTitleInput(e.target.value))}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                // Titles stay single-line: Enter commits instead of adding a row.
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  e.currentTarget.blur();
+                }
+              }}
+              className="w-full bg-transparent border-none outline-none text-base font-semibold text-nim placeholder:text-nim-faint p-0 m-0 resize-none overflow-hidden leading-snug break-words"
               placeholder="Item title..."
               data-testid="tracker-detail-title"
             />
           ) : (
-            <h3 className="text-base font-semibold text-nim m-0 leading-snug">{getRecordTitle(item)}</h3>
+            <h3 className="text-base font-semibold text-nim m-0 leading-snug break-words">{getRecordTitle(item)}</h3>
           )}
           <div className="flex items-center gap-2 mt-1 flex-wrap">
             <span
@@ -1283,6 +1389,12 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
           })()}
         </div>
         <div className="flex items-center gap-1 shrink-0">
+          {contentMode === 'collaborative' && (
+            <>
+              <TrackerCollabSyncDot itemId={item.id} />
+              <TrackerCollabAvatars itemId={item.id} />
+            </>
+          )}
           {prReference && (
             <button
               className="flex items-center gap-1 px-2 py-1 rounded text-[12px] font-medium text-nim-muted hover:bg-nim-tertiary"
@@ -1373,6 +1485,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
           </button>
         </div>
       </div>
+      )}
 
       {/* Upstream body-change banner (re-snapshot detected an upstream edit) */}
       {externalOrigin?.upstreamBodyChanged && (
@@ -1405,7 +1518,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
       <div
         className={
           focusActive
-            ? 'flex-1 min-h-0 overflow-hidden px-4 py-3 flex flex-col'
+            ? 'flex-1 min-h-0 overflow-hidden flex flex-col'
             : 'flex-1 overflow-y-auto px-4 py-3 space-y-4'
         }
       >
@@ -1524,28 +1637,36 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
           </div>
         )}
 
-        {/* Primary fields grid (status, priority, owner) */}
-        {primaryFields.length > 0 && (
-          <div className="grid grid-cols-2 gap-3 pt-1 border-t border-nim">
-            {primaryFields.map((field) => (
-              <div key={field.name}>
-                {editable ? (
-                  <TrackerFieldEditor
-                    field={field}
-                    value={getFieldValue(field.name)}
-                    onChange={(value) => handleFieldChange(field, value)}
-                    teamMembers={teamMembers}
-                    relationshipCandidates={isRelationshipField(field) ? buildRelationshipCandidates(field) : undefined}
-                    onOpenRelationship={onOpenItem}
-                  />
-                ) : (
-                  <ReadOnlyField
-                    field={field}
-                    value={getFieldValue(field.name)}
-                  />
-                )}
-              </div>
-            ))}
+        {/* Metadata chips -- the canonical presentation of a tracker's fields */}
+        {chipFields.length > 0 && (
+          <div className="tracker-detail-fields pt-1 border-t border-nim">
+            <TrackerFieldPills
+              fields={chipFields}
+              values={chipValues}
+              editable={editable}
+              teamMembers={teamMembers}
+              relationshipCandidates={relationshipCandidates}
+              onSave={handleChipSave}
+              onOpenItem={onOpenItem}
+              onCreateCollection={workspacePath ? handleCreateCollection : undefined}
+              className="tracker-detail-field-pills"
+              testIdBase="tracker-detail-field"
+            />
+          </div>
+        )}
+
+        {/* Tags stay open: they're edited far more often than they're read */}
+        {tagsField && (
+          <div className="tracker-detail-tags" data-testid="tracker-detail-tags">
+            {editable ? (
+              <TrackerFieldEditor
+                field={tagsField}
+                value={getFieldValue(tagsField.name)}
+                onChange={(value) => handleFieldChange(tagsField, value)}
+              />
+            ) : (
+              <ReadOnlyField field={tagsField} value={getFieldValue(tagsField.name)} />
+            )}
           </div>
         )}
 
@@ -1565,27 +1686,15 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
           />
         )}
 
-        {/* Custom fields */}
-        {customFields.length > 0 && (
-          <div className="space-y-3 pt-1 border-t border-nim">
-            {customFields.map((field) => (
-              <div key={field.name}>
-                {editable ? (
-                  <TrackerFieldEditor
-                    field={field}
-                    value={getFieldValue(field.name)}
-                    onChange={(value) => handleFieldChange(field, value)}
-                    teamMembers={teamMembers}
-                    relationshipCandidates={isRelationshipField(field) ? buildRelationshipCandidates(field) : undefined}
-                    onOpenRelationship={onOpenItem}
-                  />
-                ) : (
-                  <ReadOnlyField
-                    field={field}
-                    value={getFieldValue(field.name)}
-                  />
-                )}
-              </div>
+        {/*
+          Fields no chip can carry -- opaque objects, multiselects, arrays of
+          objects, and schema values the item can't edit. They read as plain
+          rows, and only when they hold something.
+        */}
+        {overflowValues.length > 0 && (
+          <div className="tracker-detail-overflow-fields space-y-3 pt-1 border-t border-nim">
+            {overflowValues.map(({ field, value }) => (
+              <ReadOnlyField key={field.name} field={field} value={value} />
             ))}
           </div>
         )}
@@ -1602,14 +1711,14 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
           )}
           {contentMode === 'local-pglite' && localEditorConfig ? (
             <div
-              className={`tracker-content-editor border border-nim rounded bg-nim overflow-hidden ${focusActive ? 'flex-1 min-h-0' : 'min-h-[200px]'}`}
+              className={`tracker-content-editor bg-nim overflow-hidden ${focusActive ? 'flex-1 min-h-0' : 'min-h-[200px] border border-nim rounded'}`}
               data-testid="tracker-detail-content-editor"
             >
               <NimbalystEditor key={`${item.id}-${externalContentEpoch}`} config={localEditorConfig} />
             </div>
           ) : contentMode === 'collaborative' && collabEditorConfig ? (
             <div
-              className={`tracker-content-editor relative border border-nim rounded bg-nim overflow-hidden ${focusActive ? 'flex-1 min-h-0 flex flex-col' : 'min-h-[200px]'}`}
+              className={`tracker-content-editor relative bg-nim overflow-hidden ${focusActive ? 'flex-1 min-h-0 flex flex-col' : 'min-h-[200px] border border-nim rounded'}`}
               data-testid="tracker-detail-content-editor"
             >
               {!hasSyncedOnce && (
@@ -1652,6 +1761,41 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
             <div className="text-sm text-nim-faint py-4 text-center">Loading...</div>
           ) : contentMode === 'collaborative' && collabLoading ? (
             <div className="text-sm text-nim-faint py-4 text-center">Connecting...</div>
+          ) : contentMode === 'file-backed' && focusActive && fileBackedDocumentPath ? (
+            fileBackedDocument?.path === fileBackedDocumentPath ? (
+              <div
+                className="tracker-file-backed-document-editor min-h-0 flex-1 overflow-hidden"
+                data-testid="tracker-file-backed-document-editor"
+              >
+                <TabEditor
+                  filePath={fileBackedDocumentPath}
+                  fileName={fileBackedDocumentPath.split('/').pop() || getRecordTitle(item)}
+                  initialContent={fileBackedDocument.content}
+                  isActive
+                  workspaceId={workspacePath}
+                  onSwitchToAgentMode={(_documentPath, sessionId) => {
+                    if (sessionId) onSwitchToAgentMode?.(sessionId);
+                    else onLaunchSession?.(item.id);
+                  }}
+                  onOpenSessionInChat={onOpenSessionInChat}
+                />
+              </div>
+            ) : fileBackedDocumentError ? (
+              <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
+                <p className="m-0 text-sm text-nim-muted">{fileBackedDocumentError}</p>
+                <button
+                  type="button"
+                  className="rounded border border-nim px-2 py-1 text-xs text-nim-muted hover:bg-nim-tertiary hover:text-nim"
+                  onClick={handleOpenDocument}
+                >
+                  Open in Editor
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-1 items-center justify-center text-sm text-nim-faint">
+                Loading document...
+              </div>
+            )
           ) : item.system.documentPath ? (
             <div className="flex items-center gap-2 py-2">
               <span className="text-sm text-nim-muted flex-1 truncate font-mono">
@@ -1721,7 +1865,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
             <div className="flex items-center justify-between">
               <h4 className="text-xs font-medium text-nim-muted uppercase tracking-wide">Comments</h4>
             </div>
-            <CommentsSection itemId={item.id} comments={item.system.comments} />
+            <TrackerCommentsSection itemId={item.id} comments={item.system.comments} />
           </div>
         )}
 
@@ -1734,11 +1878,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
                 <div key={entry.id} className="flex items-start gap-2 text-[11px]">
                   <span className="text-nim-muted shrink-0">{entry.authorIdentity?.displayName || 'Unknown'}</span>
                   <span className="text-nim-faint">
-                    {entry.action === 'created' ? 'created this item' :
-                     entry.action === 'commented' ? 'added a comment' :
-                     entry.action === 'status_changed' ? `changed status to ${entry.newValue}` :
-                     entry.action === 'archived' ? (entry.newValue === 'true' ? 'archived' : 'unarchived') :
-                     entry.field ? `updated ${entry.field}` : entry.action}
+                    {formatTrackerActivity(entry)}
                   </span>
                   <span className="text-nim-faint ml-auto shrink-0">{getRelativeTimeString(entry.timestamp)}</span>
                 </div>
@@ -1829,7 +1969,9 @@ const ReadOnlyField: React.FC<{ field: FieldDefinition; value: any }> = ({ field
   if (value == null || value === '') {
     displayValue = '\u2014';
   } else if (Array.isArray(value)) {
-    displayValue = value.join(', ') || '\u2014';
+    displayValue = value.map((entry) => (
+      entry && typeof entry === 'object' ? JSON.stringify(entry) : String(entry)
+    )).join(', ') || '\u2014';
   } else if (value instanceof Date) {
     displayValue = value.toLocaleDateString();
   } else if (typeof value === 'boolean') {
@@ -1922,186 +2064,6 @@ const BacklinksSection: React.FC<{ itemId: string; onOpenItem?: (itemId: string)
             </button>
           );
         })}
-      </div>
-    </div>
-  );
-};
-
-/** Inline comments section for tracker items */
-const CommentsSection: React.FC<{ itemId: string; comments?: any[] }> = ({ itemId, comments }) => {
-  const [newComment, setNewComment] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  // Optimistic comments shown immediately on submit, before the atom round-trips
-  const [optimisticComments, setOptimisticComments] = useState<any[]>([]);
-  // Current user identity, used to gate edit/delete to the comment author (NIM-360).
-  const [currentIdentity, setCurrentIdentity] = useState<TrackerIdentity | null>(null);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editBody, setEditBody] = useState('');
-
-  useEffect(() => {
-    let cancelled = false;
-    window.electronAPI
-      .invoke('document-service:get-current-identity')
-      .then((result: any) => {
-        if (cancelled) return;
-        if (result?.success && result.identity) setCurrentIdentity(result.identity);
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, []);
-
-  const handleEditSave = useCallback(async (commentId: string) => {
-    const body = editBody.trim();
-    if (!body) return;
-    setEditingId(null);
-    try {
-      await window.electronAPI.invoke('document-service:tracker-item-update-comment', {
-        itemId,
-        commentId,
-        body,
-      });
-    } catch (err) {
-      console.error('Failed to edit comment:', err);
-    }
-  }, [itemId, editBody]);
-
-  const handleDelete = useCallback(async (commentId: string) => {
-    try {
-      await window.electronAPI.invoke('document-service:tracker-item-update-comment', {
-        itemId,
-        commentId,
-        deleted: true,
-      });
-    } catch (err) {
-      console.error('Failed to delete comment:', err);
-    }
-  }, [itemId]);
-
-  // When server-side comments arrive (atom update), clear optimistic entries
-  // that are now present in the real data.
-  const serverComments = (comments || []).filter((c: any) => !c.deleted);
-  const visibleComments = useMemo(() => {
-    if (optimisticComments.length === 0) return serverComments;
-    // Keep only optimistic comments whose body isn't yet in the server list
-    // (simple dedup -- optimistic entries don't have real IDs)
-    const serverBodies = new Set(serverComments.map((c: any) => c.body));
-    const stillPending = optimisticComments.filter(c => !serverBodies.has(c.body));
-    if (stillPending.length < optimisticComments.length) {
-      // Some optimistic comments were confirmed -- schedule cleanup
-      // Use queueMicrotask to avoid setState during render
-      queueMicrotask(() => setOptimisticComments(stillPending));
-    }
-    return [...serverComments, ...stillPending];
-  }, [serverComments, optimisticComments]);
-
-  const handleSubmit = useCallback(async () => {
-    if (!newComment.trim() || submitting) return;
-    const body = newComment.trim();
-    setSubmitting(true);
-    // Optimistically show the comment immediately
-    setOptimisticComments(prev => [...prev, {
-      id: `optimistic_${Date.now()}`,
-      body,
-      createdAt: Date.now(),
-      updatedAt: null,
-      deleted: false,
-      _optimistic: true,
-    }]);
-    setNewComment('');
-    try {
-      await window.electronAPI.invoke('document-service:tracker-item-add-comment', {
-        itemId,
-        body,
-      });
-    } catch (err) {
-      console.error('Failed to add comment:', err);
-      // Remove the optimistic comment on failure
-      setOptimisticComments(prev => prev.filter(c => c.body !== body));
-    } finally {
-      setSubmitting(false);
-    }
-  }, [itemId, newComment, submitting]);
-
-  return (
-    <div className="space-y-2">
-      {visibleComments.map((comment: any) => {
-        const isAuthor = !comment._optimistic
-          && isSameIdentity(comment.authorIdentity ?? null, currentIdentity);
-        const isEditing = editingId === comment.id;
-        return (
-          <div key={comment.id} className={`tracker-comment group rounded bg-nim-tertiary p-2 space-y-1${comment._optimistic ? ' opacity-70' : ''}`}>
-            <div className="flex items-center gap-2 text-[11px]">
-              <span className="font-medium text-nim-muted">{comment.authorIdentity?.displayName || 'You'}</span>
-              <span className="text-nim-faint">{getRelativeTimeString(comment.createdAt)}</span>
-              {comment.updatedAt && <span className="text-nim-faint">(edited)</span>}
-              {isAuthor && !isEditing && (
-                <span className="ml-auto flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button
-                    className="tracker-comment-edit text-nim-faint hover:text-nim"
-                    title="Edit comment"
-                    onClick={() => { setEditingId(comment.id); setEditBody(comment.body); }}
-                  >
-                    <MaterialSymbol icon="edit" size={13} />
-                  </button>
-                  <button
-                    className="tracker-comment-delete text-nim-faint hover:text-nim-error"
-                    title="Delete comment"
-                    onClick={() => handleDelete(comment.id)}
-                  >
-                    <MaterialSymbol icon="delete" size={13} />
-                  </button>
-                </span>
-              )}
-            </div>
-            {isEditing ? (
-              <div className="flex gap-1">
-                <input
-                  type="text"
-                  value={editBody}
-                  autoFocus
-                  onChange={e => setEditBody(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleEditSave(comment.id); }
-                    if (e.key === 'Escape') { setEditingId(null); }
-                  }}
-                  className="flex-1 bg-nim-secondary border border-nim rounded px-2 py-1 text-xs text-nim outline-none focus:border-nim-primary"
-                />
-                <button
-                  onClick={() => handleEditSave(comment.id)}
-                  disabled={!editBody.trim()}
-                  className="px-2 py-1 rounded text-xs bg-nim-primary text-nim-on-primary disabled:opacity-40"
-                >
-                  Save
-                </button>
-                <button
-                  onClick={() => setEditingId(null)}
-                  className="px-2 py-1 rounded text-xs text-nim-muted hover:text-nim"
-                >
-                  Cancel
-                </button>
-              </div>
-            ) : (
-              <p className="text-xs text-nim m-0 whitespace-pre-wrap">{comment.body}</p>
-            )}
-          </div>
-        );
-      })}
-      <div className="flex gap-1">
-        <input
-          type="text"
-          value={newComment}
-          onChange={e => setNewComment(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(); } }}
-          placeholder="Add a comment..."
-          className="flex-1 bg-nim-secondary border border-nim rounded px-2 py-1 text-xs text-nim placeholder:text-nim-faint outline-none focus:border-nim-primary"
-        />
-        <button
-          onClick={handleSubmit}
-          disabled={!newComment.trim() || submitting}
-          className="px-2 py-1 rounded text-xs bg-nim-primary text-nim-on-primary disabled:opacity-40 hover:opacity-90 transition-opacity"
-        >
-          Post
-        </button>
       </div>
     </div>
   );

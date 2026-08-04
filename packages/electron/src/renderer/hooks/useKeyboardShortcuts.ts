@@ -18,6 +18,7 @@ import {
 } from '../store/atoms/openProjects';
 import { prRemoteAtom } from '../store/atoms/pullRequests';
 import { developerModeAtom } from '../store/atoms/appSettings';
+import { sessionLaunchPopupRequestAtom } from '../store/atoms/appCommands';
 import posthog from 'posthog-js';
 
 interface KeyboardShortcutsOptions {
@@ -42,6 +43,9 @@ interface KeyboardShortcutsOptions {
 
   // Agent mode toggle
   toggleAgentCollapsed: () => void;
+
+  // Shared active-mode action used by both Cmd/Ctrl+B and WindowTopBar.
+  toggleActiveLeftPane: () => void;
 
   // Opens history for the document focused in the current content mode.
   openHistoryForCurrentDocument: () => void;
@@ -68,6 +72,25 @@ interface KeyboardShortcutsOptions {
  */
 const isMac = navigator.platform.startsWith('Mac');
 
+export function isSessionLaunchPopupShortcut(
+  event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'shiftKey' | 'altKey'>,
+  macPlatform = isMac,
+): boolean {
+  const isAppModifier = macPlatform ? event.metaKey : event.ctrlKey;
+  return isAppModifier && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'n';
+}
+
+export function isToggleSidebarShortcut(
+  event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'shiftKey' | 'altKey'>,
+  macPlatform = isMac,
+): boolean {
+  const isAppModifier = macPlatform ? event.metaKey : event.ctrlKey;
+  return isAppModifier
+    && !event.shiftKey
+    && !event.altKey
+    && event.key.toLowerCase() === 'b';
+}
+
 export function useKeyboardShortcuts({
   activeMode,
   workspaceMode,
@@ -76,6 +99,7 @@ export function useKeyboardShortcuts({
   editorModeRef,
   agentModeRef,
   toggleAgentCollapsed,
+  toggleActiveLeftPane,
   openHistoryForCurrentDocument,
   isFullscreenPanelActive,
   exitFullscreenPanel,
@@ -103,6 +127,24 @@ export function useKeyboardShortcuts({
     const handleKeyDown = (e: KeyboardEvent): void => {
       // On macOS, app shortcuts use Command (metaKey). On Windows/Linux, they use Ctrl.
       const isAppModifier = isMac ? e.metaKey : e.ctrlKey;
+
+      // Cmd/Ctrl+Shift+N opens (or toggles) the new-session composer without
+      // changing the active content mode. Electron's menu accelerator owns the
+      // normal desktop path; this renderer handler keeps the shortcut working
+      // in surfaces where the menu event is not delivered.
+      if (workspaceMode && isSessionLaunchPopupShortcut(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        store.set(sessionLaunchPopupRequestAtom, (version) => version + 1);
+        return;
+      }
+
+      if (workspaceMode && isToggleSidebarShortcut(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleActiveLeftPane();
+        return;
+      }
 
       // Cmd+E for Files mode (toggle sidebar if already in files mode)
       if (isAppModifier && e.key === 'e') {
@@ -295,6 +337,7 @@ export function useKeyboardShortcuts({
     editorModeRef,
     agentModeRef,
     toggleAgentCollapsed,
+    toggleActiveLeftPane,
     openHistoryForCurrentDocument,
     toggleTerminalPanel,
     closeTerminalPanel,

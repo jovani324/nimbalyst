@@ -20,6 +20,7 @@ import { useTranscriptToolWidgetRegistryVersion } from '../contributions';
 import { ToolCallChanges } from './ToolCallChanges';
 import { setSessionIsAtBottom, getSessionIsAtBottom } from '../../../store/atoms/transcriptScroll';
 import { isAppleMobileWebKit } from '../../../utils/platform';
+import { AttachmentStagingDeniedCard } from './AttachmentStagingDeniedCard';
 
 // Per-session VList cache - survives component remounts so returning to a session
 // doesn't re-measure all items from scratch
@@ -1109,6 +1110,7 @@ export const RichTranscriptView = React.forwardRef<
   const [collapsedMessages, setCollapsedMessages] = useState<Set<number>>(new Set());
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
   const scrollButtonRef = useRef<HTMLDivElement>(null);
+  const scrollButtonElementRef = useRef<HTMLButtonElement>(null);
   const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
   const [showSearchBar, setShowSearchBar] = useState(false);
 
@@ -2100,7 +2102,7 @@ export const RichTranscriptView = React.forwardRef<
     if (isTool && message.toolCall) {
       const isInteractiveWidget = isInteractiveWidgetTool(message.toolCall.toolName);
       if (!settings.showToolCalls && !isInteractiveWidget) {
-        return null;
+        return <div key={messageKey} style={{ display: 'none' }} />;
       }
       return (
         <div key={messageKey} className="rich-transcript-tool-container orphan ml-6 mb-2">
@@ -2154,6 +2156,22 @@ export const RichTranscriptView = React.forwardRef<
     }
 
     if (message.type === 'system_message' && message.systemMessage?.systemType === 'permission_denied') {
+      if (message.systemMessage.isAttachmentStagingDenied) {
+        const priorUserMessage = messages
+          .slice(0, index)
+          .reverse()
+          .find((candidate) => candidate.type === 'user_message');
+        return (
+          <div key={messageKey} data-message-index={index}>
+            <AttachmentStagingDeniedCard
+              sessionId={sessionId}
+              systemMessage={message.systemMessage}
+              prompt={priorUserMessage?.text ?? ''}
+              attachments={priorUserMessage?.attachments ?? []}
+            />
+          </div>
+        );
+      }
       // Auto-mode classifier denials are paired with a re-prompt from the
       // PermissionDenied SDK hook (see AgentToolHooks.createPermissionDeniedHook).
       // The user sees the regular ToolPermission widget with the classifier
@@ -2163,7 +2181,7 @@ export const RichTranscriptView = React.forwardRef<
       // Other deny sources (`rule`, `mode`, `asyncAgent`, headless auto-deny)
       // stay visible because no re-prompt happens for those paths.
       if (message.systemMessage.deniedReasonType === 'classifier') {
-        return null;
+        return <div key={messageKey} style={{ display: 'none' }} />;
       }
       return (
         <div
@@ -2449,7 +2467,11 @@ export const RichTranscriptView = React.forwardRef<
                       if (scrollButtonRef.current) {
                         const show = distanceFromBottom > viewportSize;
                         scrollButtonRef.current.style.opacity = show ? '1' : '0';
-                        scrollButtonRef.current.style.pointerEvents = show ? '' : 'none';
+                        // Only the button opts back into pointer events, and only while visible.
+                        // Clearing it lets the button inherit the container's pointer-events: none.
+                        if (scrollButtonElementRef.current) {
+                          scrollButtonElementRef.current.style.pointerEvents = show ? 'auto' : '';
+                        }
                       }
                       // Check if any pending permission widgets are visible in viewport
                       if (pendingPermissionIndices.length > 0) {
@@ -2510,11 +2532,14 @@ export const RichTranscriptView = React.forwardRef<
           </div>
         )}
 
-        {/* Scroll to bottom button - uses ref + opacity/pointer-events to avoid layout shifts that interfere with text selection */}
-        <div ref={scrollButtonRef} className="rich-transcript-scroll-button-container sticky bottom-3 flex justify-center opacity-0 transition-opacity">
+        {/* Scroll to bottom button - uses ref + opacity to avoid layout shifts that interfere with text selection.
+            The container spans the full pane width, so it must stay pointer-events-none in every state;
+            only the button opts back in, otherwise it becomes a dead band for clicks and the wheel. */}
+        <div ref={scrollButtonRef} className="rich-transcript-scroll-button-container sticky bottom-3 flex justify-center pointer-events-none opacity-0 transition-opacity">
           <button
+            ref={scrollButtonElementRef}
             onClick={scrollToBottom}
-            className="rich-transcript-scroll-button w-9 h-9 flex items-center justify-center bg-[var(--nim-primary)] text-white rounded-full border-none shadow-lg cursor-pointer transition-all hover:bg-[var(--nim-primary-hover)] hover:scale-110 pointer-events-auto"
+            className="rich-transcript-scroll-button w-9 h-9 flex items-center justify-center bg-[var(--nim-primary)] text-white rounded-full border-none shadow-lg cursor-pointer transition-all hover:bg-[var(--nim-primary-hover)] hover:scale-110"
             title="Scroll to bottom"
           >
             <MaterialSymbol icon="arrow_downward" size={20} />

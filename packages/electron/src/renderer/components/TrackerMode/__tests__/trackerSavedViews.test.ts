@@ -1,12 +1,23 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
-import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
+import { dbRowToRecord, type TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import type { TrackerIdentity } from '@nimbalyst/runtime';
 import {
   countFilteredTrackerItemsByTypes,
   filterTrackerItems,
+  getTrackerFilterValue,
+  getStatusTransitionValues,
   groupTrackerItems,
+  hasSavableViewState,
+  legacyFilterChipsToClauses,
   normalizeViewDefinition,
   createDefaultViewDefinition,
+  mergeSavedViews,
+  parseSharedSavedView,
+  serializeSharedSavedView,
+  STATUS_CHANGED_FROM_FILTER_FIELD,
+  STATUS_CHANGED_TO_FILTER_FIELD,
+  type SavedView,
 } from '../trackerSavedViews';
 
 function makeItem(
@@ -41,6 +52,115 @@ const other: TrackerIdentity = {
 };
 
 describe('filterTrackerItems', () => {
+  it('filters on status transition direction from durable activity history', () => {
+    const transitioned = {
+      ...makeItem('transitioned', { status: 'done' }, 'task'),
+      system: {
+        ...makeItem('transitioned-system', {}).system,
+        activity: [{
+          id: 'activity-1',
+          action: 'status_changed' as const,
+          field: 'status',
+          oldValue: 'in-progress',
+          newValue: 'done',
+          timestamp: 1,
+          authorIdentity: other,
+        }],
+      },
+    };
+    const untouched = makeItem('untouched', { status: 'done' }, 'task');
+
+    expect(getStatusTransitionValues(transitioned, 'from')).toEqual(['in-progress']);
+    expect(getStatusTransitionValues(transitioned, 'to')).toEqual(['done']);
+    expect(getTrackerFilterValue(transitioned, STATUS_CHANGED_FROM_FILTER_FIELD)).toEqual(['in-progress']);
+    expect(filterTrackerItems(
+      [transitioned, untouched],
+      {
+        activeFilters: [],
+        tagFilter: [],
+        columnFilters: {
+          combinator: 'and',
+          clauses: [{ field: STATUS_CHANGED_TO_FILTER_FIELD, op: '=', value: 'done' }],
+        },
+      },
+    ).map(item => item.id)).toEqual(['transitioned']);
+  });
+
+  it('evaluates saved relative-person, date, viewed, and favorite clauses with personal context', () => {
+    const nowMs = Date.UTC(2026, 6, 24);
+    const day = 24 * 60 * 60 * 1000;
+    const mine = {
+      ...makeItem('mine', { owner: 'me@example.com' }),
+      system: {
+        ...makeItem('mine-system', {}).system,
+        updatedAt: new Date(nowMs - day).toISOString(),
+        lastModifiedBy: other,
+      },
+    };
+    const stale = {
+      ...makeItem('stale', { owner: 'other@example.com' }),
+      system: {
+        ...makeItem('stale-system', {}).system,
+        updatedAt: new Date(nowMs - 40 * day).toISOString(),
+        lastModifiedBy: me,
+      },
+    };
+    const context = {
+      identity: me,
+      nowMs,
+      favoriteItemIds: new Set(['mine']),
+      viewedAtByItemId: new Map([['mine', nowMs - 2 * day]]),
+    };
+
+    const out = filterTrackerItems(
+      [mine, stale],
+      {
+        activeFilters: [],
+        tagFilter: [],
+        columnFilters: {
+          combinator: 'and',
+          clauses: [
+            { field: 'owner', op: 'is-current-user' },
+            { field: 'updated', op: 'in-last', value: 7 },
+            { field: 'viewed', op: 'in-last', value: 7 },
+            { field: 'favorite', op: '=', value: true },
+            { field: 'updatedBy', op: 'is-not-current-user' },
+          ],
+        },
+      },
+      context,
+    );
+
+    expect(out.map(item => item.id)).toEqual(['mine']);
+    expect(getTrackerFilterValue(mine, 'viewed', context)).toBe(nowMs - 2 * day);
+    expect(getTrackerFilterValue(stale, 'viewed', context)).toBeUndefined();
+  });
+
+  it('converts legacy left-sidebar presets into inspectable field clauses', () => {
+    expect(legacyFilterChipsToClauses(
+      [
+        'mine',
+        'unassigned',
+        'high-priority',
+        'favorites',
+        'recently-viewed',
+        'recently-edited-by-others',
+        'recently-updated',
+        'archived',
+      ],
+      7,
+    )).toEqual([
+      { field: 'owner', op: 'is-current-user' },
+      { field: 'owner', op: 'is-empty' },
+      { field: 'priority', op: 'in', value: ['critical', 'high'] },
+      { field: 'favorite', op: '=', value: true },
+      { field: 'viewed', op: 'in-last', value: 7 },
+      { field: 'updatedBy', op: 'is-not-current-user' },
+      { field: 'updated', op: 'in-last', value: 30 },
+      { field: 'archived', op: '=', value: true },
+    ]);
+  });
+
   it('counts archived items in a type after applying the active row filters', () => {
     const identity: TrackerIdentity = {
       email: 'me@example.com',
@@ -86,6 +206,65 @@ describe('filterTrackerItems', () => {
         sourceFilter: ['github-issues'],
       },
       { identity },
+    )).toBe(1);
+  });
+
+  // NIM-2280 / #1071: on the SQLite backend `tracker_items.archived` is an
+  // INTEGER, so rows arrive with 0/1 instead of false/true. The sidebar badge
+  // compares `archived` strictly, so before `dbRowToRecord` normalized it every
+  // native item was dropped and every type read 0 -- while the list and kanban
+  // (which test truthiness) still showed the items. Count through the real row
+  // mapper so the whole reporter chain is covered, not a hand-forged record.
+  it('counts items built from rows whose archived flag is a database integer', () => {
+    const row = (id: string, archived: 0 | 1) => dbRowToRecord({
+      id,
+      type: 'task',
+      data: { title: id },
+      workspace: '/ws',
+      archived,
+      sync_status: 'local',
+    });
+    const items = [row('active-a', 0), row('active-b', 0), row('gone', 1)];
+
+    expect(items.map((item) => item.archived)).toEqual([false, false, true]);
+    expect(countFilteredTrackerItemsByTypes(items, ['task'], { activeFilters: [], tagFilter: [] })).toBe(2);
+    expect(countFilteredTrackerItemsByTypes(items, ['task'], { activeFilters: ['archived'], tagFilter: [] })).toBe(1);
+  });
+
+  it('keeps sidebar counts aligned with archived relative field filters', () => {
+    const nowMs = Date.UTC(2026, 6, 24);
+    const recentArchived = {
+      ...makeItem('recent-archived', {}),
+      archived: true,
+      system: {
+        ...makeItem('recent-archived-system', {}).system,
+        updatedAt: new Date(nowMs - 2 * 24 * 60 * 60 * 1000).toISOString(),
+      },
+    };
+    const oldArchived = {
+      ...makeItem('old-archived', {}),
+      archived: true,
+      system: {
+        ...makeItem('old-archived-system', {}).system,
+        updatedAt: new Date(nowMs - 20 * 24 * 60 * 60 * 1000).toISOString(),
+      },
+    };
+
+    expect(countFilteredTrackerItemsByTypes(
+      [makeItem('active', {}), recentArchived, oldArchived],
+      ['task'],
+      {
+        activeFilters: [],
+        tagFilter: [],
+        columnFilters: {
+          combinator: 'and',
+          clauses: [
+            { field: 'archived', op: '=', value: true },
+            { field: 'updated', op: 'in-last', value: 7 },
+          ],
+        },
+      },
+      { nowMs },
     )).toBe(1);
   });
 
@@ -313,6 +492,19 @@ describe('filterTrackerItems', () => {
   });
 });
 
+describe('hasSavableViewState', () => {
+  it('treats a selected tracker type as savable without requiring a filter', () => {
+    expect(hasSavableViewState({
+      ...createDefaultViewDefinition(),
+      selectedType: 'bug',
+    })).toBe(true);
+  });
+
+  it('keeps the untouched default view out of the save flow', () => {
+    expect(hasSavableViewState(createDefaultViewDefinition())).toBe(false);
+  });
+});
+
 describe('groupTrackerItems', () => {
   it('returns a single "All" group for none', () => {
     const items = [makeItem('1', {}), makeItem('2', {})];
@@ -376,6 +568,17 @@ describe('normalizeViewDefinition', () => {
     });
   });
 
+  it("folds a saved view's retired 'grid' mode into the RevoGrid table", () => {
+    // Saved views travel between users on different builds, so a view saved
+    // while the RevoGrid table had its own mode must still open on this one.
+    expect(normalizeViewDefinition({ viewMode: 'grid' as never }).viewMode).toBe('table');
+  });
+
+  it('falls back to the default for a viewMode this build cannot render', () => {
+    expect(normalizeViewDefinition({ viewMode: 'spreadsheet' as never }).viewMode)
+      .toBe(createDefaultViewDefinition().viewMode);
+  });
+
   it('drops non-string tags', () => {
     const def = normalizeViewDefinition({ tagFilter: ['ok', 5 as unknown as string, 'fine'] });
     expect(def.tagFilter).toEqual(['ok', 'fine']);
@@ -393,5 +596,101 @@ describe('normalizeViewDefinition', () => {
       sortDirection: 'asc',
       recentlyViewedDays: 90,
     });
+  });
+});
+
+describe('view definitions capture full table state', () => {
+  it('defaults column layout, filters, and inbox scope to null', () => {
+    const def = createDefaultViewDefinition();
+    expect(def.columnConfig).toBeNull();
+    expect(def.columnFilters).toBeNull();
+    expect(def.inboxScope).toBeNull();
+  });
+
+  it('round-trips a captured column layout and filter set', () => {
+    const def = normalizeViewDefinition({
+      columnConfig: { visibleColumns: ['type', 'title'], columnWidths: { title: 320 }, groupBy: null },
+      columnFilters: { combinator: 'or', clauses: [{ field: 'status', op: '=', value: 'done' }] },
+      inboxScope: 'global',
+    });
+    expect(def.columnConfig).toEqual({
+      visibleColumns: ['type', 'title'],
+      columnWidths: { title: 320 },
+      groupBy: null,
+    });
+    expect(def.columnFilters).toEqual({
+      combinator: 'or',
+      clauses: [{ field: 'status', op: '=', value: 'done' }],
+    });
+    expect(def.inboxScope).toBe('global');
+  });
+
+  it('rejects a column config with no columns rather than hiding every column', () => {
+    expect(normalizeViewDefinition({ columnConfig: { visibleColumns: [] } as any }).columnConfig).toBeNull();
+    expect(normalizeViewDefinition({ columnConfig: 'nonsense' as any }).columnConfig).toBeNull();
+  });
+
+  it('drops malformed clauses but keeps an explicitly empty set (clears on apply)', () => {
+    // A present `clauses` array means the view was saved WITH the feature, so a
+    // view with no (usable) filters resolves to an empty set that CLEARS filters
+    // on apply -- never to legacy null, which would leave stale filters active.
+    expect(normalizeViewDefinition({ columnFilters: { clauses: [{ nope: 1 }] } as any }).columnFilters)
+      .toEqual({ combinator: 'and', clauses: [] });
+    expect(normalizeViewDefinition({ columnFilters: { clauses: [] } as any }).columnFilters)
+      .toEqual({ combinator: 'and', clauses: [] });
+  });
+
+  it('leaves older views without captured layout untouched', () => {
+    // A view saved before column capture existed must not clobber the current
+    // table state on restore -- absent (not empty) columnFilters reads as legacy.
+    const def = normalizeViewDefinition({ selectedType: 'bug', viewMode: 'list' });
+    expect(def.columnConfig).toBeNull();
+    expect(def.columnFilters).toBeNull();
+    // A non-object columnFilters is unparseable and also treated as legacy.
+    expect(normalizeViewDefinition({ columnFilters: 'nonsense' as any }).columnFilters).toBeNull();
+  });
+});
+
+describe('shared saved views', () => {
+  const localView = (id: string, name: string): SavedView => ({
+    id,
+    name,
+    definition: { ...createDefaultViewDefinition(), selectedType: 'bug' },
+  });
+
+  it('round-trips a view through the shared payload', () => {
+    const view = localView('v1', 'Sprint 7 bugs');
+    const parsed = parseSharedSavedView({ viewId: 'v1', payload: serializeSharedSavedView(view) });
+    expect(parsed).toEqual({ ...view, shared: true });
+  });
+
+  it('normalizes a peer payload written by an older client', () => {
+    const parsed = parseSharedSavedView({
+      viewId: 'v2',
+      payload: JSON.stringify({ name: 'Old view', definition: { selectedType: 'task' } }),
+    });
+    expect(parsed?.definition.selectedType).toBe('task');
+    // Fields the older client never wrote fall back to defaults rather than undefined.
+    expect(parsed?.definition.columnConfig).toBeNull();
+    expect(parsed?.definition.sortBy).toBe(createDefaultViewDefinition().sortBy);
+  });
+
+  it('drops payloads it cannot make sense of instead of failing the whole list', () => {
+    expect(parseSharedSavedView({ viewId: 'v3', payload: 'not json' })).toBeNull();
+    expect(parseSharedSavedView({ viewId: 'v3', payload: '[]' })).toBeNull();
+    expect(parseSharedSavedView({ viewId: 'v3', payload: '{"definition":{}}' })).toBeNull();
+    expect(parseSharedSavedView({ viewId: '', payload: '{"name":"x"}' })).toBeNull();
+  });
+
+  it('merges local and shared views, with the shared copy winning on id collision', () => {
+    const shared = { ...localView('v1', 'Team name'), shared: true };
+    const merged = mergeSavedViews([localView('v1', 'My name'), localView('v2', 'Local only')], [shared]);
+    expect(merged.map((v) => v.name)).toEqual(['Local only', 'Team name']);
+    expect(merged.find((v) => v.id === 'v1')?.shared).toBe(true);
+  });
+
+  it('clears a stale shared flag on a view that is no longer shared', () => {
+    const stale: SavedView = { ...localView('v9', 'Was shared'), shared: true };
+    expect(mergeSavedViews([stale], [])[0].shared).toBe(false);
   });
 });

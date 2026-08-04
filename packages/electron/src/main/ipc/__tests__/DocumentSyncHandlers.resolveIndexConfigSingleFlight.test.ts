@@ -1,33 +1,37 @@
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   appendLocalUpdateMock,
   browserWindowsMock,
+  clearCollabAssetSenderMock,
   drainCoordinatorMock,
   estimateLocalAppendBytesMock,
-  fetchTeamKeyStatusMock,
   findTeamForWorkspaceMock,
-  getLastKnownTeamKeyStatusMock,
   handlers,
   listPendingOutboxesMock,
   prepareForAppendMock,
+  registerCollabAssetDocumentMock,
   safeHandleMock,
 } = vi.hoisted(() => {
   const handlers = new Map<string, (...args: any[]) => any>();
   return {
     appendLocalUpdateMock: vi.fn(),
     browserWindowsMock: vi.fn(),
-    getLastKnownTeamKeyStatusMock: vi.fn(),
+    clearCollabAssetSenderMock: vi.fn(),
     drainCoordinatorMock: {
+      clearSender: vi.fn(),
       getAttachedSenderIds: vi.fn(),
       isProviderAttached: vi.fn(),
     },
     estimateLocalAppendBytesMock: vi.fn(),
-    fetchTeamKeyStatusMock: vi.fn(),
     findTeamForWorkspaceMock: vi.fn(),
     handlers,
     listPendingOutboxesMock: vi.fn(),
     prepareForAppendMock: vi.fn(),
+    registerCollabAssetDocumentMock: vi.fn(),
     safeHandleMock: vi.fn((channel: string, handler: (...args: any[]) => any) => {
       handlers.set(channel, handler);
     }),
@@ -63,7 +67,7 @@ vi.mock('../../services/StytchAuthService', () => ({
   getPersonalOrgId: vi.fn(() => 'personal-1'),
   getPersonalUserId: vi.fn(() => 'account-a'),
   getPersonalSessionJwt: vi.fn(() => 'personal-jwt'),
-  refreshPersonalSession: vi.fn(async () => false),
+  refreshPersonalSessionDetailed: vi.fn(async () => ({ ok: true })),
 }));
 
 vi.mock('../../services/TeamService', () => ({
@@ -76,31 +80,25 @@ vi.mock('../../services/jwtOrg', () => ({
   getJwtExp: vi.fn(() => Date.now() + 60_000),
 }));
 
-vi.mock('../../services/OrgKeyService', () => ({
-  getOrgKey: vi.fn(async () => null),
-  getOrgKeyFingerprint: vi.fn(() => null),
-  getOrCreateIdentityKeyPair: vi.fn(async () => undefined),
-  uploadIdentityKeyToOrg: vi.fn(async () => undefined),
-  fetchAndUnwrapOrgKey: vi.fn(async () => null),
-  clearOrgKey: vi.fn(),
-  fetchTeamKeyStatus: fetchTeamKeyStatusMock,
-  getLastKnownTeamKeyStatus: getLastKnownTeamKeyStatusMock,
-  getArchivedOrgKeys: vi.fn(() => []),
-}));
-
 vi.mock('../../utils/store', () => ({
   getWorkspaceState: vi.fn(() => ({})),
   updateWorkspaceState: vi.fn(),
 }));
 
 vi.mock('../../services/SyncManager', () => ({}));
-vi.mock('../collabDocumentTypeResolver', () => ({}));
+vi.mock('../collabDocumentTypeResolver', () => ({
+  resolveCollabDocumentType: vi.fn(() => 'markdown'),
+}));
 vi.mock('../../services/DocSyncService', () => ({}));
-vi.mock('../../protocols/collabAssetProtocol', () => ({}));
+vi.mock('../../protocols/collabAssetProtocol', () => ({
+  registerCollabAssetDocument: registerCollabAssetDocumentMock,
+  unregisterCollabAssetDocument: vi.fn(),
+  isCollabAssetDocumentRegisteredForSender: vi.fn(() => true),
+  clearCollabAssetSender: clearCollabAssetSenderMock,
+}));
 vi.mock('../../services/CollabAssetUploader', () => ({}));
 vi.mock('../../services/markdownAssetScanner', () => ({}));
 vi.mock('../../services/CollabLocalOriginService', () => ({}));
-vi.mock('../../services/collabContentAdapterRegistration', () => ({}));
 vi.mock('../../services/CollabDocumentReplicaStore', () => ({
   getCollabDocumentReplicaStore: () => ({
     appendLocalUpdate: appendLocalUpdateMock,
@@ -115,13 +113,139 @@ vi.mock('../../services/CollabOutboxDrainerService', () => ({
 
 import { registerDocumentSyncHandlers } from '../DocumentSyncHandlers';
 import { getOrgScopedJwt } from '../../services/TeamService';
+import { getPersonalSessionJwt, refreshPersonalSessionDetailed } from '../../services/StytchAuthService';
+import { getJwtExp } from '../../services/jwtOrg';
+
+/**
+ * This handler used to ignore the refresh result entirely and hand back
+ * whatever JWT happened to be cached -- including an expired one, after either
+ * an auth rejection or an unreachable server. An expired token guarantees the
+ * reconnect is refused again, so the loop never escapes and the reported cause
+ * is wrong in both directions.
+ */
+describe('document-sync:get-personal-jwt failure classification', () => {
+  const futureExpSeconds = Math.floor(Date.now() / 1000) + 300;
+  const pastExpSeconds = Math.floor(Date.now() / 1000) - 300;
+
+  beforeEach(() => {
+    handlers.clear();
+    vi.mocked(getPersonalSessionJwt).mockReturnValue('personal-jwt' as never);
+    vi.mocked(getJwtExp).mockReturnValue(futureExpSeconds);
+    vi.mocked(refreshPersonalSessionDetailed).mockResolvedValue({ ok: true } as never);
+    registerDocumentSyncHandlers();
+  });
+
+  it('returns the refreshed JWT when the refresh succeeds', async () => {
+    await expect(handlers.get('document-sync:get-personal-jwt')!(null)).resolves.toEqual({
+      success: true,
+      jwt: 'personal-jwt',
+    });
+  });
+
+  it('reports an unreachable sync server instead of handing back an expired JWT', async () => {
+    vi.mocked(getJwtExp).mockReturnValue(pastExpSeconds);
+    vi.mocked(refreshPersonalSessionDetailed).mockResolvedValue({
+      ok: false,
+      reason: 'network',
+      detail: 'ECONNREFUSED (connect ECONNREFUSED 127.0.0.1:8790)',
+    } as never);
+
+    const result = await handlers.get('document-sync:get-personal-jwt')!(null);
+    expect(result.success).toBe(false);
+    expect(result.jwt).toBeUndefined();
+    expect(result.error).toContain('unreachable');
+    expect(result.error).toContain('ECONNREFUSED');
+  });
+
+  it('reports a server rejection as a re-auth prompt, not as a transport problem', async () => {
+    vi.mocked(getJwtExp).mockReturnValue(pastExpSeconds);
+    vi.mocked(refreshPersonalSessionDetailed).mockResolvedValue({ ok: false, reason: 'auth' } as never);
+
+    const result = await handlers.get('document-sync:get-personal-jwt')!(null);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/sign in again/i);
+    expect(result.error).not.toMatch(/unreachable/i);
+  });
+
+  it('keeps using a still-valid JWT when only the refresh could not reach the server', async () => {
+    vi.mocked(refreshPersonalSessionDetailed).mockResolvedValue({
+      ok: false,
+      reason: 'network',
+      detail: 'ECONNREFUSED',
+    } as never);
+
+    // A transport blip must not invalidate a token that has not expired.
+    await expect(handlers.get('document-sync:get-personal-jwt')!(null)).resolves.toEqual({
+      success: true,
+      jwt: 'personal-jwt',
+    });
+  });
+});
+
+describe('document-sync:open performs no client-side key work (NIM-2036)', () => {
+  beforeEach(() => {
+    handlers.clear();
+    vi.clearAllMocks();
+    findTeamForWorkspaceMock.mockResolvedValue({ orgId: 'org-1', teamProjectId: null });
+    listPendingOutboxesMock.mockResolvedValue([]);
+    registerDocumentSyncHandlers();
+  });
+
+  /**
+   * Client-managed custody is gone: the server holds the team DEK and refuses
+   * content rooms it cannot unlock (NIM-2231), so opening a document must not
+   * fetch, unwrap, or probe ANY key material.
+   *
+   * This is a source-level guard on purpose. The runtime assertion this
+   * replaced spied on `OrgKeyService`, and once that module was deleted the
+   * spy could never fire — the test passed by construction while guarding
+   * nothing. Asserting on the import graph keeps failing if the dependency
+   * comes back.
+   */
+  it('does not import any org-key or custody module', async () => {
+    const source = await readFile(
+      resolve(__dirname, '../DocumentSyncHandlers.ts'),
+      'utf-8',
+    );
+    const imports = [...source.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
+    expect(imports.filter((spec) => /OrgKey|KeyRotation|TeamCustody/i.test(spec)))
+      .toEqual([]);
+  });
+
+  it('opens a document twice without re-registering key material', async () => {
+    const handler = handlers.get('document-sync:open');
+    expect(handler).toBeTruthy();
+    const sender = {
+      id: 2036,
+      isDestroyed: () => false,
+      once: vi.fn(),
+    };
+
+    for (let i = 0; i < 2; i += 1) {
+      await handler!({ sender }, {
+        workspacePath: '/workspace/one',
+        documentId: 'doc-1',
+        documentType: 'markdown',
+      });
+    }
+
+    expect(registerCollabAssetDocumentMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('resolves the index config without any key probe', async () => {
+    const result = await handlers.get('document-sync:resolve-index-config')!(
+      null,
+      { workspacePath: '/workspace/one' },
+    );
+
+    expect(result).toEqual(expect.objectContaining({ success: true }));
+  });
+});
 
 describe('document-sync:resolve-index-config single-flight (RC4)', () => {
   beforeEach(() => {
     handlers.clear();
     findTeamForWorkspaceMock.mockReset();
-    fetchTeamKeyStatusMock.mockReset();
-    fetchTeamKeyStatusMock.mockResolvedValue({ mode: 'server-managed', dekEpoch: 1, dekFingerprint: 'fp' });
     listPendingOutboxesMock.mockReset();
     listPendingOutboxesMock.mockResolvedValue([]);
 
@@ -188,48 +312,6 @@ describe('document-sync:resolve-index-config single-flight (RC4)', () => {
   });
 });
 
-describe('document-sync:resolve-index-config offline custody fallback (NIM-1778)', () => {
-  beforeEach(() => {
-    handlers.clear();
-    findTeamForWorkspaceMock.mockReset();
-    findTeamForWorkspaceMock.mockResolvedValue({ orgId: 'org-1', teamProjectId: null });
-    fetchTeamKeyStatusMock.mockReset();
-    getLastKnownTeamKeyStatusMock.mockReset();
-    getLastKnownTeamKeyStatusMock.mockReturnValue(null);
-    vi.mocked(getOrgScopedJwt).mockReset();
-    registerDocumentSyncHandlers();
-  });
-
-  afterEach(() => {
-    vi.mocked(getOrgScopedJwt).mockReset();
-    vi.mocked(getOrgScopedJwt).mockImplementation(async () => 'org-jwt' as Awaited<ReturnType<typeof getOrgScopedJwt>>);
-  });
-
-  it('uses the last-known custody mode when the org JWT cannot be minted offline', async () => {
-    vi.mocked(getOrgScopedJwt).mockRejectedValue(new Error('Failed to get JWT: net::ERR_INTERNET_DISCONNECTED'));
-    getLastKnownTeamKeyStatusMock.mockReturnValue({ mode: 'server-managed', dekEpoch: 1, dekFingerprint: 'fp' });
-
-    const handler = handlers.get('document-sync:resolve-index-config')!;
-    const result = await handler(null, { workspacePath: '/workspace/one' });
-
-    expect(result.success).toBe(true);
-    expect(result.config.keyCustody).toBe('server-managed');
-    expect(getLastKnownTeamKeyStatusMock).toHaveBeenCalledWith('org-1');
-  });
-
-  it('still lands on the legacy lane offline when the org has never been resolved', async () => {
-    vi.mocked(getOrgScopedJwt).mockRejectedValue(new Error('Failed to get JWT: net::ERR_INTERNET_DISCONNECTED'));
-    getLastKnownTeamKeyStatusMock.mockReturnValue(null);
-
-    const handler = handlers.get('document-sync:resolve-index-config')!;
-    const result = await handler(null, { workspacePath: '/workspace/one' });
-
-    // Legacy lane with no obtainable org key fails closed rather than
-    // resolving a server-managed config it has no evidence for.
-    expect(result.success).toBe(false);
-    expect(result.error).toContain('No encryption key available');
-  });
-});
 
 describe('document-sync:replica-append-local fan-out', () => {
   beforeEach(() => {
@@ -327,5 +409,38 @@ describe('document-sync:replica-append-local fan-out', () => {
 
     expect(appendLocalUpdateMock).not.toHaveBeenCalled();
     expect(siblingSend).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The asset route refuses anything over 25 MiB. Queuing such a blob anyway
+ * spends the local upload budget on bytes that can only ever 413, so the
+ * ceiling is applied before the durable outbox sees them.
+ */
+describe('document-sync:upload-asset size ceiling', () => {
+  const MAX_COLLAB_ASSET_BYTES = 25 * 1024 * 1024;
+
+  beforeEach(() => {
+    handlers.clear();
+    registerDocumentSyncHandlers();
+  });
+
+  it('refuses a payload above the asset route ceiling', async () => {
+    const result = await handlers.get('document-sync:upload-asset')!(
+      { sender: { id: 1, isDestroyed: () => false, once: vi.fn() } },
+      {
+        orgId: 'org-a',
+        documentId: 'conversation-a',
+        fileBytes: new ArrayBuffer(MAX_COLLAB_ASSET_BYTES + 1),
+        mimeType: 'video/quicktime',
+        fileName: 'capture.mov',
+      },
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      errorCode: 'asset_too_large',
+    });
+    expect(result.error).toContain('25 MB');
   });
 });

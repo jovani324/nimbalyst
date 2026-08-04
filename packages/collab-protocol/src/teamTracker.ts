@@ -26,6 +26,7 @@ export interface EncryptedTrackerItemEnvelope {
   iv?: string;
   updatedAt: number;
   deletedAt: number | null;
+  /** Fingerprint of the team DEK the row was encrypted at rest under. */
   orgKeyFingerprint: string | null;
   /** Server-allocated; never changes after first assignment. */
   issueNumber?: number;
@@ -54,6 +55,26 @@ export interface EncryptedTrackerSchemaEnvelope {
   iv?: string;
   updatedAt: number;
   deletedAt: number | null;
+  /** Fingerprint of the team DEK the row was encrypted at rest under. */
+  orgKeyFingerprint: string | null;
+}
+
+/**
+ * One team-shared saved view. Mirrors {@link EncryptedTrackerSchemaEnvelope}
+ * but keyed by a client-generated `viewId`. The encrypted payload is the
+ * JSON-serialized SavedView (name + definition); the server never reads it.
+ * Tombstones (view unshared or deleted): `encryptedPayload: null`, `iv`
+ * omitted, `deletedAt` populated. Saved views carry their OWN monotonic syncId
+ * cursor, independent of the item, schema, and navigation cursors.
+ */
+export interface EncryptedTrackerSavedViewEnvelope {
+  viewId: string;
+  syncId: SyncId;
+  encryptedPayload: string | null;
+  iv?: string;
+  updatedAt: number;
+  deletedAt: number | null;
+  /** Fingerprint of the team DEK the row was encrypted at rest under. */
   orgKeyFingerprint: string | null;
 }
 
@@ -65,6 +86,7 @@ export interface EncryptedTrackerNavigationEnvelope {
   iv?: string;
   updatedAt: number;
   deletedAt: number | null;
+  /** Fingerprint of the team DEK the row was encrypted at rest under. */
   orgKeyFingerprint: string | null;
 }
 
@@ -80,7 +102,24 @@ export type TrackerClientMessage =
   | TrackerSchemaMutationRequestMessage
   | TrackerNavigationSyncRequestMessage
   | TrackerNavigationMutationRequestMessage
+  | TrackerSavedViewSyncRequestMessage
+  | TrackerSavedViewMutationRequestMessage
   | TrackerPingMessage;
+
+/** Request the saved-view delta since a cursor. `sinceSyncId: 0` bootstraps. */
+export interface TrackerSavedViewSyncRequestMessage {
+  type: 'trackerSavedViewSync';
+  sinceSyncId: SyncId;
+}
+
+/** Upsert (encryptedPayload set) or unshare/delete (null = tombstone) one view. */
+export interface TrackerSavedViewMutationRequestMessage {
+  type: 'trackerSavedViewMutation';
+  clientMutationId: string;
+  viewId: string;
+  /** Null for delete (tombstone). */
+  encryptedPayload: string | null;
+}
 
 export interface TrackerNavigationSyncRequestMessage {
   type: 'trackerNavigationSync';
@@ -92,8 +131,6 @@ export interface TrackerNavigationMutationRequestMessage {
   clientMutationId: string;
   entryId: string;
   encryptedPayload: string | null;
-  iv?: string;
-  orgKeyFingerprint: string | null;
 }
 
 /** Request the schema delta since a cursor. `sinceSyncId: 0` bootstraps. */
@@ -109,9 +146,6 @@ export interface TrackerSchemaMutationRequestMessage {
   schemaType: string;
   /** Null for delete (tombstone). */
   encryptedPayload: string | null;
-  /** Omitted for delete. */
-  iv?: string;
-  orgKeyFingerprint: string | null;
 }
 
 export interface TrackerSyncRequestMessage {
@@ -127,9 +161,6 @@ export interface TrackerMutationRequestMessage {
   itemId: string;
   /** Null for delete (tombstone). */
   encryptedPayload: string | null;
-  /** Omitted for delete. */
-  iv?: string;
-  orgKeyFingerprint: string | null;
   issueNumber?: number;
   issueKey?: string;
 }
@@ -159,9 +190,36 @@ export type TrackerServerMessage =
   | TrackerNavigationSyncResponseMessage
   | TrackerNavigationDeltaMessage
   | TrackerNavigationMutationAckMessage
+  | TrackerSavedViewSyncResponseMessage
+  | TrackerSavedViewDeltaMessage
+  | TrackerSavedViewMutationAckMessage
   | TrackerPongMessage
   | TrackerRoomMovedMessage
   | TrackerErrorMessage;
+
+export interface TrackerSavedViewSyncResponseMessage {
+  type: 'trackerSavedViewSyncResponse';
+  views: EncryptedTrackerSavedViewEnvelope[];
+  cursorSyncId: SyncId;
+  hasMore: boolean;
+}
+
+export interface TrackerSavedViewDeltaMessage {
+  type: 'trackerSavedViewDelta';
+  view: EncryptedTrackerSavedViewEnvelope;
+}
+
+export interface TrackerSavedViewMutationAckMessage {
+  type: 'trackerSavedViewMutationAck';
+  clientMutationId: string;
+  accepted: boolean;
+  syncId?: SyncId;
+  view?: EncryptedTrackerSavedViewEnvelope;
+  error?: {
+    code: TrackerMutationRejectCode;
+    message: string;
+  };
+}
 
 export interface TrackerNavigationSyncResponseMessage {
   type: 'trackerNavigationSyncResponse';
@@ -229,6 +287,10 @@ export type TrackerMutationRejectCode =
   | 'staleKeyEpoch'
   | 'rotationLocked'
   | 'forbidden'
+  /** The server could not load the team DEK, so the write is refused. */
+  | 'custodyUnavailable'
+  /** The payload carried a client iv — the retired client-encrypted lane. */
+  | 'legacy_encryption_retired'
   | 'malformed';
 
 export interface TrackerMutationAckMessage {

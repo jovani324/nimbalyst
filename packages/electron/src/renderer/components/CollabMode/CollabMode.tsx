@@ -10,18 +10,22 @@
 
 import React, { useCallback, useState, useEffect, useRef, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { useAtomValue } from 'jotai';
+import type { CollabScope } from '@nimbalyst/collab-client/core';
+import { createCollabDocsScopeLifecycle } from '@nimbalyst/collab-client/docs';
 import { store } from '@nimbalyst/runtime/store';
-import { CollabSidebar } from './CollabSidebar';
+import { CollabSidebar } from '@nimbalyst/collab-client/docs-ui';
+import { ElectronCollabDocsUIProvider } from './ElectronCollabDocsUIProvider';
 import { TabsProvider, useTabsActions, useTabs, useTabNavigationShortcuts, type TabData } from '../../contexts/TabsContext';
 import { TabManager } from '../TabManager/TabManager';
 import { TabContent } from '../TabContent/TabContent';
-import { ChatSidebar } from '../ChatSidebar';
+import { ChatSidebar, type ChatSidebarRef } from '../ChatSidebar';
 import { useEditorMaximize } from '../../hooks/useEditorMaximize';
 import { useResizeDragShield } from '../../hooks/useResizeDragShield';
 import {
   getCollabConfig,
   openCollabDocumentViaIPC,
   updateCollabConfigDisplayMetadata,
+  type CollabDocumentOpenSource,
 } from '../../utils/collabDocumentOpener';
 import {
   loadOpenCollabDocs,
@@ -30,15 +34,18 @@ import {
 } from '../../utils/collabOpenDocsPersistence';
 import {
   initSharedDocuments,
+  getElectronCollabHost,
+  getElectronCollabHostForScopeKey,
+  getSharedDocumentsForScope,
   pendingCollabDocumentAtom,
+  rebindElectronCollabHostScope,
   sharedDocumentsAtom,
   sharedFoldersAtom,
   type SharedDocument,
 } from '../../store/atoms/collabDocuments';
-import { hydrateCollabDiscovery } from '../../store/atoms/collabDiscovery';
-import { SharedDocsHome } from './SharedDocsHome';
+import { changedDocIdsAtom } from '../../store/atoms/collabDiscovery';
+import { SHARED_HOME_TAB_URI, SHARED_HOME_TAB_TITLE, isSharedHomeTab } from './sharedHomeTab';
 import { isCollabUri, parseCollabUri } from '../../utils/collabUri';
-import { MaterialSymbol } from '@nimbalyst/runtime';
 import {
   getCollabNodeName,
   getSharedDocumentDisplayName,
@@ -48,11 +55,20 @@ import {
 } from './collabTree';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import type { SerializableDocumentContext } from '../../hooks/useDocumentContext';
+import { getTextSelection } from '../UnifiedAI/TextSelectionIndicator';
+import { getActiveEditorContextItems } from '../../stores/editorContextStore';
+import { categorizeTeamAnalyticsError, toStableAnalyticsCategory } from '../../../shared/analytics/teamAnalytics';
+import { trackTeamAnalyticsEvent } from '../../utils/teamAnalytics';
 
 interface CollabModeProps {
   workspacePath: string;
   isActive: boolean;
   onFileOpen: (path: string) => void;
+  onPanelStateChange?: (state: { sidebarCollapsed: boolean; chatCollapsed: boolean }) => void;
+}
+
+interface CollabModeInnerProps extends Omit<CollabModeProps, 'workspacePath'> {
+  scope: CollabScope;
 }
 
 export interface CollabModeRef {
@@ -60,42 +76,60 @@ export interface CollabModeRef {
   reopenLastClosedTab: () => Promise<void>;
   getActiveDocumentPath: () => string | null;
   toggleSidebarCollapsed: () => void;
+  toggleChatCollapsed: () => void;
+  createNewChatSession: () => Promise<void>;
 }
 
 export const CollabMode = forwardRef<CollabModeRef, CollabModeProps>(function CollabMode({
   workspacePath,
   isActive,
   onFileOpen,
+  onPanelStateChange,
 }, ref) {
-  // Initialize shared documents sync from TeamRoom.
-  // Retry when user activates collab mode, in case the initial attempt
-  // failed (e.g., encryption key not yet available, admin hadn't shared keys).
-  //
-  // Multi-project rail switching re-mounts CollabMode whenever the visible
-  // `workspacePath` changes, but the team-sync provider is keyed by path
-  // in `providersByPath` and must stay connected while the project is warm
-  // — tearing it down on every switch would lose pending writes. The
-  // explicit close path (`closeOpenProjectAtom` → workspaceStatePruner →
-  // `pruneCollabDocumentsWorkspaceState`) is the one that destroys the
-  // provider when the user actually closes the project.
+  const [scope, setScope] = useState<CollabScope | null>(null);
+  const scopeRef = useRef<CollabScope | null>(null);
+  const hostRef = useRef<ReturnType<typeof getElectronCollabHostForScopeKey> | null>(null);
+  if (!hostRef.current) hostRef.current = getElectronCollabHostForScopeKey(workspacePath);
+
   useEffect(() => {
-    initSharedDocuments(workspacePath);
+    const lifecycle = createCollabDocsScopeLifecycle(hostRef.current!, {
+      onSessionChanged: (session) => {
+        const nextScope = session?.scope ?? null;
+        scopeRef.current = nextScope;
+        setScope(nextScope);
+        if (nextScope) void initSharedDocuments(nextScope);
+      },
+      onError: (error) => {
+        console.error('[CollabMode] Failed to resolve collaboration scope:', error);
+      },
+    });
+    lifecycle.start();
+    return () => lifecycle.dispose();
+  }, []);
+
+  useEffect(() => {
+    rebindElectronCollabHostScope(hostRef.current!, workspacePath);
   }, [workspacePath]);
 
   useEffect(() => {
-    if (isActive) {
-      initSharedDocuments(workspacePath);
-    }
-  }, [isActive, workspacePath]);
+    if (isActive && scopeRef.current) void initSharedDocuments(scopeRef.current);
+  }, [isActive]);
+
+  if (!scope) {
+    return <div className="collab-mode flex-1 min-h-0" />;
+  }
 
   return (
-    <TabsProvider workspacePath={workspacePath} disablePersistence>
-      <CollabModeInner
-        ref={ref}
-        workspacePath={workspacePath}
-        isActive={isActive}
-        onFileOpen={onFileOpen}
-      />
+    <TabsProvider key={scope.scopeKey} workspacePath={scope.scopeKey} disablePersistence>
+      <ElectronCollabDocsUIProvider scope={scope}>
+        <CollabModeInner
+          ref={ref}
+          scope={scope}
+          isActive={isActive}
+          onFileOpen={onFileOpen}
+          onPanelStateChange={onPanelStateChange}
+        />
+      </ElectronCollabDocsUIProvider>
     </TabsProvider>
   );
 });
@@ -116,26 +150,29 @@ interface CollabLayout {
   chatCollapsed: boolean;
 }
 
-let layoutPersistTimer: ReturnType<typeof setTimeout> | null = null;
+const layoutPersistTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 /** Save collab layout to workspace state (debounced). */
-function persistCollabLayout(workspacePath: string, layout: CollabLayout): void {
-  if (layoutPersistTimer) clearTimeout(layoutPersistTimer);
-  layoutPersistTimer = setTimeout(async () => {
+function persistCollabLayout(scope: CollabScope, layout: CollabLayout): void {
+  const existingTimer = layoutPersistTimers.get(scope.scopeKey);
+  if (existingTimer) clearTimeout(existingTimer);
+  const timer = setTimeout(async () => {
+    layoutPersistTimers.delete(scope.scopeKey);
     try {
-      await window.electronAPI?.invoke?.('workspace:update-state', workspacePath, {
+      await window.electronAPI?.invoke?.('workspace:update-state', scope.scopeKey, {
         collabLayout: layout,
       });
     } catch (err) {
       console.warn('[CollabMode] Failed to persist layout:', err);
     }
   }, 500);
+  layoutPersistTimers.set(scope.scopeKey, timer);
 }
 
 /** Load collab layout from workspace state. */
-async function loadCollabLayout(workspacePath: string): Promise<CollabLayout> {
+async function loadCollabLayout(scope: CollabScope): Promise<CollabLayout> {
   try {
-    const state = await window.electronAPI?.invoke?.('workspace:get-state', workspacePath);
+    const state = await window.electronAPI?.invoke?.('workspace:get-state', scope.scopeKey);
     return {
       sidebarWidth: state?.collabLayout?.sidebarWidth ?? COLLAB_SIDEBAR_DEFAULT,
       chatWidth: state?.collabLayout?.chatWidth ?? COLLAB_CHAT_DEFAULT,
@@ -155,10 +192,11 @@ async function loadCollabLayout(workspacePath: string): Promise<CollabLayout> {
 /**
  * Inner component that has access to TabsProvider context.
  */
-const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function CollabModeInner({
-  workspacePath,
+export const CollabModeInner = forwardRef<CollabModeRef, CollabModeInnerProps>(function CollabModeInner({
+  scope,
   isActive,
   onFileOpen,
+  onPanelStateChange,
 }, ref) {
   const tabsActions = useTabsActions();
   const { tabs, activeTabId } = useTabs();
@@ -166,6 +204,7 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
   const pendingDoc = useAtomValue(pendingCollabDocumentAtom);
   const sharedDocuments = useAtomValue(sharedDocumentsAtom);
   const sharedFolders = useAtomValue(sharedFoldersAtom);
+  const unreadDocumentIds = useAtomValue(changedDocIdsAtom);
   const [restored, setRestored] = useState(false);
 
   // --- Resizable / collapsible panel state ---
@@ -173,9 +212,17 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
   const [chatWidth, setChatWidth] = useState(COLLAB_CHAT_DEFAULT);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
-  // Discovery hub overlay: shown over open tabs when the user clicks "Home".
-  // With no tabs, the hub is the empty state and this flag is irrelevant.
-  const [showHome, setShowHome] = useState(false);
+  const chatSidebarRef = useRef<ChatSidebarRef>(null);
+
+  useEffect(() => {
+    onPanelStateChange?.({ sidebarCollapsed, chatCollapsed });
+  }, [sidebarCollapsed, chatCollapsed, onPanelStateChange]);
+
+  // The Shared Docs Home is a singleton virtual tab (NIM-1790). Opening it
+  // dedupes by URI, so this focuses the existing tab if present.
+  const openSharedHomeTab = useCallback((switchToTab = true) => {
+    tabsActions.addTab(SHARED_HOME_TAB_URI, '', switchToTab, SHARED_HOME_TAB_TITLE);
+  }, [tabsActions]);
 
   // Refs for sidebar resize drag (avoids re-renders during drag)
   const sidebarDragRef = useRef({ startX: 0, startWidth: 0, latestWidth: sidebarWidth });
@@ -215,10 +262,24 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
       }
     }
 
+    // Include the current text selection so the agent gets the "+ selection"
+    // context, but only if it belongs to this collab document. Mirrors
+    // EditorMode.getDocumentContext for regular files.
+    const textSelectionData = getTextSelection();
+    const textSelection = textSelectionData && textSelectionData.filePath === activeTab.filePath
+      ? textSelectionData
+      : undefined;
+
     return {
       filePath: activeTab.filePath,
       fileType: 'collab-markdown',
       content,
+      textSelection,
+      textSelectionTimestamp: textSelection?.timestamp,
+      // Extension-provided selection context (e.g. a spreadsheet's selected
+      // cells) for the active collab document. Mirrors EditorMode; without it a
+      // collaborative spreadsheet's "+ selection" never reaches the agent.
+      editorContextItems: getActiveEditorContextItems(activeTab.filePath),
     };
   }, []);
 
@@ -250,16 +311,16 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
       content: '',
       filePath: activeTab.filePath,
       fileType: 'collab-markdown',
-      workspacePath,
+      workspacePath: scope.scopeKey,
       cursorPosition: undefined,
       selection: undefined,
     });
-  }, [isActive, activeTabId, tabs, workspacePath]);
+  }, [isActive, activeTabId, tabs, scope.scopeKey]);
 
   // Load persisted layout on mount
   useEffect(() => {
     let cancelled = false;
-    loadCollabLayout(workspacePath).then((layout) => {
+    loadCollabLayout(scope).then((layout) => {
       if (cancelled) return;
       setSidebarWidth(layout.sidebarWidth);
       setChatWidth(layout.chatWidth);
@@ -267,20 +328,7 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
       setChatCollapsed(layout.chatCollapsed);
     });
     return () => { cancelled = true; };
-  }, [workspacePath]);
-
-  // Hydrate favorites + discovery prefs (tree filter, unread-bubble visibility)
-  // from workspace state so the hub and sidebar reflect saved choices.
-  useEffect(() => {
-    let cancelled = false;
-    window.electronAPI?.invoke?.('workspace:get-state', workspacePath)
-      .then((state: any) => {
-        if (cancelled) return;
-        hydrateCollabDiscovery(workspacePath, state?.collabDiscovery);
-      })
-      .catch(() => { /* best-effort; defaults apply */ });
-    return () => { cancelled = true; };
-  }, [workspacePath]);
+  }, [scope]);
 
   // --- Sidebar resize handlers ---
   const startSidebarResizeDrag = useResizeDragShield({
@@ -292,7 +340,7 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
     },
     onEnd: () => {
       // Persist after drag ends
-      persistCollabLayout(workspacePath, {
+      persistCollabLayout(scope, {
         sidebarWidth: sidebarDragRef.current.latestWidth,
         chatWidth,
         sidebarCollapsed,
@@ -313,41 +361,41 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
   // --- Chat sidebar resize handler (via ChatSidebar's onWidthChange) ---
   const handleChatWidthChange = useCallback((newWidth: number) => {
     setChatWidth(newWidth);
-    persistCollabLayout(workspacePath, { sidebarWidth, chatWidth: newWidth, sidebarCollapsed, chatCollapsed });
-  }, [workspacePath, sidebarWidth, sidebarCollapsed, chatCollapsed]);
+    persistCollabLayout(scope, { sidebarWidth, chatWidth: newWidth, sidebarCollapsed, chatCollapsed });
+  }, [scope, sidebarWidth, sidebarCollapsed, chatCollapsed]);
 
   // --- Collapse toggles (left document tree + right chat panel) ---
   const toggleSidebarCollapsed = useCallback(() => {
     setSidebarCollapsed((prev) => {
       const next = !prev;
-      persistCollabLayout(workspacePath, { sidebarWidth, chatWidth, sidebarCollapsed: next, chatCollapsed });
+      persistCollabLayout(scope, { sidebarWidth, chatWidth, sidebarCollapsed: next, chatCollapsed });
       return next;
     });
-  }, [workspacePath, sidebarWidth, chatWidth, chatCollapsed]);
+  }, [scope, sidebarWidth, chatWidth, chatCollapsed]);
 
   const toggleChatCollapsed = useCallback(() => {
     setChatCollapsed((prev) => {
       const next = !prev;
-      persistCollabLayout(workspacePath, { sidebarWidth, chatWidth, sidebarCollapsed, chatCollapsed: next });
+      persistCollabLayout(scope, { sidebarWidth, chatWidth, sidebarCollapsed, chatCollapsed: next });
       return next;
     });
-  }, [workspacePath, sidebarWidth, chatWidth, sidebarCollapsed]);
+  }, [scope, sidebarWidth, chatWidth, sidebarCollapsed]);
 
   // Double-click a tab to maximize the editor (collapse doc list + AI chat).
   // Second double-click restores the exact prior collapse state.
   const { isMaximized: isEditorMaximized, toggle: toggleEditorMaximized, clearMaximize: clearEditorMaximized } =
     useEditorMaximize<{ sidebar: boolean; chat: boolean }>({
-      scopeKey: workspacePath,
+      scopeKey: scope.scopeKey,
       snapshot: () => ({ sidebar: sidebarCollapsed, chat: chatCollapsed }),
       maximize: () => {
         setSidebarCollapsed(true);
         setChatCollapsed(true);
-        persistCollabLayout(workspacePath, { sidebarWidth, chatWidth, sidebarCollapsed: true, chatCollapsed: true });
+        persistCollabLayout(scope, { sidebarWidth, chatWidth, sidebarCollapsed: true, chatCollapsed: true });
       },
       restore: (snap) => {
         setSidebarCollapsed(snap.sidebar);
         setChatCollapsed(snap.chat);
-        persistCollabLayout(workspacePath, { sidebarWidth, chatWidth, sidebarCollapsed: snap.sidebar, chatCollapsed: snap.chat });
+        persistCollabLayout(scope, { sidebarWidth, chatWidth, sidebarCollapsed: snap.sidebar, chatCollapsed: snap.chat });
       },
     });
 
@@ -359,9 +407,11 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
     }
   }, [isEditorMaximized, sidebarCollapsed, chatCollapsed, clearEditorMaximized]);
 
-  const handleDocumentSelect = useCallback(async (doc: SharedDocument, initialContent?: string) => {
-    // Opening a doc dismisses the discovery hub overlay.
-    setShowHome(false);
+  const handleDocumentSelect = useCallback(async (
+    doc: SharedDocument,
+    initialContent?: string,
+    analyticsSource: CollabDocumentOpenSource = 'sidebar',
+  ) => {
     // Check if already open as a tab
     const existingTab = tabs.find((tab) => {
       if (!isCollabUri(tab.filePath)) return false;
@@ -381,13 +431,26 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
       if (existingTab.fileName !== nextName) {
         tabsActions.updateTab(existingTab.id, { fileName: nextName });
       }
+      trackTeamAnalyticsEvent('collab_document_opened', {
+        surface: 'desktop',
+        source: analyticsSource,
+        actorType: analyticsSource === 'agent_tool' ? 'agent' : 'user',
+        documentType: toStableAnalyticsCategory(doc.documentType),
+        editorCategory: doc.editorId?.startsWith('builtin.monaco')
+          ? 'monaco'
+          : doc.editorId?.startsWith('builtin.lexical') || doc.documentType === 'markdown'
+            ? 'lexical'
+            : 'extension',
+        wasUnread: unreadDocumentIds.has(doc.documentId),
+        connectionPath: 'resume',
+      });
       return;
     }
 
     // Open as collab tab
     try {
       const tabId = await openCollabDocumentViaIPC({
-        workspacePath,
+        scope,
         documentId: doc.documentId,
         title: doc.title,
         displayPath: getSharedDocumentDisplayPath(doc, sharedFolders),
@@ -395,6 +458,9 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
         metadataVersion: doc.metadataVersion,
         fileExtension: doc.fileExtension,
         editorId: doc.editorId,
+        analyticsSource,
+        analyticsActorType: analyticsSource === 'agent_tool' ? 'agent' : 'user',
+        analyticsWasUnread: unreadDocumentIds.has(doc.documentId),
         initialContent,
         addTab: tabsActions.addTab,
       });
@@ -403,6 +469,14 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
         tabsActions.updateTab(tabId, { fileName: nextName });
       }
     } catch (error) {
+      trackTeamAnalyticsEvent('collab_operation_failed', {
+        surface: 'desktop',
+        operation: 'open_document',
+        source: analyticsSource,
+        actorType: analyticsSource === 'agent_tool' ? 'agent' : 'user',
+        documentType: toStableAnalyticsCategory(doc.documentType),
+        errorCategory: categorizeTeamAnalyticsError('document', error),
+      });
       const message = error instanceof Error ? error.message : String(error);
       console.error('[CollabMode] Failed to open shared document:', {
         documentId: doc.documentId,
@@ -415,7 +489,13 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
         { details: doc.title || doc.documentId }
       );
     }
-  }, [workspacePath, tabs, tabsActions, sharedFolders]);
+  }, [scope, tabs, tabsActions, sharedFolders, unreadDocumentIds]);
+
+  useEffect(() => getElectronCollabHost(scope).setOpenArtifactAdapter((ref, source) => {
+    if (ref.kind !== 'document' || ref.scope.scopeKey !== scope.scopeKey) return;
+    const document = sharedDocuments.find((item) => item.documentId === ref.documentId);
+    if (document) void handleDocumentSelect(document, undefined, source);
+  }), [scope, sharedDocuments, handleDocumentSelect]);
 
   const activeCollabDocumentId = useMemo(() => {
     if (!activeTabId) return null;
@@ -448,21 +528,22 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
         document.title,
         document.documentId,
       );
-      updateCollabConfigDisplayMetadata(tab.filePath, {
+      updateCollabConfigDisplayMetadata(scope, tab.filePath, {
         title: document.title,
         displayPath: getSharedDocumentDisplayPathWithFallback(
           document,
           sharedFolders,
-          getCollabConfig(tab.filePath)?.displayPath || tab.fileName,
+          getCollabConfig(scope, tab.filePath)?.displayPath || tab.fileName,
         ),
       });
       if (tab.fileName !== nextName) {
         tabsActions.updateTab(tab.id, { fileName: nextName });
       }
     }
-  }, [sharedDocuments, sharedFolders, tabs, tabsActions]);
+  }, [scope, sharedDocuments, sharedFolders, tabs, tabsActions]);
 
-  // Persist open document entries (id + documentType) whenever tabs change.
+  // Persist open document entries, including tab order and pinned state,
+  // whenever tabs change.
   // documentType is required at restore time so the right editor is mounted;
   // without it CollaborativeTabEditor falls back to markdown for everything
   // and renders an Excalidraw / mockup Y.Doc as blank.
@@ -477,7 +558,7 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
         try {
           const { documentId } = parseCollabUri(t.filePath);
           const document = docsById.get(documentId);
-          const registeredPath = getCollabConfig(t.filePath)?.displayPath;
+          const registeredPath = getCollabConfig(scope, t.filePath)?.displayPath;
           const displayPath = document
             ? getSharedDocumentDisplayPathWithFallback(
                 document,
@@ -492,20 +573,21 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
             fileExtension: document?.fileExtension,
             editorId: document?.editorId,
             displayPath,
+            isPinned: t.isPinned,
           };
         } catch {
           return null;
         }
       })
       .filter((entry): entry is PersistedCollabEntry => entry !== null);
-    persistOpenCollabDocs(workspacePath, entries);
-  }, [tabs, sharedDocuments, sharedFolders, workspacePath, restored]);
+    persistOpenCollabDocs(scope, entries);
+  }, [tabs, sharedDocuments, sharedFolders, scope, restored]);
 
   // Restore previously open collab documents on mount
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const savedEntries = await loadOpenCollabDocs(workspacePath);
+      const savedEntries = await loadOpenCollabDocs(scope);
       if (cancelled || savedEntries.length === 0) {
         setRestored(true);
         return;
@@ -519,7 +601,7 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
         if (cancelled) break;
         try {
           await openCollabDocumentViaIPC({
-            workspacePath,
+            scope,
             documentId: entry.documentId,
             title: entry.displayPath ? getCollabNodeName(entry.displayPath) : undefined,
             displayPath: entry.displayPath,
@@ -527,6 +609,8 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
             metadataVersion: entry.metadataVersion,
             fileExtension: entry.fileExtension,
             editorId: entry.editorId,
+            analyticsSource: 'restart_restore',
+            isPinned: entry.isPinned,
             addTab: tabsActions.addTab,
           });
         } catch (err) {
@@ -537,16 +621,21 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
     })();
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspacePath]); // Only run on mount (tabsActions is stable ref-based)
+  }, [scope]); // TabsProvider is keyed by scope; tabsActions is stable per mount.
 
   // Auto-open a pending document. Set by "Share to Team" (carries title +
   // initialContent for first-share seeding) and by deep links (documentId
   // only -- title arrives later via the shared-docs sync, which the
   // sharedDocuments rename effect picks up).
   useEffect(() => {
-    if (!pendingDoc || !isActive) return;
+    if (
+      !pendingDoc
+      || !isActive
+      || pendingDoc.scopeKey !== scope.scopeKey
+      || pendingDoc.orgId !== scope.orgId
+    ) return;
 
-    const docs = store.get(sharedDocumentsAtom);
+    const docs = getSharedDocumentsForScope(scope);
     const found = docs.find(d => d.documentId === pendingDoc.documentId);
 
     // Prefer the synced doc (it has the canonical title), but fall back to
@@ -563,6 +652,7 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
         }
       : {
           documentId: pendingDoc.documentId,
+          teamProjectId: scope.indexConfig.teamProjectId ?? null,
           title: '',
           documentType: pendingDoc.documentType ?? 'markdown',
           metadataVersion: pendingDoc.metadataVersion,
@@ -574,8 +664,46 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
         };
 
     store.set(pendingCollabDocumentAtom, null);
-    handleDocumentSelect(docToOpen, pendingDoc.initialContent);
-  }, [pendingDoc, isActive, handleDocumentSelect]);
+    handleDocumentSelect(docToOpen, pendingDoc.initialContent, pendingDoc.analyticsSource ?? 'deep_link');
+  }, [pendingDoc, isActive, handleDocumentSelect, scope]);
+
+  // Ensure the singleton Shared Docs Home tab exists once restore settles, so
+  // the shared area always lands on the list-view home (replaces the old
+  // empty-state card hub). Switch to it only when nothing else is open.
+  useEffect(() => {
+    if (!restored) return;
+    const snapshot = tabsActions.getSnapshot();
+    const hasHome = Array.from(snapshot.tabs.values()).some((t) => isSharedHomeTab(t.filePath));
+    if (!hasHome) {
+      openSharedHomeTab(snapshot.tabs.size === 0);
+    }
+  }, [restored, openSharedHomeTab, tabsActions]);
+
+  // Reopen the home tab if the user closes the last remaining tab, so the
+  // shared area never falls back to a blank pane.
+  useEffect(() => {
+    if (!restored) return;
+    if (tabs.length === 0) {
+      openSharedHomeTab(true);
+    }
+  }, [restored, tabs.length, openSharedHomeTab]);
+
+  const activeTabIsHome = useMemo(() => {
+    if (!activeTabId) return false;
+    const tab = tabs.find((t) => t.id === activeTabId);
+    return tab ? isSharedHomeTab(tab.filePath) : false;
+  }, [activeTabId, tabs]);
+
+  // File path of the active collab document, so the chat panel scopes its
+  // "+ selection" chips to the doc the user is actually looking at. Without a
+  // currentFilePath the chip row falls back to "most recent" and leaks a stale
+  // selection from a previously-active tab (e.g. a spreadsheet's cells still
+  // showing after switching to a markdown doc). Empty for the Shared Docs Home.
+  const activeCollabFilePath = useMemo(() => {
+    if (!activeTabId) return '';
+    const tab = tabs.find((t) => t.id === activeTabId);
+    return tab && isCollabUri(tab.filePath) ? tab.filePath : '';
+  }, [activeTabId, tabs]);
 
   const handleTabClose = useCallback((tabId: string) => {
     tabsActions.removeTab(tabId);
@@ -596,7 +724,21 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
       return activeTab?.filePath ?? null;
     },
     toggleSidebarCollapsed,
-  }), [activeTabId, tabs, tabsActions, toggleSidebarCollapsed]);
+    toggleChatCollapsed,
+    createNewChatSession: async () => {
+      if (chatCollapsed) {
+        setChatCollapsed(false);
+      }
+      await chatSidebarRef.current?.createNewSession();
+    },
+  }), [
+    activeTabId,
+    tabs,
+    tabsActions,
+    toggleSidebarCollapsed,
+    toggleChatCollapsed,
+    chatCollapsed,
+  ]);
 
   const hasTabs = tabs.length > 0;
 
@@ -608,11 +750,9 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
         <>
           <div style={{ width: sidebarWidth, minWidth: COLLAB_SIDEBAR_MIN, maxWidth: COLLAB_SIDEBAR_MAX }} className="shrink-0">
             <CollabSidebar
-              workspacePath={workspacePath}
-              onDocumentSelect={handleDocumentSelect}
               activeDocumentId={activeCollabDocumentId}
-              onShowHome={() => setShowHome(true)}
-              homeActive={showHome || !hasTabs}
+              onShowHome={() => openSharedHomeTab(true)}
+              homeActive={activeTabIsHome}
             />
           </div>
 
@@ -630,56 +770,38 @@ const CollabModeInner = forwardRef<CollabModeRef, CollabModeProps>(function Coll
         </>
       )}
 
-      {/* Center: Tabs + editor */}
+      {/* Center: Tabs + editor. The Shared Docs Home is itself a (singleton)
+          tab now, so the tab strip is always present. */}
       <div className="flex-1 flex flex-col overflow-hidden min-h-0">
-        {hasTabs ? (
+        {hasTabs && (
           <TabManager
             onTabClose={handleTabClose}
-            onNewTab={() => {}}
+            onNewTab={() => openSharedHomeTab(true)}
             isActive={isActive}
             onToggleAIChat={toggleChatCollapsed}
             isAIChatCollapsed={chatCollapsed}
             onTabDoubleClick={toggleEditorMaximized}
           >
-            <>
-              <TabContent
-                workspaceId={workspacePath}
-                onTabClose={handleTabClose}
-                onGetContentReady={handleGetContentReady}
-              />
-              {/* Discovery hub overlay — reachable while tabs are open.
-                  Rendered as a sibling so TabContent is never re-mounted. */}
-              {showHome && (
-                <div className="collab-home-overlay absolute inset-0 z-20 flex flex-col bg-nim">
-                  <div className="flex items-center justify-end px-3 py-1.5 border-b border-nim shrink-0">
-                    <button
-                      type="button"
-                      className="flex items-center gap-1 text-[12px] text-nim-muted hover:text-nim bg-transparent border-none cursor-pointer px-2 py-1 rounded hover:bg-nim-hover"
-                      onClick={() => setShowHome(false)}
-                      title="Back to editor"
-                    >
-                      <MaterialSymbol icon="close" size={16} />
-                      Back to editor
-                    </button>
-                  </div>
-                  <SharedDocsHome workspacePath={workspacePath} onDocumentSelect={handleDocumentSelect} />
-                </div>
-              )}
-            </>
+            <TabContent
+              workspaceId={scope.scopeKey}
+              collabScope={scope}
+              onTabClose={handleTabClose}
+              onGetContentReady={handleGetContentReady}
+            />
           </TabManager>
-        ) : (
-          /* No tabs open: the discovery hub is the full-bleed empty state */
-          <SharedDocsHome workspacePath={workspacePath} onDocumentSelect={handleDocumentSelect} />
         )}
       </div>
 
-      {/* Right: AI Chat sidebar (resizable via ChatSidebar built-in handle, collapsible) */}
+      {/* Right: AI Chat sidebar (resizable via ChatSidebar built-in handle,
+          collapsible). Shown on every tab, including the Shared Docs Home. */}
       {hasTabs && (
         <ChatSidebar
-          workspacePath={workspacePath}
+          ref={chatSidebarRef}
+          workspacePath={scope.scopeKey}
           isActive={isActive}
           isCollapsed={chatCollapsed}
           onToggleCollapse={toggleChatCollapsed}
+          documentContext={{ filePath: activeCollabFilePath }}
           getDocumentContext={getDocumentContext}
           onFileOpen={async (filePath) => onFileOpen(filePath)}
           width={chatWidth}

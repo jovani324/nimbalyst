@@ -73,3 +73,70 @@ describe('payload origin round-trip', () => {
     expect(parsed.origin.external.urn).toBe('github://owner/repo#42');
   });
 });
+
+/**
+ * `triagedAt` retires an item from the triage inbox, and it is shared rather
+ * than personal, so it has to survive the same payload -> record -> `data`
+ * path as `origin`. A system key that isn't carried by every converter is
+ * dropped silently: the item disappears from the inbox until the next sync
+ * apply rebuilds `data`, then reappears (NIM-2172).
+ */
+describe('payload triagedAt round-trip', () => {
+  const TRIAGED_AT = '2026-07-25T12:00:00.000Z';
+  const TRIAGED_BY = {
+    displayName: 'Greg',
+    email: 'greg@example.com',
+    gitName: 'Greg',
+    gitEmail: 'greg@example.com',
+  };
+
+  function triagedPayload(): TrackerItemPayload {
+    const base = makePayload();
+    return { ...base, system: { ...base.system, triagedAt: TRIAGED_AT, triagedBy: TRIAGED_BY } };
+  }
+
+  it('payloadToRecord carries system.triagedAt', () => {
+    const record = payloadToRecord(makeEnvelope('ext_abc'), triagedPayload(), '/ws');
+    expect(record.system.triagedAt).toBe(TRIAGED_AT);
+    expect(record.system.triagedBy).toEqual(TRIAGED_BY);
+  });
+
+  it('recordToDbParams persists data.triagedAt', () => {
+    const record = payloadToRecord(makeEnvelope('ext_abc'), triagedPayload(), '/ws');
+    const parsed = JSON.parse(recordToDbParams(record).data);
+    expect(parsed.triagedAt).toBe(TRIAGED_AT);
+    expect(parsed.triagedBy).toEqual(TRIAGED_BY);
+    // It is system metadata, not a schema field, so it must not leak into the
+    // grid as a user-editable column.
+    expect(record.fields.triagedAt).toBeUndefined();
+  });
+});
+
+describe('payload system collection round-trip', () => {
+  it('carries comments, activity, and pull request links into the canonical record', () => {
+    const comments = [
+      { id: 'comment-1', authorIdentity: { displayName: 'Alice' }, body: 'hello', createdAt: 1 },
+    ];
+    const activity = [
+      { id: 'activity-1', authorIdentity: { displayName: 'Alice' }, action: 'commented', timestamp: 1 },
+    ];
+    const linkedPullRequests = [
+      { remote: 'nimbalyst/nimbalyst', number: 42 },
+    ];
+    const payload = {
+      ...makePayload(),
+      comments,
+      activity,
+      system: {
+        ...makePayload().system,
+        linkedPullRequests,
+      },
+    } as TrackerItemPayload;
+
+    const record = payloadToRecord(makeEnvelope('ext_abc'), payload, '/ws');
+
+    expect(record.system.comments).toEqual(comments);
+    expect(record.system.activity).toEqual(activity);
+    expect(record.system.linkedPullRequests).toEqual(linkedPullRequests);
+  });
+});

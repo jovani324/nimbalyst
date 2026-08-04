@@ -21,8 +21,6 @@
  *
  * Intentionally simplified:
  *   - No issue-key prefix uniqueness check.
- *   - No rotation lock / key-epoch enforcement (tests that need that
- *     enable `keyEpoch` checking explicitly).
  *   - No hibernation / TTL.
  */
 
@@ -44,6 +42,10 @@ import type {
   TrackerNavigationSyncResponseMessage,
   TrackerNavigationDeltaMessage,
   TrackerNavigationMutationAckMessage,
+  EncryptedTrackerSavedViewEnvelope,
+  TrackerSavedViewSyncResponseMessage,
+  TrackerSavedViewDeltaMessage,
+  TrackerSavedViewMutationAckMessage,
 } from '../trackerProtocol';
 
 // ============================================================================
@@ -187,15 +189,19 @@ interface StoredNavigation {
   orgKeyFingerprint: string | null;
 }
 
+interface StoredSavedView {
+  viewId: string;
+  syncId: SyncId;
+  encryptedPayload: string | null;
+  iv: string | null;
+  updatedAt: number;
+  deletedAt: number | null;
+  orgKeyFingerprint: string | null;
+}
+
 export interface FakeTrackerRoomOptions {
   /** Initial config; defaults to issueKeyPrefix='NIM'. */
   config?: TrackerRoomConfig;
-
-  /**
-   * If set, mutations carrying a different fingerprint get rejected
-   * with `staleKeyEpoch`. Lets tests drive the rotation-mid-flight path.
-   */
-  currentFingerprint?: string | null;
 
   /**
    * If true, every mutation gets rejected with `forbidden`. Lets tests
@@ -215,29 +221,25 @@ export class FakeTrackerRoom {
   private readonly items = new Map<string, StoredItem>();
   private readonly schemas = new Map<string, StoredSchema>();
   private readonly navigation = new Map<string, StoredNavigation>();
+  private readonly savedViews = new Map<string, StoredSavedView>();
   private readonly connections = new Set<FakeWebSocket>();
   private syncId: SyncId = 0;
   private schemaSyncId: SyncId = 0;
   private navigationSyncId: SyncId = 0;
+  private savedViewSyncId: SyncId = 0;
   private nextIssueNumber = 1;
   private config: TrackerRoomConfig;
-  private currentFingerprint: string | null;
   private rejectAll: boolean;
 
   /** Mutation log for test assertions. */
   readonly receivedMutations: Array<{ itemId: string; clientMutationId: string }> = [];
   readonly receivedSchemaMutations: Array<{ schemaType: string; clientMutationId: string }> = [];
   readonly receivedNavigationMutations: Array<{ entryId: string; clientMutationId: string }> = [];
+  readonly receivedSavedViewMutations: Array<{ viewId: string; clientMutationId: string }> = [];
 
   constructor(options: FakeTrackerRoomOptions = {}) {
     this.config = options.config ?? { issueKeyPrefix: 'NIM' };
-    this.currentFingerprint = options.currentFingerprint ?? null;
     this.rejectAll = options.rejectAll ?? false;
-  }
-
-  /** Tweak the rotation gate at runtime. */
-  setCurrentFingerprint(fingerprint: string | null): void {
-    this.currentFingerprint = fingerprint;
   }
 
   /** Stop rejecting (used after the "first attempt fails, retry succeeds" tests). */
@@ -315,6 +317,12 @@ export class FakeTrackerRoom {
       case 'trackerSchemaMutation':
         this.handleSchemaMutation(ws, msg);
         break;
+      case 'trackerSavedViewSync':
+        this.handleSavedViewSync(ws, msg.sinceSyncId);
+        break;
+      case 'trackerSavedViewMutation':
+        this.handleSavedViewMutation(ws, msg);
+        break;
       case 'trackerNavigationSync':
         this.handleNavigationSync(ws, msg.sinceSyncId);
         break;
@@ -359,21 +367,6 @@ export class FakeTrackerRoom {
       return;
     }
 
-    // Stale-key-epoch enforcement (when enabled by the test).
-    if (
-      this.currentFingerprint !== null &&
-      msg.encryptedPayload !== null &&
-      msg.orgKeyFingerprint !== this.currentFingerprint
-    ) {
-      this.sendReject(
-        ws,
-        msg.clientMutationId,
-        'staleKeyEpoch',
-        `Expected ${this.currentFingerprint}, got ${msg.orgKeyFingerprint ?? '(none)'}`,
-      );
-      return;
-    }
-
     const isDelete = msg.encryptedPayload === null;
     const now = Date.now();
     this.syncId++;
@@ -391,10 +384,10 @@ export class FakeTrackerRoom {
       itemId: msg.itemId,
       syncId: newSyncId,
       encryptedPayload: isDelete ? null : msg.encryptedPayload,
-      iv: isDelete ? null : (msg.iv ?? null),
+      iv: null,
       updatedAt: now,
       deletedAt: isDelete ? now : null,
-      orgKeyFingerprint: isDelete ? null : (msg.orgKeyFingerprint ?? null),
+      orgKeyFingerprint: null,
       issueNumber,
       issueKey,
     };
@@ -450,20 +443,6 @@ export class FakeTrackerRoom {
       return;
     }
 
-    if (
-      this.currentFingerprint !== null &&
-      msg.encryptedPayload !== null &&
-      msg.orgKeyFingerprint !== this.currentFingerprint
-    ) {
-      this.sendSchemaReject(
-        ws,
-        msg.clientMutationId,
-        'staleKeyEpoch',
-        `Expected ${this.currentFingerprint}, got ${msg.orgKeyFingerprint ?? '(none)'}`,
-      );
-      return;
-    }
-
     const isDelete = msg.encryptedPayload === null;
     const now = Date.now();
     this.schemaSyncId++;
@@ -473,10 +452,10 @@ export class FakeTrackerRoom {
       schemaType: msg.schemaType,
       syncId: newSyncId,
       encryptedPayload: isDelete ? null : msg.encryptedPayload,
-      iv: isDelete ? null : (msg.iv ?? null),
+      iv: null,
       updatedAt: now,
       deletedAt: isDelete ? now : null,
-      orgKeyFingerprint: isDelete ? null : (msg.orgKeyFingerprint ?? null),
+      orgKeyFingerprint: null,
     };
     this.schemas.set(msg.schemaType, stored);
 
@@ -494,6 +473,64 @@ export class FakeTrackerRoom {
     for (const peer of this.connections) {
       if (peer === ws) continue;
       this.deliver(peer, delta);
+    }
+  }
+
+  private handleSavedViewSync(ws: FakeWebSocket, sinceSyncId: SyncId): void {
+    const views = [...this.savedViews.values()]
+      .filter((row) => row.syncId > sinceSyncId)
+      .sort((a, b) => a.syncId - b.syncId)
+      .map(toSavedViewEnvelope);
+    const response: TrackerSavedViewSyncResponseMessage = {
+      type: 'trackerSavedViewSyncResponse',
+      views,
+      cursorSyncId: views.at(-1)?.syncId ?? sinceSyncId,
+      hasMore: false,
+    };
+    this.deliver(ws, response);
+  }
+
+  private handleSavedViewMutation(
+    ws: FakeWebSocket,
+    msg: Extract<TrackerClientMessage, { type: 'trackerSavedViewMutation' }>,
+  ): void {
+    this.receivedSavedViewMutations.push({
+      viewId: msg.viewId,
+      clientMutationId: msg.clientMutationId,
+    });
+    if (this.rejectAll) {
+      const reject: TrackerSavedViewMutationAckMessage = {
+        type: 'trackerSavedViewMutationAck',
+        clientMutationId: msg.clientMutationId,
+        accepted: false,
+        error: { code: 'forbidden', message: 'rejectAll=true' },
+      };
+      this.deliver(ws, reject);
+      return;
+    }
+    const isDelete = msg.encryptedPayload === null;
+    const stored: StoredSavedView = {
+      viewId: msg.viewId,
+      syncId: ++this.savedViewSyncId,
+      encryptedPayload: msg.encryptedPayload,
+      iv: null,
+      updatedAt: Date.now(),
+      deletedAt: isDelete ? Date.now() : null,
+      orgKeyFingerprint: null,
+    };
+    this.savedViews.set(msg.viewId, stored);
+    const envelope = toSavedViewEnvelope(stored);
+    const ack: TrackerSavedViewMutationAckMessage = {
+      type: 'trackerSavedViewMutationAck',
+      clientMutationId: msg.clientMutationId,
+      accepted: true,
+      syncId: stored.syncId,
+      view: envelope,
+    };
+    this.deliver(ws, ack);
+    const delta: TrackerSavedViewDeltaMessage = { type: 'trackerSavedViewDelta', view: envelope };
+    for (const peer of this.connections) {
+      if (peer !== ws) this.deliver(peer, delta);
     }
   }
 
@@ -534,10 +571,10 @@ export class FakeTrackerRoom {
       entryId: msg.entryId,
       syncId: ++this.navigationSyncId,
       encryptedPayload: msg.encryptedPayload,
-      iv: isDelete ? null : (msg.iv ?? null),
+      iv: null,
       updatedAt: Date.now(),
       deletedAt: isDelete ? Date.now() : null,
-      orgKeyFingerprint: isDelete ? null : msg.orgKeyFingerprint,
+      orgKeyFingerprint: null,
     };
     this.navigation.set(msg.entryId, stored);
     const envelope = toNavigationEnvelope(stored);
@@ -608,6 +645,10 @@ export class FakeTrackerRoom {
     return [...this.schemas.values()].map(toSchemaEnvelope);
   }
 
+  getStoredSavedViews(): EncryptedTrackerSavedViewEnvelope[] {
+    return [...this.savedViews.values()].map(toSavedViewEnvelope);
+  }
+
   getStoredNavigation(): EncryptedTrackerNavigationEnvelope[] {
     return [...this.navigation.values()].map(toNavigationEnvelope);
   }
@@ -631,6 +672,19 @@ function toEnvelope(stored: StoredItem): EncryptedTrackerItemEnvelope {
 function toSchemaEnvelope(stored: StoredSchema): EncryptedTrackerSchemaEnvelope {
   const env: EncryptedTrackerSchemaEnvelope = {
     schemaType: stored.schemaType,
+    syncId: stored.syncId,
+    encryptedPayload: stored.encryptedPayload,
+    updatedAt: stored.updatedAt,
+    deletedAt: stored.deletedAt,
+    orgKeyFingerprint: stored.orgKeyFingerprint,
+  };
+  if (stored.iv !== null && stored.encryptedPayload !== null) env.iv = stored.iv;
+  return env;
+}
+
+function toSavedViewEnvelope(stored: StoredSavedView): EncryptedTrackerSavedViewEnvelope {
+  const env: EncryptedTrackerSavedViewEnvelope = {
+    viewId: stored.viewId,
     syncId: stored.syncId,
     encryptedPayload: stored.encryptedPayload,
     updatedAt: stored.updatedAt,

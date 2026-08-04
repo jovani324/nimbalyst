@@ -1,4 +1,5 @@
 import { store } from '@nimbalyst/runtime/store';
+import type { CollabScope } from '@nimbalyst/collab-client/core';
 import type { CollabDocumentConfig } from '../utils/collabDocumentOpener';
 import {
   removeCollabConfigsForDocument,
@@ -13,13 +14,12 @@ import {
 } from '../components/CollabMode/collabTree';
 import {
   pendingCollabDocumentAtom,
+  getSharedDocumentsForScope,
+  getSharedFoldersForScope,
   registerDocumentInIndex,
-  sharedDocumentsAtom,
-  sharedFoldersAtom,
   type SharedDocument,
   type SharedFolder,
 } from '../store/atoms/collabDocuments';
-import { activeWorkspacePathAtom } from '../store/atoms/openProjects';
 import { setWindowModeAtom } from '../store/atoms/windowMode';
 import {
   getCollaborativeDocumentTypeCatalog,
@@ -28,6 +28,13 @@ import {
   type CollaborativeDocumentTypeDescriptor,
 } from './CollaborativeDocumentTypeCatalog';
 import { logger } from '../utils/logger';
+import {
+  bucketItemCount,
+  categorizeTeamAnalyticsError,
+  toStableAnalyticsCategory,
+} from '../../shared/analytics/teamAnalytics';
+import { trackTeamAnalyticsEvent } from '../utils/teamAnalytics';
+import type { CollabDocumentOpenSource } from '../utils/collabDocumentOpener';
 
 export interface CollaborativeDocumentLocalOrigin {
   sourceFilePath: string;
@@ -36,6 +43,7 @@ export interface CollaborativeDocumentLocalOrigin {
 }
 
 export interface CreateCollaborativeDocumentInput {
+  scope: CollabScope;
   descriptor: CollaborativeDocumentTypeDescriptor;
   requestedName: string;
   parentFolderId: string | null;
@@ -45,6 +53,13 @@ export interface CreateCollaborativeDocumentInput {
   operationId?: string;
   /** Optional preallocated id for pre-seed hooks such as markdown asset migration. */
   documentId?: string;
+  /** Whether creation should navigate to/open this document. Defaults to true. */
+  openAfterCreate?: boolean;
+  /** Required at production call sites; defaults preserve older tests and retries. */
+  analyticsSource?: 'new_document' | 'share_to_team' | 'agent_tool' | 'embedded_document';
+  analyticsActorType?: 'user' | 'agent';
+  analyticsLinkedDocumentCount?: number;
+  analyticsAssetMigrationOutcome?: 'not_needed' | 'success' | 'partial' | 'failed';
 }
 
 export type CollaborativeDocumentCreationErrorCode =
@@ -91,11 +106,10 @@ interface FrozenOperation {
 
 export interface CollaborativeDocumentCreationDependencies {
   getCatalog(): CollaborativeDocumentTypeCatalog;
-  getWorkspacePath(): string | null;
-  getDocuments(): SharedDocument[];
-  getFolders(): SharedFolder[];
+  getDocuments(scope: CollabScope): SharedDocument[];
+  getFolders(scope: CollabScope): SharedFolder[];
   resolveConfig(
-    workspacePath: string,
+    scope: CollabScope,
     uri: string,
     documentId: string,
     title: string,
@@ -110,6 +124,7 @@ export interface CollaborativeDocumentCreationDependencies {
     content: string | Uint8Array;
   }): Promise<{ ok: boolean; error?: string }>;
   register(
+    scope: CollabScope,
     documentId: string,
     title: string,
     documentType: string,
@@ -124,8 +139,13 @@ export interface CollaborativeDocumentCreationDependencies {
     lastLocalContentHash: string | null;
     lastCollabContentHash: string | null;
   }): Promise<{ success: boolean; error?: string }>;
-  publishPending(document: SharedDocument, initialContent?: string): void;
-  cleanup(workspacePath: string, documentId: string): Promise<void>;
+  publishPending(
+    scope: CollabScope,
+    document: SharedDocument,
+    initialContent?: string,
+    source?: CollabDocumentOpenSource,
+  ): void;
+  cleanup(scope: CollabScope, documentId: string): Promise<void>;
   generateId(): string;
   now(): number;
   hashContent(content: string | Uint8Array): Promise<string>;
@@ -208,6 +228,8 @@ function operationFingerprint(input: CreateCollaborativeDocumentInput): string {
     ? undefined
     : input.localOrigin?.sourceContent;
   return JSON.stringify([
+    input.scope.scopeKey,
+    input.scope.orgId,
     input.descriptor.documentType,
     input.descriptor.defaultExtension,
     input.descriptor.fileExtensions,
@@ -236,12 +258,11 @@ async function sha256Hex(content: string | Uint8Array): Promise<string> {
 function defaultDependencies(): CollaborativeDocumentCreationDependencies {
   return {
     getCatalog: getCollaborativeDocumentTypeCatalog,
-    getWorkspacePath: () => store.get(activeWorkspacePathAtom),
-    getDocuments: () => store.get(sharedDocumentsAtom),
-    getFolders: () => store.get(sharedFoldersAtom),
-    resolveConfig: (workspacePath, uri, documentId, title, documentType, metadata) =>
+    getDocuments: getSharedDocumentsForScope,
+    getFolders: getSharedFoldersForScope,
+    resolveConfig: (scope, uri, documentId, title, documentType, metadata) =>
       resolveCollabConfigForUri(
-        workspacePath,
+        scope,
         uri,
         documentId,
         title,
@@ -255,19 +276,22 @@ function defaultDependencies(): CollaborativeDocumentCreationDependencies {
       if (!save) return { success: false, error: 'Local-origin persistence is unavailable.' };
       return save(payload);
     },
-    publishPending: (document, initialContent) => {
+    publishPending: (scope, document, initialContent, source) => {
       store.set(pendingCollabDocumentAtom, {
+        scopeKey: scope.scopeKey,
+        orgId: scope.orgId,
         documentId: document.documentId,
         documentType: document.documentType,
         metadataVersion: document.metadataVersion,
         fileExtension: document.fileExtension,
         editorId: document.editorId,
         initialContent,
+        analyticsSource: source,
       });
       store.set(setWindowModeAtom, 'collab');
     },
-    cleanup: async (workspacePath, documentId) => {
-      removeCollabConfigsForDocument(workspacePath, documentId);
+    cleanup: async (scope, documentId) => {
+      removeCollabConfigsForDocument(scope, documentId);
       await window.electronAPI?.documentSync?.closeDoc?.(documentId).catch(() => undefined);
     },
     generateId: () => crypto.randomUUID(),
@@ -324,7 +348,7 @@ export class CollaborativeDocumentCreationOrchestrator {
   ): Promise<SharedDocument> {
     const { operationId, documentId } = operation;
     let announced = false;
-    let workspacePath: string | null = null;
+    const { scope } = input;
     let configResolved = false;
     try {
       if (!operation.resolvedType) {
@@ -368,19 +392,8 @@ export class CollaborativeDocumentCreationOrchestrator {
       }
       const { descriptor, name, metadata } = operation.resolvedType;
 
-      workspacePath = this.dependencies.getWorkspacePath();
-      if (!workspacePath) {
-        throw new CollaborativeDocumentCreationError(
-          'workspace-unavailable',
-          'No active workspace is available for shared-document creation.',
-          operationId,
-          documentId,
-          false,
-        );
-      }
-
-      const documents = this.dependencies.getDocuments();
-      const folders = this.dependencies.getFolders();
+      const documents = this.dependencies.getDocuments(scope);
+      const folders = this.dependencies.getFolders(scope);
       const parentPath = folderPathForId(folders, input.parentFolderId);
       if (parentPath === null) {
         throw new CollaborativeDocumentCreationError(
@@ -433,7 +446,7 @@ export class CollaborativeDocumentCreationOrchestrator {
       const content = input.sourceContent ?? descriptor.creation?.defaultContent ?? '';
       if (!announced) {
         const config = await this.dependencies.resolveConfig(
-          workspacePath,
+          scope,
           `collab://create/${documentId}`,
           documentId,
           title,
@@ -455,7 +468,7 @@ export class CollaborativeDocumentCreationOrchestrator {
           || (descriptor.content.strategy !== 'lexical' && descriptor.content.strategy !== 'text');
         if (requiresSeed) {
           const seed = await this.dependencies.seed({
-            workspacePath,
+            workspacePath: scope.scopeKey,
             documentId,
             documentType: descriptor.documentType,
             title,
@@ -474,6 +487,7 @@ export class CollaborativeDocumentCreationOrchestrator {
 
         try {
           await this.dependencies.register(
+            scope,
             documentId,
             title,
             descriptor.documentType,
@@ -496,6 +510,7 @@ export class CollaborativeDocumentCreationOrchestrator {
       const now = existingById?.createdAt ?? this.dependencies.now();
       const document: SharedDocument = existingById ?? {
         documentId,
+        teamProjectId: scope.indexConfig.teamProjectId ?? null,
         title,
         documentType: descriptor.documentType,
         ...metadata,
@@ -521,7 +536,7 @@ export class CollaborativeDocumentCreationOrchestrator {
         }
         const originalContent = localOrigin.sourceContent ?? content;
         const result = await save({
-          workspacePath,
+          workspacePath: scope.scopeKey,
           documentId,
           documentType: descriptor.documentType,
           sourceFilePath: localOrigin.sourceFilePath,
@@ -540,7 +555,7 @@ export class CollaborativeDocumentCreationOrchestrator {
       }
 
       try {
-        await this.dependencies.cleanup(workspacePath, documentId);
+        await this.dependencies.cleanup(scope, documentId);
         configResolved = false;
       } catch (cleanupError) {
         logger.ui.warn(
@@ -549,21 +564,46 @@ export class CollaborativeDocumentCreationOrchestrator {
         );
       }
 
-      this.dependencies.publishPending(
-        document,
-        typeof content === 'string' ? content : undefined,
-      );
+      if (input.openAfterCreate !== false) {
+        // Each creation source maps to its own open source. Folding
+        // share_to_team and embedded_document into `home` would credit the
+        // Shared Docs home with opens it never served.
+        const openSource = input.analyticsSource === 'agent_tool'
+          ? 'agent_tool'
+          : input.analyticsSource === 'share_to_team'
+            ? 'share_to_team'
+            : input.analyticsSource === 'embedded_document'
+              ? 'embedded_document'
+              : 'sidebar';
+        this.dependencies.publishPending(
+          scope,
+          document,
+          typeof content === 'string' ? content : undefined,
+          openSource,
+        );
+      }
+      trackTeamAnalyticsEvent('collab_document_created', {
+        surface: 'desktop',
+        source: input.analyticsSource ?? 'new_document',
+        actorType: input.analyticsActorType ?? 'user',
+        documentType: toStableAnalyticsCategory(descriptor.documentType),
+        editorCategory: descriptor.editor.kind,
+        nested: input.parentFolderId !== null,
+        linkedDocumentCountBucket: bucketItemCount(input.analyticsLinkedDocumentCount ?? 0),
+        assetMigrationOutcome: input.analyticsAssetMigrationOutcome ?? 'not_needed',
+      });
       return document;
     } catch (cause) {
-      if (workspacePath && configResolved) {
+      if (configResolved) {
         try {
-          await this.dependencies.cleanup(workspacePath, documentId);
+          await this.dependencies.cleanup(scope, documentId);
         } catch (cleanupError) {
           logger.ui.warn('[collaborativeDocumentCreationOrchestrator] Cleanup failed', cleanupError);
         }
       }
-      if (cause instanceof CollaborativeDocumentCreationError) throw cause;
-      throw new CollaborativeDocumentCreationError(
+      const normalized = cause instanceof CollaborativeDocumentCreationError
+        ? cause
+        : new CollaborativeDocumentCreationError(
         announced ? 'local-origin-failed' : 'seed-failed',
         cause instanceof Error ? cause.message : String(cause),
         operationId,
@@ -571,6 +611,15 @@ export class CollaborativeDocumentCreationOrchestrator {
         announced,
         { cause },
       );
+      trackTeamAnalyticsEvent('collab_operation_failed', {
+        surface: 'desktop',
+        operation: input.analyticsSource === 'share_to_team' ? 'share_to_team' : 'create_document',
+        source: input.analyticsSource ?? 'new_document',
+        actorType: input.analyticsActorType ?? 'user',
+        documentType: toStableAnalyticsCategory(input.descriptor.documentType),
+        errorCategory: categorizeTeamAnalyticsError('document', normalized),
+      });
+      throw normalized;
     }
   }
 }

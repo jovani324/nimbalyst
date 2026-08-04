@@ -1,6 +1,6 @@
 /**
  * useTrackerRows -- shared row interaction model for the tracker list view
- * (`TrackerTable`) and the tracker grid view (`TrackerTableGrid`).
+ * (`TrackerTable`) and the RevoGrid table view (`TrackerGridView`).
  *
  * Owns selection, keyboard navigation, inline editing, context menu state,
  * and bulk updates so both view surfaces share identical behavior.
@@ -8,10 +8,12 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFloating, offset, flip, shift } from '@floating-ui/react';
+import { windowControlsClearance } from '../../../ui/floating/windowControlsClearance';
 import { usePostHog } from 'posthog-js/react';
 import type { TrackerRecord } from '../../../core/TrackerRecord';
 import type { TrackerItemType } from '../../../core/DocumentService';
 import { globalRegistry } from '../models';
+import { getMembersField, addMembersValue } from '../models/trackerCollections';
 import { resolveRoleFieldName } from '../trackerRecordAccessors';
 
 export type EditingField = 'status' | 'priority' | 'title';
@@ -54,7 +56,17 @@ export interface UseTrackerRowsResult {
   editingTitle: string;
   setEditingTitle: (t: string) => void;
   titleInputRef: React.RefObject<HTMLInputElement | null>;
-  handleFieldUpdate: (item: TrackerRecord, field: string, value: string) => Promise<void>;
+  /**
+   * Write a single field. `value` is the storage-shaped value for the field's
+   * type (string, number, boolean, string[], relationship[]...), not just text --
+   * pass it through `coerceCellValue` first when it came from a cell editor.
+   * `undefined` clears the field.
+   */
+  handleFieldUpdate: (item: TrackerRecord, field: string, value: unknown) => Promise<void>;
+  /** Write several fields on one item as a single update (one sync write). */
+  handleItemUpdate: (item: TrackerRecord, updates: Record<string, unknown>) => Promise<void>;
+  /** Apply the same field/value pair across many items (bulk edit, fill-down, paste). */
+  handleBulkFieldUpdate: (items: TrackerRecord[], field: string, value: unknown) => Promise<void>;
 
   // Row interaction
   isItemEditable: (item: TrackerRecord) => boolean;
@@ -66,9 +78,22 @@ export interface UseTrackerRowsResult {
   contextRefs: ReturnType<typeof useFloating>['refs'];
   contextFloatingStyles: ReturnType<typeof useFloating>['floatingStyles'];
   handleContextMenu: (e: React.MouseEvent, item: TrackerRecord, index: number) => void;
+  /**
+   * Open the context menu over an explicit set of items. Surfaces that own
+   * their own selection model (the RevoGrid table's cell ranges) hand the row
+   * ids in directly instead of going through `handleContextMenu`'s
+   * click-target heuristics.
+   */
+  openContextMenuForIds: (itemIds: string[], point: { x: number; y: number }) => void;
   closeContextMenu: () => void;
   handleBulkStatusUpdate: (status: string) => Promise<void>;
   handleBulkPriorityUpdate: (priority: string) => Promise<void>;
+  /**
+   * Add the current selection to a collection (milestone/release).
+   * Writes the collection's members field once; the inverse `collection` field
+   * on each member is filled in by inverse-relationship propagation.
+   */
+  handleAddSelectionToCollection: (collection: TrackerRecord) => Promise<void>;
 
   // Bulk submenu helper -- the active type filter's status options
   // for the context-menu Set Status submenu.
@@ -121,7 +146,7 @@ export function useTrackerRows({
   // Floating context menu
   const { refs: contextRefs, floatingStyles: contextFloatingStyles } = useFloating({
     placement: 'right-start',
-    middleware: [offset(2), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(2), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
   useEffect(() => {
     if (contextAnchor) {
@@ -149,16 +174,22 @@ export function useTrackerRows({
     }
   }, [editingCell]);
 
-  const handleFieldUpdate = useCallback(async (item: TrackerRecord, field: string, value: string) => {
+  /**
+   * Single write for one item covering any number of fields. Both the
+   * document-backed and native paths take a full `updates` map, so a multi-field
+   * cell commit costs one write (and one sync message) rather than one per field.
+   */
+  const handleItemUpdate = useCallback(async (item: TrackerRecord, updates: Record<string, unknown>) => {
     const electronAPI = (window as any).electronAPI;
     if (!electronAPI?.documentService) return;
+    if (Object.keys(updates).length === 0) return;
 
     try {
       if ((item.source === 'frontmatter' || item.source === 'import' || item.source === 'inline') && item.system.documentPath) {
         if (electronAPI.documentService.updateTrackerItemInFile) {
           await electronAPI.documentService.updateTrackerItemInFile({
             itemId: item.id,
-            updates: { [field]: value },
+            updates,
           });
         }
       } else if (!item.system.documentPath || item.source === 'native') {
@@ -166,15 +197,34 @@ export function useTrackerRows({
         const syncMode = tracker?.sync?.mode || 'local';
         await electronAPI.documentService.updateTrackerItem({
           itemId: item.id,
-          updates: { [field]: value },
+          updates,
           syncMode,
         });
       }
     } catch (err) {
       console.error('[useTrackerRows] Failed to update item:', err);
     }
-    setEditingCell(null);
   }, []);
+
+  const handleFieldUpdate = useCallback(async (item: TrackerRecord, field: string, value: unknown) => {
+    await handleItemUpdate(item, { [field]: value });
+    setEditingCell(null);
+  }, [handleItemUpdate]);
+
+  /**
+   * Apply one field/value across many items. Writes run concurrently -- each is an
+   * independent per-item update, and serializing them made bulk edits over a large
+   * selection feel like a hang.
+   */
+  const handleBulkFieldUpdate = useCallback(async (
+    targets: TrackerRecord[],
+    field: string,
+    value: unknown,
+  ) => {
+    const editable = targets.filter(isItemEditable);
+    await Promise.all(editable.map(item => handleItemUpdate(item, { [field]: value })));
+    setEditingCell(null);
+  }, [handleItemUpdate, isItemEditable]);
 
   /** Toggle select all / deselect all */
   const handleSelectAll = useCallback(() => {
@@ -200,6 +250,16 @@ export function useTrackerRows({
     setContextAnchor(DOMRect.fromRect({ x: e.clientX, y: e.clientY, width: 0, height: 0 }));
   }, [selectedIds]);
 
+  /** Open the context menu over a caller-supplied selection. */
+  const openContextMenuForIds = useCallback((
+    itemIds: string[],
+    point: { x: number; y: number },
+  ) => {
+    if (itemIds.length === 0) return;
+    setSelectedIds(new Set(itemIds));
+    setContextAnchor(DOMRect.fromRect({ x: point.x, y: point.y, width: 0, height: 0 }));
+  }, []);
+
   /** Close context menu */
   const closeContextMenu = useCallback(() => setContextAnchor(null), []);
 
@@ -215,31 +275,49 @@ export function useTrackerRows({
     };
   }, [contextAnchor]);
 
-  /** Bulk status update for selected items */
-  const handleBulkStatusUpdate = useCallback(async (newStatus: string) => {
+  /**
+   * Apply a role-mapped value across the selection. The target field name is
+   * resolved per item because a mixed-type selection can map the same role
+   * (workflowStatus, priority) to differently-named fields.
+   */
+  const handleBulkRoleUpdate = useCallback(async (
+    role: 'workflowStatus' | 'priority',
+    value: string,
+  ) => {
     closeContextMenu();
-    const itemsToUpdate = itemsRef.current.filter(i => selectedIds.has(i.id));
-    for (const item of itemsToUpdate) {
-      if (isItemEditable(item)) {
-        // The bulk menu is driven by workflowStatus, so writes must use the record's resolved field.
-        const statusFieldName = resolveRoleFieldName(item.primaryType, 'workflowStatus');
-        await handleFieldUpdate(item, statusFieldName, newStatus);
-      }
-    }
-  }, [selectedIds, closeContextMenu, isItemEditable, handleFieldUpdate]);
+    const itemsToUpdate = itemsRef.current.filter(i => selectedIds.has(i.id) && isItemEditable(i));
+    await Promise.all(itemsToUpdate.map(item =>
+      handleItemUpdate(item, { [resolveRoleFieldName(item.primaryType, role)]: value })
+    ));
+    setEditingCell(null);
+  }, [selectedIds, closeContextMenu, isItemEditable, handleItemUpdate]);
+
+  /** Bulk status update for selected items */
+  const handleBulkStatusUpdate = useCallback(
+    (newStatus: string) => handleBulkRoleUpdate('workflowStatus', newStatus),
+    [handleBulkRoleUpdate],
+  );
 
   /** Bulk priority update for selected items */
-  const handleBulkPriorityUpdate = useCallback(async (newPriority: string) => {
+  const handleBulkPriorityUpdate = useCallback(
+    (newPriority: string) => handleBulkRoleUpdate('priority', newPriority),
+    [handleBulkRoleUpdate],
+  );
+
+  const handleAddSelectionToCollection = useCallback(async (collection: TrackerRecord) => {
     closeContextMenu();
-    const itemsToUpdate = itemsRef.current.filter(i => selectedIds.has(i.id));
-    for (const item of itemsToUpdate) {
-      if (isItemEditable(item)) {
-        // Custom tracker types can map priority to a non-priority field.
-        const priorityFieldName = resolveRoleFieldName(item.primaryType, 'priority');
-        await handleFieldUpdate(item, priorityFieldName, newPriority);
-      }
-    }
-  }, [selectedIds, closeContextMenu, isItemEditable, handleFieldUpdate]);
+    const membersField = getMembersField(collection.primaryType);
+    if (!membersField) return;
+
+    const selected = itemsRef.current.filter(i => selectedIds.has(i.id));
+    if (selected.length === 0) return;
+
+    // One write on the collection rather than one per member: the inverse edge
+    // on each member is propagated by the main process.
+    await handleItemUpdate(collection, {
+      [membersField.name]: addMembersValue(collection, selected),
+    });
+  }, [selectedIds, closeContextMenu, handleItemUpdate]);
 
   /** Open a document-backed tracker item in the editor */
   const openItemInEditor = useCallback((item: TrackerRecord) => {
@@ -359,12 +437,12 @@ export function useTrackerRows({
     return () => node.removeEventListener('keydown', handleKeyDown);
   }, [focusedIndex, selectedIds, onItemSelect, onDeleteItems, handleSelectAll, closeContextMenu]);
 
-  // Scroll focused row into view (looks for data-testid="tracker-table-row"
-  // or "tracker-table-grid-row" so the same logic works for both surfaces)
+  // Scroll focused row into view. The RevoGrid table does its own
+  // virtualized scrolling, so this only matches the list view's rows.
   useEffect(() => {
     if (focusedIndex < 0) return;
     const rows = containerRef.current?.querySelectorAll(
-      '[data-testid="tracker-table-row"], [data-testid="tracker-table-grid-row"]'
+      '[data-testid="tracker-table-row"]'
     );
     const row = rows?.[focusedIndex];
     if (row) row.scrollIntoView({ block: 'nearest' });
@@ -462,6 +540,8 @@ export function useTrackerRows({
     setEditingTitle,
     titleInputRef,
     handleFieldUpdate,
+    handleItemUpdate,
+    handleBulkFieldUpdate,
     isItemEditable,
     handleRowClick,
     openItemInEditor,
@@ -469,9 +549,11 @@ export function useTrackerRows({
     contextRefs,
     contextFloatingStyles,
     handleContextMenu,
+    openContextMenuForIds,
     closeContextMenu,
     handleBulkStatusUpdate,
     handleBulkPriorityUpdate,
+    handleAddSelectionToCollection,
     statusOptionsForBulk,
   };
 }

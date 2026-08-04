@@ -54,9 +54,15 @@ export type {
   SyncedTrackerPersonalStateChange,
   EncryptedTrackerPersonalStatePayload,
 } from './types';
+export {
+  filterSessionsForPersonalSync,
+  isSessionEligibleForPersonalSync,
+} from './types';
 
 export { createCollabV3Sync } from './CollabV3Sync';
 export { deriveTrackerPersonalStateKey } from './trackerPersonalStateKey';
+export { setSyncImageCompressor } from './syncContentTruncator';
+export type { SyncImageCompressor } from './syncContentTruncator';
 
 export {
   setSyncClientInfo,
@@ -64,6 +70,41 @@ export {
   appendSyncClientParams,
   type SyncClientInfo,
 } from './syncClientInfo';
+
+export {
+  DEFAULT_TEAM_INBOX_CONNECT_CONCURRENCY,
+  TeamInboxFanIn,
+  TeamInboxOrgClient,
+  isActivityRef,
+} from './TeamInboxSync';
+export type {
+  TeamInboxFanInConfig,
+  TeamInboxMaterializedDelivery,
+  TeamInboxOrgClientConfig,
+  TeamInboxOrgClientLike,
+  TeamInboxOrgConnectionStatus,
+  TeamInboxOrgDescriptor,
+  TeamInboxOrgEvent,
+  TeamInboxOrganizationState,
+  TeamInboxSnapshot,
+  TeamInboxUnavailableDelivery,
+  TeamInboxWatermark,
+  TeamInboxWireDelivery,
+  TeamPresenceMember,
+  PresenceDesiredStatus,
+} from './TeamInboxSync';
+
+export {
+  ConversationSync,
+  ConversationSyncError,
+} from './ConversationSync';
+export type {
+  ConversationAppendInput,
+  ConversationHistoryPage,
+  ConversationSyncConfig,
+  ConversationSyncEvent,
+  ConversationTarget,
+} from './ConversationSync';
 
 export {
   createSyncedSessionStore,
@@ -120,13 +161,8 @@ export {
 } from './collabDocumentId';
 
 export {
-  CollabLexicalProvider,
-} from './CollabLexicalProvider';
-
-export {
   CollabHistoryClient,
   CollabHistoryError,
-  decryptRevisionPayload,
 } from './collabHistoryClient';
 
 export type {
@@ -145,16 +181,6 @@ export type {
   DocServerMessage,
 } from './documentSyncTypes';
 
-export {
-  ECDHKeyManager,
-  createECDHKeyManager,
-} from './ECDHKeyManager';
-
-export type {
-  ECDHKeyPair,
-  SerializedECDHKeyPair,
-  KeyEnvelope,
-} from './ECDHKeyManager';
 
 // ============================================================================
 // Tracker sync (rewrite in progress)
@@ -213,11 +239,7 @@ export {
 } from './trackerProtocol';
 
 export {
-  encryptTrackerPayload,
-  decryptTrackerEnvelope,
-  encryptTrackerNavigationPayload,
-  decryptTrackerNavigationEnvelope,
-  fingerprintTrackerKey,
+  decodeTrackerSavedViewEnvelopePlaintext,
 } from './TrackerEnvelopeCrypto';
 
 export {
@@ -240,10 +262,10 @@ export type {
   LabelsMap,
 } from './trackerLabels';
 
-export { HeadlessLexicalYDoc } from './HeadlessLexicalYDoc';
-export type { HeadlessLexicalYDocOptions } from './HeadlessLexicalYDoc';
-
-export { MarkdownCollabContentAdapter } from './MarkdownCollabContentAdapter';
+// `CollabLexicalProvider`, `HeadlessLexicalYDoc`, and
+// `MarkdownCollabContentAdapter` are deliberately NOT re-exported here -- they
+// pull the Lexical editor graph, and this barrel is imported by the Electron
+// main process. Import them from `@nimbalyst/runtime/collab-lexical`.
 export {
   createRevisionAdapterFromCollabContent,
   type CollabAdapterRevisionBridgeOptions,
@@ -256,7 +278,6 @@ export {
 export type {
   TrackerSyncEngineConfig,
   TrackerSyncStatus,
-  TrackerKeyMaterial,
   AppliedTrackerItem,
   RejectedTrackerMutation,
 } from './TrackerSyncEngine';
@@ -281,7 +302,6 @@ export type {
   TeamSyncStatus,
   TeamState,
   MemberInfo as TeamMemberInfo,
-  KeyEnvelopeData,
   DocIndexEntry as TeamDocIndexEntry,
   FolderNode,
 } from './teamSyncTypes';

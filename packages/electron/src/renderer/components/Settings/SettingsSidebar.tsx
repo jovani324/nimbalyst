@@ -7,12 +7,17 @@ import {
   shift,
   useFloating,
 } from '@floating-ui/react';
-import { MaterialSymbol, getProviderIcon } from '@nimbalyst/runtime';
+import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import { getProviderIcon } from '@nimbalyst/runtime/ui/icons/ProviderIcons';
 import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../common/AlphaBadge';
+import { TEAM_ALPHA_TOOLTIP } from '../common/TeamAlphaNotice';
 import { developerModeAtom } from '../../store/atoms/appSettings';
+import { teamsConfiguredAtom } from '../../store/atoms/settingsDomains';
 import {
   getSettingsRoutesForScope,
   type SettingsCategory,
+  type ExtensionSettingsRoute,
   type SettingsRoute,
   type SettingsScope,
 } from './settingsRoutes';
@@ -24,6 +29,8 @@ interface SettingsSidebarProps {
   onSelectCategory: (category: SettingsCategory | string) => void;
   providerStatus?: Record<string, { enabled: boolean; testStatus?: string }>;
   scope?: SettingsScope;
+  showDirectChatProviders: boolean;
+  extensionRoutes?: readonly ExtensionSettingsRoute[];
 }
 
 const GROUP_DESCRIPTIONS: Record<string, string> = {
@@ -44,8 +51,11 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
   onSelectCategory,
   providerStatus = {},
   scope = 'application',
+  showDirectChatProviders,
+  extensionRoutes = [],
 }) => {
   const developerMode = useAtomValue(developerModeAtom);
+  const teamsConfigured = useAtomValue(teamsConfiguredAtom);
   const [extAgentProviders, setExtAgentProviders] = useState<
     Array<{ id: string; name: string; icon?: string; status: string }>
   >([]);
@@ -53,7 +63,7 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
   const { refs, floatingStyles } = useFloating({
     open: tooltipText !== null,
     placement: 'right',
-    middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
 
   useEffect(() => {
@@ -70,7 +80,11 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
 
   const groups = useMemo(() => {
     const grouped = new Map<string, Array<SettingsRoute | { id: string; label: string; icon?: string; status: string }>>();
-    for (const route of getSettingsRoutesForScope(scope, { developerMode })) {
+    for (const route of getSettingsRoutesForScope(
+      scope,
+      { developerMode, showDirectChatProviders, teamsConfigured },
+      extensionRoutes,
+    )) {
       const entries = grouped.get(route.group) ?? [];
       entries.push(route);
       grouped.set(route.group, entries);
@@ -81,7 +95,7 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
       grouped.set('Agent Providers', entries);
     }
     return [...grouped.entries()];
-  }, [developerMode, extAgentProviders, scope]);
+  }, [developerMode, extAgentProviders, extensionRoutes, scope, showDirectChatProviders, teamsConfigured]);
 
   return (
     <aside
@@ -115,10 +129,10 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
               )}
             </div>
             {routes.map((route) => {
-              const isRegistered = 'scope' in route;
+              const isSettingsRoute = 'source' in route;
               const id = route.id;
               const providerState = providerStatus[id];
-              const status = !isRegistered
+              const status = !isSettingsRoute
                 ? route.status
                 : providerState?.enabled ? providerState.testStatus : undefined;
               return (
@@ -134,12 +148,19 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
                   onClick={() => onSelectCategory(id)}
                 >
                   <span className="settings-sidebar-item-icon flex items-center justify-center w-5 h-5 shrink-0 text-[var(--nim-text-muted)]">
-                    {isRegistered
+                    {isSettingsRoute
                       ? routeIcon(route)
                       : route.icon ? <MaterialSymbol icon={route.icon} size={16} /> : getProviderIcon(id, { size: 16 })}
                   </span>
                   <span className="settings-sidebar-item-name flex-1 truncate">{route.label}</span>
-                  {isRegistered && route.isAlpha && <AlphaBadge size="xs" tooltip={SETTINGS_ALPHA_TOOLTIP} />}
+                  {isSettingsRoute && route.source === 'builtin' && route.isAlpha && (
+                    <AlphaBadge
+                      size="xs"
+                      // Sharing is the org/Teams entry point, so it gets the
+                      // Teams-specific alpha + pricing disclosure.
+                      tooltip={route.id === 'project-sharing' ? TEAM_ALPHA_TOOLTIP : SETTINGS_ALPHA_TOOLTIP}
+                    />
+                  )}
                   {(status === 'success' || status === 'active' || status === 'error' || status === 'denied') && (
                     <span className={`settings-sidebar-item-status h-2 w-2 rounded-full ${status === 'success' || status === 'active' ? 'bg-[var(--nim-success)]' : 'bg-[var(--nim-error)]'}`} />
                   )}

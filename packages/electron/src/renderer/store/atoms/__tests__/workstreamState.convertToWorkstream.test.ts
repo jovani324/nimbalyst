@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createStore } from 'jotai';
 import {
@@ -61,6 +62,8 @@ describe('convertToWorkstreamAtom', () => {
         layoutMode: 'editor',
         splitRatio: 0.7,
         filesSidebarVisible: false,
+        rightPanelMode: 'session-chat',
+        sessionChatSessionIds: { [sessionId]: 'paired-chat' },
       });
 
       store.set(convertToWorkstreamAtom, { sessionId, parentId, siblingId });
@@ -69,6 +72,8 @@ describe('convertToWorkstreamAtom', () => {
       expect(parent.layoutMode).toBe('editor');
       expect(parent.splitRatio).toBe(0.7);
       expect(parent.filesSidebarVisible).toBe(false);
+      expect(parent.rightPanelMode).toBe('session-chat');
+      expect(parent.sessionChatSessionIds).toEqual({ [sessionId]: 'paired-chat' });
     });
   });
 

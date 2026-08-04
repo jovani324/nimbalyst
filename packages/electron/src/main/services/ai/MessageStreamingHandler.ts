@@ -35,10 +35,15 @@ import {
 } from '@nimbalyst/runtime/ai/server/types';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { isBedrockToolSearchError } from '@nimbalyst/runtime/ai/server/utils/errorDetection';
-import { parseThinkingMode, resolveEffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
+import { resolveEffortLevel, resolveThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
 import type { RawDocumentContext, DocumentContextService } from '@nimbalyst/runtime';
 import { AISessionsRepository, resolveClaudeCodeParentContextWindow } from '@nimbalyst/runtime';
+import {
+  buildMcpSessionStatusSnapshot,
+  type McpSessionStatusInput,
+} from '@nimbalyst/runtime/types/MCPServerConfig';
 import { toolRegistry } from './tools';
+import type { DriveReason } from './QueueDriveService';
 import { resolveExtensionAgentRef } from './providerResolution';
 import { getAgentProviderRegistry } from '../../extensions/AgentProviderRegistry';
 
@@ -66,6 +71,7 @@ function resolveExtensionModelDisplayName(
 import { extractFilePath } from './tools/extractFilePath';
 import { SoundNotificationService } from '../SoundNotificationService';
 import { notificationService } from '../NotificationService';
+import { composeNotificationTitle } from '../../../shared/notificationTitle';
 import { TrayManager } from '../../tray/TrayManager';
 import { logger } from '../../utils/logger';
 import { windowStates, findWindowByWorkspace } from '../../window/WindowManager';
@@ -73,6 +79,7 @@ import { sessionFileTracker } from '../SessionFileTracker';
 import { codexEditWindowRegistry, shouldOpenCodexEditWindow } from '../CodexEditWindowRegistry';
 import { toolCallMatcher, unwrapShellCommand } from '../ToolCallMatcher';
 import { FeatureUsageService, FEATURES } from '../FeatureUsageService.ts';
+import { ToolUsageService } from '../ToolUsageService';
 import { historyManager } from '../../HistoryManager';
 import { addGitignoreBypass } from '../../file/WorkspaceEventBus';
 import { getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
@@ -87,6 +94,8 @@ import {
   wasCommunityPopupShownThisLaunch,
   incrementCompletedSessionsWithTools,
   getDefaultEffortLevel,
+  getDefaultThinkingMode,
+  getAppSetting,
 } from '../../utils/store';
 import {
   safeSend,
@@ -106,9 +115,25 @@ import {
 } from './aiServiceUtils';
 import { disableParentNotificationsAfterDirectTakeover } from './childSessionTakeover';
 import { installScopedProviderListener } from './providerListenerRegistry';
+import { shouldSettleUnterminatedTurn } from './sessionSettlePolicy';
 import type Store from 'electron-store';
 import type { AIService } from './AIService';
 import type { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
+import type { WorkspaceFileAttributionMode } from '../WorkspaceFileAttributionPolicy';
+
+function resolveWorkspaceFileAttributionMode(
+  providerName: string,
+  provider: AIProvider | null | undefined,
+): WorkspaceFileAttributionMode {
+  if (providerName !== 'openai-codex') return 'fuzzy';
+
+  const codexProvider = provider as (AIProvider & {
+    getTransport?: () => 'sdk' | 'app-server';
+  }) | null | undefined;
+  const activeTransport = codexProvider?.getTransport?.();
+  const configuredTransport = getAppSetting<{ transport?: 'sdk' | 'app-server' }>('openaiCodex')?.transport;
+  return (activeTransport ?? configuredTransport) === 'sdk' ? 'fuzzy' : 'disabled';
+}
 
 export type SendMessageHandler = (
   event: Electron.IpcMainInvokeEvent,
@@ -151,6 +176,7 @@ interface AIServiceInternal {
     targetWindow: Electron.BrowserWindow | null,
     source: string,
   ): Promise<boolean>;
+  requestQueueDrive(sessionId: string, workspacePath: string, reason: DriveReason): void;
   runAutoContextCommand(
     session: SessionData,
     workspacePath: string,
@@ -383,7 +409,10 @@ export class MessageStreamingHandler {
     // This is passed through documentContext to avoid changing sendMessage signature
     let permissionsPath = session.worktreeProjectPath || effectiveWorkspacePath;
     if (isAgentProvider(session.provider)) {
-      await this.svc.hooklessWatcher.ensureForSession(session.id, effectiveWorkspacePath);
+      const existingProvider = ProviderFactory.getProvider(session.provider as AIProviderType, session.id);
+      await this.svc.hooklessWatcher.ensureForSession(session.id, effectiveWorkspacePath, {
+        attributionMode: resolveWorkspaceFileAttributionMode(session.provider, existingProvider),
+      });
     }
 
     // Comprehensive logging of what we're sending to Claude
@@ -558,7 +587,7 @@ export class MessageStreamingHandler {
         // selector displays (Opus 4.6 adaptive reasoning).
         ...(reinitEffortLevel && { effortLevel: reinitEffortLevel }),
         ...(isProviderClaudeCode ? {
-          thinkingMode: parseThinkingMode((session.metadata as any)?.thinkingMode),
+          thinkingMode: resolveThinkingMode((session.metadata as any)?.thinkingMode, getDefaultThinkingMode()),
         } : {}),
       };
 
@@ -775,8 +804,38 @@ export class MessageStreamingHandler {
     // so other modules subscribing to the same provider event stay wired.
     this.installListener(provider, 'message:logged', onMessageLogged);
 
-    // Forward provider-side title updates (from the SDK's generateSessionTitle
-    // path) to all renderers so the session list updates in real time.
+    // Per-session MCP health transitions (NIM-2272 / GH #1089). The provider's
+    // 30s poll runs *between* turns as well as during them — mcpQuery outlives
+    // leadQuery specifically so it can — so this listener has to survive turn
+    // boundaries. installScopedProviderListener replaces only its own prior
+    // subscription, so re-running handle() on the next turn rewires without a
+    // gap. Payload is built by the same function the pull handler uses, so a
+    // pushed snapshot and a pulled one are byte-identical.
+    const onMcpServerStatusChanged = (data: {
+      sessionId?: string;
+      servers?: unknown[];
+      lastCheckedAt?: number | null;
+      configuredNames?: string[] | null;
+      withheldNames?: string[] | null;
+    }) => {
+      const mcpSessionId = data?.sessionId || session.id;
+      safeSend(event, 'ai:mcp-status:changed', {
+        ...buildMcpSessionStatusSnapshot({
+          sessionId: mcpSessionId,
+          supported: true,
+          active: true,
+          statuses: (data?.servers || []) as McpSessionStatusInput[],
+          configuredNames: data?.configuredNames ?? null,
+          withheldNames: data?.withheldNames ?? null,
+          lastCheckedAt: data?.lastCheckedAt ?? null,
+        }),
+        workspacePath: effectiveWorkspacePath,
+      });
+    };
+    this.installListener(provider, 'mcpServerStatus:changed', onMcpServerStatusChanged);
+
+    // Forward any provider-side title updates to all renderers so the session
+    // list updates in real time.
     // Mirrors the broadcast that SessionNamingService does for the MCP-tool path.
     const onSessionTitleUpdated = (data: { sessionId: string; title: string }) => {
       for (const window of BrowserWindow.getAllWindows()) {
@@ -1187,6 +1246,9 @@ export class MessageStreamingHandler {
       const edits: any[] = [];  // Track edits for the assistant message
       let hasStreamingContent = false;  // Track if we used streamContent tool
       let hadError = false;  // Track if an error occurred during the stream
+      let providerError: string | undefined;
+      let sawCompleteChunk = false;  // A terminal 'complete' chunk arrived
+      let settledOnErrorChunk = false;  // The error branch already ended the session
       let firstChunkTime: number | undefined;
       let chunkCount = 0;
       let textChunks = 0;
@@ -1268,6 +1330,7 @@ export class MessageStreamingHandler {
         textSelectionTimestamp: documentContext.textSelectionTimestamp,
         mockupSelection: (documentContext as any).mockupSelection,
         mockupDrawing: (documentContext as any).mockupDrawing,
+        editorContextItems: (documentContext as any).editorContextItems,
       } : undefined;
 
       const { documentContext: preparedContext, userMessageAdditions } = this.svc.documentContextService.prepareContext(
@@ -1299,6 +1362,14 @@ export class MessageStreamingHandler {
 
         // Session metadata
         sessionType: documentContext?.sessionType ?? session.sessionType,
+        // Whether the session already has a caller-assigned name (e.g. a
+        // spawn_session child titled by its parent). claude-code reads this only
+        // on its FIRST turn to decide whether to self-name in-band; it then
+        // freezes that decision so the appended system prompt stays cache-stable
+        // (see ClaudeCodeProvider.buildSystemPrompt). This is the raw, mutable
+        // flag — it flips true once any session self-names — so downstream must
+        // not gate per-turn behavior on it.
+        hasBeenNamed: session.hasBeenNamed,
         mode: effectiveMode,
         permissionsPath,  // For worktree sessions, this is the parent project path
         mcpConfigWorkspacePath: session.worktreeProjectPath || effectiveWorkspacePath,  // Use parent project for MCP config lookup
@@ -1321,6 +1392,15 @@ export class MessageStreamingHandler {
         // The transcript parser uses this to render wakeup resumes as a system marker
         // instead of a user-lane message.
         promptOrigin: documentContext?.promptOrigin,
+
+        // Queued orchestration paths provide their own provenance. A direct
+        // ai:sendMessage call is a human composer submission. Older queued
+        // rows intentionally remain unclassified rather than being guessed.
+        promptProvenance: documentContext?.promptProvenance ?? (
+          queuedPromptId
+            ? undefined
+            : { actor: 'human', origin: 'composer' }
+        ),
       };
 
       // Update MCP document state for Claude Code provider so it knows which tools to show
@@ -1341,13 +1421,18 @@ export class MessageStreamingHandler {
         }
       }
 
-      // Start file snapshot cache + watcher for agentic sessions (diff support)
-      // Only start once per session; persists across turns
+      const workspaceFileAttributionMode = resolveWorkspaceFileAttributionMode(session.provider, provider);
+
+      // Start file snapshot cache + watcher for providers that need listener
+      // attribution. App-server Codex registers a disabled policy instead and
+      // relies solely on its authoritative fileChange items.
       if (isAgentProvider(session.provider)
         && effectiveWorkspacePath
       ) {
         try {
-          await this.svc.hooklessWatcher.ensureForSession(session.id, effectiveWorkspacePath);
+          await this.svc.hooklessWatcher.ensureForSession(session.id, effectiveWorkspacePath, {
+            attributionMode: workspaceFileAttributionMode,
+          });
         } catch (watcherError) {
           logger.main.error('[AIService] Failed to start Codex file cache:', watcherError);
         }
@@ -1728,16 +1813,19 @@ export class MessageStreamingHandler {
                   const toolUseId = providerToolUseId;
 
                   // Open / close a Codex edit attribution window for write-capable
-                  // tool calls. Watcher events that fire while a window is open
+                  // tool calls on listener-backed transports. Watcher events that fire while a window is open
                   // (or within a short post-close grace period) attribute to the
                   // canonical synthetic edit-group ID instead of falling back to
                   // ToolCallMatcher's fuzzy time heuristics. We deliberately
                   // exclude command_execution per the Phase 2 scope decision.
-                  if (isCodexProvider && chunkSyntheticToolUseId && shouldOpenCodexEditWindow(chunk.toolCall.name)) {
+                  const listenerAttributionDisabled = workspaceFileAttributionMode === 'disabled';
+                  if (isCodexProvider && !listenerAttributionDisabled && chunkSyntheticToolUseId && shouldOpenCodexEditWindow(chunk.toolCall.name)) {
                     let codexTargetFilePath: string | null = null;
                     const argsRecord = chunk.toolCall.arguments as Record<string, unknown> | undefined;
                     if (argsRecord) {
                       if (typeof argsRecord.file_path === 'string') codexTargetFilePath = argsRecord.file_path;
+                      else if (typeof argsRecord.filePath === 'string') codexTargetFilePath = argsRecord.filePath;
+                      else if (typeof argsRecord.targetFilePath === 'string') codexTargetFilePath = argsRecord.targetFilePath;
                       else if (typeof argsRecord.path === 'string') codexTargetFilePath = argsRecord.path;
                     }
                     codexEditWindowRegistry.open({
@@ -1848,7 +1936,7 @@ export class MessageStreamingHandler {
                   // Codex emits both item.started and item.completed for command_execution;
                   // run fallback on the second occurrence (usually completed) so we diff
                   // against post-command file content.
-                  if (trackToolName === 'Bash' && typeof trackArgs?.command === 'string') {
+                  if (!listenerAttributionDisabled && trackToolName === 'Bash' && typeof trackArgs?.command === 'string') {
                     const commandItemId = typeof chunk.toolCall.id === 'string'
                       ? chunk.toolCall.id
                       : `${trackArgs.command.slice(0, 200)}:${toolCallCount}`;
@@ -2133,6 +2221,7 @@ export class MessageStreamingHandler {
 
             // Detect Bedrock tool search error even if runtime didn't flag it
             const errorMsg = chunk.error || 'Unknown error occurred';
+            providerError = errorMsg;
             const isBedrockToolError = chunk.isBedrockToolError || isBedrockToolSearchError(errorMsg);
             const isServerError = chunk.isServerError || false;
 
@@ -2169,6 +2258,7 @@ export class MessageStreamingHandler {
                 await stateManager.updateActivity({ sessionId: session.id, status: 'error' });
                 await stateManager.endSession(session.id);
                 await this.svc.hooklessWatcher.stopForSession(session.id);
+                settledOnErrorChunk = true;
               } catch (settleErr) {
                 logger.main.error('[AIService] Failed to settle extension-agent error chunk:', settleErr);
               }
@@ -2178,6 +2268,7 @@ export class MessageStreamingHandler {
           case 'complete':
             // if (isClaudeCode) {
             // }
+            sawCompleteChunk = true;
             perfLog.totalTime = Date.now() - startTime;
             perfLog.streamTime = Date.now() - streamStartTime;
             perfLog.chunkCount = chunkCount;
@@ -2540,6 +2631,7 @@ export class MessageStreamingHandler {
               content: fullResponse,
               lastTextSection: lastTextSection.trim() || prevTextSection,
               isComplete: true,
+              error: providerError,
               autoContextPending: session.provider === 'claude-code'
             });
 
@@ -2566,6 +2658,14 @@ export class MessageStreamingHandler {
                 BrowserWindow.fromWebContents(event.sender),
                 'completion-handler queue',
               );
+              if (!queuedContinuationScheduled) {
+                // The direct dispatch declined (sender window gone, row claimed
+                // elsewhere, ...). Hand the session to the queue driver so any
+                // remaining rows retry instead of stranding until the user
+                // presses Escape or restarts (#962). It defers on session-busy
+                // and wakes on the endSession below.
+                this.svc.requestQueueDrive(session.id, workspacePath, 'fifo-continuation');
+              }
             }
             if (hasTeammates || willResume || queuedChainAlreadyActive || queuedContinuationScheduled) {
               const reason = hasTeammates
@@ -2609,10 +2709,11 @@ export class MessageStreamingHandler {
               // });
 
               await notificationService.showNotification({
-                title: `${sessionLabel} -- Response Ready`,
+                title: composeNotificationTitle(sessionLabel, 'Response Ready'),
                 body: notificationBody,
                 sessionId: session.id,
                 workspacePath: workspacePath,
+                sourceLabel: sessionLabel,
                 provider: session.provider
               });
 
@@ -2633,6 +2734,34 @@ export class MessageStreamingHandler {
               FeatureUsageService.getInstance().recordUsage(FEATURES.SESSION_COMPLETED);
               if (!hadError && toolCallCount > 0) {
                 FeatureUsageService.getInstance().recordUsage(FEATURES.SESSION_COMPLETED_WITH_TOOLS);
+              }
+
+              // Record per-tool usage counts for this response (tips + report).
+              // Fire-and-forget: a counter write must never block completion.
+              if (toolCalls.length > 0) {
+                const observations = toolCalls
+                  .filter((tc) => typeof tc?.name === 'string')
+                  .map((tc) => ({
+                    name: tc.name as string,
+                    invocationId:
+                      typeof tc?.toolUseId === 'string'
+                        ? tc.toolUseId
+                        : typeof tc?.id === 'string'
+                          ? tc.id
+                          : undefined,
+                    isError:
+                      tc?.isError === true ||
+                      (tc?.result && (tc.result as any)?.success === false) ||
+                      false,
+                  }));
+                void ToolUsageService.getInstance()
+                  .recordBatch(observations, {
+                    provider: session.provider,
+                    projectPath: session.workspacePath || workspacePath || '',
+                  })
+                  .catch((err) =>
+                    logger.ai.warn('[MessageStreamingHandler] tool usage recordBatch failed', err),
+                  );
               }
 
               // Show community popup after 3 completed sessions that used tools.
@@ -2684,6 +2813,31 @@ export class MessageStreamingHandler {
             }
 
             break;
+        }
+      }
+
+      // A built-in provider can yield an in-band 'error' chunk and then return
+      // normally instead of throwing (the Codex app-server transport catches
+      // RPC failures this way). That reaches neither the 'complete' branch nor
+      // the outer catch, so nothing ended the session and it stayed 'running'
+      // forever -- Cancel then no-ops, because the turn is already gone, while
+      // the renderer's processing reconcile keeps re-asserting the spinner.
+      if (session?.id && shouldSettleUnterminatedTurn({
+        sawComplete: sawCompleteChunk,
+        providerError,
+        alreadySettled: settledOnErrorChunk,
+        queuedChainActive: this.svc.sessionsProcessingQueue.has(session.id),
+      })) {
+        logger.main.warn(
+          `[AIService] Provider stream for ${session.id} ended on an error chunk without completing -- settling session`
+        );
+        try {
+          await stateManager.updateActivity({ sessionId: session.id, status: 'error' });
+          await stateManager.endSession(session.id);
+          await this.svc.hooklessWatcher.stopForSession(session.id);
+          codexEditWindowRegistry.clearSession(session.id);
+        } catch (settleErr) {
+          logger.main.error('[AIService] Failed to settle unterminated provider error:', settleErr);
         }
       }
 

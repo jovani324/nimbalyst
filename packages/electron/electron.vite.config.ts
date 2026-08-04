@@ -5,6 +5,7 @@ import viteNimbalystPlugin from '../shared/viteNimbalystPlugin.ts'
 import { viteStaticCopy } from 'vite-plugin-static-copy'
 import { nodePolyfills } from 'vite-plugin-node-polyfills'
 import fs from 'fs'
+import { findMainBundleGraphViolations } from '../../scripts/main-bundle-graph-policy.mjs'
 
 // Plugin to optimize Shiki language imports
 const optimizeShikiPlugin = () => {
@@ -112,6 +113,8 @@ const claudeAgentSdkVersion = (() => {
 })();
 const runtimeSrcDir = resolve(__dirname, '../runtime/src');
 const runtimeDistDir = resolve(__dirname, '../runtime/dist');
+const runtimeElectronMainEntry = resolve(runtimeSrcDir, 'electronMain.ts');
+const extensionSdkElectronMainEntry = resolve(__dirname, '../extension-sdk/src/electronMain.ts');
 
 // Plugin to resolve workspace package subpaths correctly in production
 const resolveWorkspaceSubpaths = () => {
@@ -132,6 +135,31 @@ const resolveWorkspaceSubpaths = () => {
   };
 };
 
+/**
+ * Fail the actual main-process build if renderer/editor modules enter its
+ * Rollup graph. This uses Rollup's live module graph, so production builds do
+ * not need to emit and ship a large sourcemap just to enforce the boundary.
+ */
+const guardMainBundleGraph = () => ({
+  name: 'guard-main-bundle-graph',
+  buildEnd(this: { getModuleIds(): IterableIterator<string>; error(message: string): never }, error?: Error) {
+    if (error) return;
+    const moduleIds = Array.from(this.getModuleIds());
+    const violations = findMainBundleGraphViolations(moduleIds);
+    if (violations.length > 0) {
+      const details = violations.flatMap(({ name, hits }) => [
+        `${name}: ${hits.length}`,
+        ...hits.slice(0, 10).map((hit) => `  + ${hit}`),
+      ]).join('\n');
+      this.error(
+        `Electron main bundle contains renderer/editor modules:\n${details}\n` +
+        'Do not raise the zero budgets; remove the import path instead.',
+      );
+    }
+    console.log(`[bundle-graph] main Rollup graph within zero budgets (${moduleIds.length} modules).`);
+  },
+});
+
 export default defineConfig({
   main: {
     define: {
@@ -143,6 +171,7 @@ export default defineConfig({
     },
     plugins: [
       resolveWorkspaceSubpaths(),
+      guardMainBundleGraph(),
       {
         name: 'copy-sqlite-schemas',
         // Use options.dir so this works regardless of the active outDir
@@ -164,10 +193,18 @@ export default defineConfig({
       },
     ],
     resolve: {
-      alias: {
-        // Always use src for bundling - simpler than dealing with ESM/CJS issues
-        '@nimbalyst/runtime': runtimeSrcDir
-      }
+      alias: [
+        // Keep Electron main off the public runtime barrel. In development,
+        // watching that barrel's renderer/editor/extension-loader modules
+        // restarted Electron and reloaded every workspace window even when no
+        // main-process runtime value had changed.
+        { find: /^@nimbalyst\/runtime$/, replacement: runtimeElectronMainEntry },
+        // Explicit subpath imports still resolve straight to runtime source.
+        { find: '@nimbalyst/runtime', replacement: runtimeSrcDir },
+        // The public SDK barrel includes renderer hooks which import the public
+        // runtime barrel. Main only needs validation and protocol helpers.
+        { find: /^@nimbalyst\/extension-sdk$/, replacement: extensionSdkElectronMainEntry },
+      ]
     },
     build: {
       target: 'node16',
@@ -495,6 +532,7 @@ export default defineConfig({
         'diff',
         'electron-log/renderer',
         'fast-deep-equal',
+        'fractional-indexing',
         'front-matter',
         'ghostty-web',
         'gifuct-js',
@@ -507,6 +545,7 @@ export default defineConfig({
         'marked',
         'mermaid',
         'monaco-editor',
+        'nanoid',
         'openai',
         'path',
         'pathe',
@@ -551,7 +590,19 @@ export default defineConfig({
       exclude: [
         '@shikijs/langs',
         'prettier',
-        '@nimbalyst/runtime'
+        '@nimbalyst/runtime',
+        // RevoGrid is a Stencil bundle: its runtime lazy-imports its own
+        // component entry chunks at render time. Pre-bundled, those dynamic
+        // imports are emitted WITHOUT a `?v=` query, so Vite re-transforms them
+        // on demand and stamps their `chunk-*.js` import with whatever the
+        // browserHash is *then* -- while the page graph stays pinned to the hash
+        // it loaded with. Any dep re-optimization between page load and the
+        // grid's first mount therefore yields two copies of the Stencil runtime,
+        // two `Host` sentinels, and `isHost()` fails: the grid renders literally
+        // nothing ("createElementNS('[object Object]')"). Serving it unbundled
+        // keeps every import in one module graph. See NIM-2165.
+        '@revolist/react-datagrid',
+        '@revolist/revogrid'
       ],
       esbuildOptions: {
         target: 'chrome109'

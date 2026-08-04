@@ -3,22 +3,17 @@ import {
   DocumentSyncProvider,
   type DocumentSyncConfig,
 } from '@nimbalyst/runtime/sync';
+import type { Doc } from 'yjs';
+
 import {
-  getCollabContentAdapter,
-  exportCollabRecoveryPlaintext,
-  type CollabContentAdapter,
-} from '@nimbalyst/collab-adapters';
+  convertFromFileIntoDoc,
+  convertRecoveryPlaintext,
+  describeCollabCodec,
+} from './CollabConversionClient';
 
 import { getDatabase } from '../database/initialize';
 import { getCollabSyncWsUrl } from '../utils/collabSyncUrl';
 import { logger } from '../utils/logger';
-import {
-  fetchAndUnwrapOrgKey,
-  fetchTeamKeyStatus,
-  getArchivedOrgKeys,
-  getOrgKey,
-  getOrgKeyFingerprint,
-} from './OrgKeyService';
 import { findTeamForWorkspace, getOrgScopedJwt } from './TeamService';
 import { getEffectiveTrackerSyncPolicy, shouldSyncTrackerItem } from './TrackerPolicyService';
 import {
@@ -64,57 +59,11 @@ interface ProjectRow {
   project_id: string | null;
 }
 
-async function importLegacyKey(rawKeyBase64: string): Promise<CryptoKey> {
-  const bytes = Buffer.from(rawKeyBase64, 'base64');
-  return crypto.subtle.importKey(
-    'raw',
-    bytes,
-    { name: 'AES-GCM', length: 256 },
-    true,
-    ['encrypt', 'decrypt'],
-  );
-}
-
 async function resolveRoomConfig(orgId: string, documentId: string): Promise<DocumentSyncConfig> {
-  const orgJwt = await getOrgScopedJwt(orgId);
-  const serverManaged = (await fetchTeamKeyStatus(orgId, orgJwt)).mode === 'server-managed';
-  let key = await getOrgKey(orgId);
-  if (!key) {
-    try {
-      key = await fetchAndUnwrapOrgKey(orgId, orgJwt);
-    } catch (error) {
-      logger.main.warn('[CollabBackup] Could not fetch org key for sweep', { orgId, error });
-    }
-  }
-  if (!serverManaged && !key) {
-    throw new Error('The current organization encryption key is unavailable');
-  }
-
-  const legacyDocumentKeys: CryptoKey[] = [];
-  if (serverManaged) {
-    if (key) legacyDocumentKeys.push(key);
-    for (const archived of getArchivedOrgKeys(orgId)) {
-      try {
-        legacyDocumentKeys.push(await importLegacyKey(archived.rawKeyBase64));
-      } catch (error) {
-        logger.main.warn('[CollabBackup] Could not import archived org key', {
-          orgId,
-          fingerprint: archived.fingerprint,
-          error,
-        });
-      }
-    }
-  }
-
   return {
     serverUrl: getCollabSyncWsUrl(),
     getJwt: () => getOrgScopedJwt(orgId),
     orgId,
-    keyCustody: serverManaged ? 'server-managed' : 'legacy-e2e',
-    documentKey: serverManaged ? undefined : (key ?? undefined),
-    legacyDocumentKey: serverManaged ? legacyDocumentKeys[0] : undefined,
-    legacyDocumentKeys: serverManaged ? legacyDocumentKeys : undefined,
-    orgKeyFingerprint: serverManaged ? undefined : (getOrgKeyFingerprint(orgId) ?? undefined),
     userId: '',
     documentId,
     createWebSocket: ((url: string) => new WebSocket(url)) as unknown as DocumentSyncConfig['createWebSocket'],
@@ -158,8 +107,30 @@ async function withSyncedDocument<T>(
   }
 }
 
-function extensionFor(adapter: CollabContentAdapter): string {
-  return adapter.fileExtensions[0] ?? '.txt';
+/**
+ * Capture one document via the codec host: its exact plaintext file
+ * representation plus the extension to store it under.
+ *
+ * This is the correctness win of moving conversion off main. Main can only
+ * ever hold the codecs it statically imports, so a shared document of any
+ * other type used to come back "No adapter for X" -- which fails the sweep,
+ * which blocks the encryption custody migration for the whole org. A codec
+ * host has every extension loaded, so marketplace and structured editors are
+ * backup-able for the first time.
+ */
+async function captureViaCodecHost(
+  documentType: string,
+  yDoc: Doc,
+  workspacePath?: string,
+): Promise<{ plaintext: string; extension: string }> {
+  const [plaintext, codec] = await Promise.all([
+    convertRecoveryPlaintext(documentType, yDoc, { workspacePath }),
+    describeCollabCodec(documentType, { workspacePath }),
+  ]);
+  if (plaintext === null) {
+    throw new Error(`Codec ${documentType} does not export UTF-8 plaintext`);
+  }
+  return { plaintext, extension: codec.fileExtensions[0] ?? '.txt' };
 }
 
 async function enumerateSweepItems(
@@ -230,21 +201,18 @@ export async function backupCollabProject(
   let skipped = 0;
 
   for (const item of items) {
-    const adapter = getCollabContentAdapter(item.documentType);
-    if (!adapter) {
-      skipped += 1;
-      failures.push({ documentId: item.documentId, error: `No adapter for ${item.documentType}` });
-      continue;
-    }
     try {
       const result = await withSyncedDocument(orgId, item.documentId, async (provider) => {
-        const plaintext = exportCollabRecoveryPlaintext(adapter, provider.getYDoc());
-        if (plaintext === null) throw new Error(`Adapter ${item.documentType} does not export UTF-8 plaintext`);
+        const { plaintext, extension } = await captureViaCodecHost(
+          item.documentType,
+          provider.getYDoc(),
+          workspacePath,
+        );
         return getCollabBackupService().backupNow({
           ...item,
           orgId,
           projectId,
-          extension: extensionFor(adapter),
+          extension,
           plaintext,
         });
       });
@@ -276,115 +244,6 @@ export async function backupCollabProject(
   };
 }
 
-async function backupOriginProject(
-  orgId: string,
-  projectId: string | null,
-): Promise<CollabBackupSweepSummary> {
-  const db = getDatabase();
-  const origins = await db.query<OriginRow>(
-    `SELECT document_id, document_type, relative_path, source_basename
-       FROM collab_local_origins
-      WHERE org_id = $1
-        AND (project_id = $2 OR (project_id IS NULL AND $2 IS NULL))
-      ORDER BY document_id`,
-    [orgId, projectId],
-  );
-  const items: SweepItem[] = origins.rows.map((row) => ({
-    documentId: row.document_id,
-    documentType: row.document_type,
-    title: row.source_basename || row.relative_path,
-    relativePath: row.relative_path,
-    kind: 'document',
-  }));
-  const failures: Array<{ documentId: string; error: string }> = [];
-  let backedUp = 0;
-  let skipped = 0;
-  for (const item of items) {
-    const adapter = getCollabContentAdapter(item.documentType);
-    if (!adapter) {
-      skipped += 1;
-      failures.push({ documentId: item.documentId, error: `No adapter for ${item.documentType}` });
-      continue;
-    }
-    try {
-      const result = await withSyncedDocument(orgId, item.documentId, async (provider) => {
-        const plaintext = exportCollabRecoveryPlaintext(adapter, provider.getYDoc());
-        if (plaintext === null) throw new Error(`Adapter ${item.documentType} does not export UTF-8 plaintext`);
-        return getCollabBackupService().backupNow({
-          ...item,
-          orgId,
-          projectId,
-          extension: extensionFor(adapter),
-          plaintext,
-        });
-      });
-      if (result.success) backedUp += 1;
-      else {
-        if (result.skipped) skipped += 1;
-        failures.push({
-          documentId: item.documentId,
-          error: result.error ?? result.skipped ?? 'Backup failed',
-        });
-      }
-    } catch (error) {
-      failures.push({
-        documentId: item.documentId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-  return {
-    success: failures.length === 0,
-    orgId,
-    projectId,
-    total: items.length,
-    backedUp,
-    skipped,
-    failures,
-  };
-}
-
-/**
- * Sweep every locally-known project for an organization. Workspace-backed
- * projects include tracker bodies; origin-only projects are still captured so
- * a project with shared documents but no local tracker rows is not missed.
- */
-export async function backupCollabOrganization(
-  orgId: string,
-  workspacePaths: string[],
-): Promise<CollabBackupSweepSummary[]> {
-  const summaries: CollabBackupSweepSummary[] = [];
-  const coveredProjects = new Set<string>();
-  for (const workspacePath of workspacePaths) {
-    const summary = await backupCollabProject(workspacePath);
-    if (summary.orgId !== orgId) {
-      throw new Error(`Workspace ${workspacePath} does not belong to organization ${orgId}`);
-    }
-    summaries.push(summary);
-    coveredProjects.add(summary.projectId ?? '_primary');
-  }
-
-  const projects = await getDatabase().query<ProjectRow>(
-    'SELECT DISTINCT project_id FROM collab_local_origins WHERE org_id = $1',
-    [orgId],
-  );
-  for (const row of projects.rows) {
-    const key = row.project_id ?? '_primary';
-    if (coveredProjects.has(key)) continue;
-    // No local workspace backs this project, so we only know its shared
-    // documents (via collab_local_origins). Tracker bodies for a project with
-    // no local workspace are enumerated per-workspace and are NOT swept here --
-    // surface that gap rather than letting the sweep look complete (finding 3b).
-    logger.main.warn(
-      '[CollabBackup] Sweeping origin-only project with no local workspace; ' +
-      'shared documents are captured but tracker bodies (if any) are not',
-      { orgId, projectId: row.project_id },
-    );
-    summaries.push(await backupOriginProject(orgId, row.project_id));
-  }
-  return summaries;
-}
-
 export async function restoreCollabBackup(input: {
   workspacePath: string;
   documentId: string;
@@ -402,9 +261,6 @@ export async function restoreCollabBackup(input: {
   const manifest = await getCollabBackupService().listProjectBackups(team.orgId, projectId);
   const entry = manifest?.documents[input.documentId];
   if (!entry) return { success: false, error: 'Backup not found' };
-  const adapter = getCollabContentAdapter(entry.type);
-  if (!adapter) return { success: false, error: `No adapter for ${entry.type}` };
-
   return getCollabBackupService().restore({
     orgId: team.orgId,
     projectId,
@@ -414,7 +270,13 @@ export async function restoreCollabBackup(input: {
         team.orgId,
         input.documentId,
         async (provider) => {
-          adapter.applyFromFile(provider.getYDoc(), plaintext);
+          await convertFromFileIntoDoc(
+            'applyFromFile',
+            entry.type,
+            provider.getYDoc(),
+            plaintext,
+            { workspacePath: input.workspacePath },
+          );
           if (input.force) {
             // Promote the restored Y.Doc to the sole authoritative snapshot,
             // dropping the undecryptable server rows.

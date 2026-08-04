@@ -34,6 +34,16 @@ import { broadcastMessageLogged } from "../../services/ai/claudeCliUserPromptLog
 import { ClaudeSettingsManager } from "../../services/ClaudeSettingsManager";
 import { getPermissionService } from "../../services/PermissionService";
 import { findFreshInteractiveResponse } from "./interactiveResponsePolling";
+import {
+  clearPendingInteractiveWaiter,
+  countPendingInteractiveWaiters,
+  notePendingInteractiveWaiter,
+  shouldSettleFromSessionFallback,
+} from "./interactivePromptFallback";
+import {
+  clearLiveInteractivePrompt,
+  noteLiveInteractivePrompt,
+} from "./interactivePromptLiveness";
 
 export function getInteractiveToolSchemas(sessionId: string | undefined) {
   if (!sessionId) return [];
@@ -299,6 +309,11 @@ export async function handleAskUserQuestion(
     }
   }
 
+  // NIM-2208: registered immediately before the wait and cleared in settle, so
+  // the stale-prompt reconcile can never clear the "awaiting input" bit while
+  // this handler is genuinely blocked.
+  if (sessionId) noteLiveInteractivePrompt(sessionId);
+
   return new Promise((resolve) => {
     let settled = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -310,6 +325,7 @@ export async function handleAskUserQuestion(
     }, source: string = 'unknown') => {
       if (settled) return;
       settled = true;
+      if (sessionId) clearLiveInteractivePrompt(sessionId);
 
       console.log(`[MCP Server] AskUserQuestion settled via ${source}: questionId=${questionId}, cancelled=${result?.cancelled}`);
 
@@ -646,6 +662,49 @@ export async function handleToolPermission(
   );
 }
 
+/**
+ * Record an approved commit against the session's tracker items.
+ *
+ * A commit the user approved is their sign-off on the work, so when its message
+ * closes linked items ("Fixes NIM-123") the session is complete too. Agents are
+ * barred from writing `done` or `complete` themselves; this is the one path that
+ * has a human's approval behind it, so it writes both rather than leaving
+ * finished work parked in `in-review` / `validating` forever.
+ *
+ * Fire-and-forget: a linking failure must not fail the commit that succeeded.
+ */
+async function linkCommitToTrackerItems(
+  commitHash: string,
+  commitMessage: string,
+  sessionId: string,
+  workspacePath: string
+): Promise<void> {
+  try {
+    const { commitTrackerLinker } = await import(
+      "../../services/CommitTrackerLinker"
+    );
+    const { closedItemIds } = await commitTrackerLinker.linkBySession(
+      commitHash,
+      commitMessage,
+      sessionId,
+      workspacePath
+    );
+    if (closedItemIds.length === 0) return;
+
+    const { SessionNamingService } = await import(
+      "../../services/SessionNamingService"
+    );
+    await SessionNamingService.getInstance().applySessionMetadata(sessionId, {
+      phase: "complete",
+    });
+    console.log(
+      `[MCP Server] Commit ${commitHash.slice(0, 7)} closed ${closedItemIds.length} tracker item(s); session marked complete`
+    );
+  } catch (err) {
+    console.error("[MCP Server] Commit-tracker linking failed:", err);
+  }
+}
+
 export async function handleGitCommitProposal(
   args: any,
   sessionId: string | undefined,
@@ -938,14 +997,12 @@ export async function handleGitCommitProposal(
 
     if (response.action === "committed" && response.commitHash) {
       // Link commit to tracker items via session (fire-and-forget)
-      import("../../services/CommitTrackerLinker").then(({ commitTrackerLinker }) => {
-        commitTrackerLinker.linkBySession(
-          response.commitHash!,
-          commitMessage,
-          targetSessionId,
-          workspacePath,
-        ).catch((err) => console.error("[MCP Server] Commit-tracker linking failed:", err));
-      }).catch(() => { /* CommitTrackerLinker not available */ });
+      void linkCommitToTrackerItems(
+        response.commitHash,
+        commitMessage,
+        targetSessionId,
+        workspacePath,
+      );
 
       return {
         content: [
@@ -997,6 +1054,9 @@ export async function handleGitCommitProposal(
   // Wait for user confirmation with DB polling fallback.
   // The IPC listener is the fast path; DB polling catches responses when the
   // transport drops (the bug that caused this tool to hang indefinitely).
+  // NIM-2208: see handleAskUserQuestion — paired with the clear in settle below.
+  if (targetSessionId) noteLiveInteractivePrompt(targetSessionId);
+
   return new Promise((resolve) => {
     const getFilePath = (f: FileToStage) =>
       typeof f === "string" ? f : f.path;
@@ -1016,6 +1076,7 @@ export async function handleGitCommitProposal(
     const settle = (result: CommitResult, source: string) => {
       if (settled) return;
       settled = true;
+      if (targetSessionId) clearLiveInteractivePrompt(targetSessionId);
 
       console.log(
         `[MCP Server] Git commit proposal settled via ${source}: action=${result.action}, hash=${result.commitHash || "none"}`
@@ -1030,14 +1091,12 @@ export async function handleGitCommitProposal(
       if (result.action === "committed" && result.commitHash) {
         // Link commit to tracker items via session (fire-and-forget)
         if (targetSessionId && targetSessionId !== "unknown") {
-          import("../../services/CommitTrackerLinker").then(({ commitTrackerLinker }) => {
-            commitTrackerLinker.linkBySession(
-              result.commitHash!,
-              result.commitMessage || proposalArgs.commitMessage || "",
-              targetSessionId,
-              workspacePath,
-            ).catch((err) => console.error("[MCP Server] Commit-tracker linking failed:", err));
-          }).catch(() => { /* CommitTrackerLinker not available */ });
+          void linkCommitToTrackerItems(
+            result.commitHash,
+            result.commitMessage || proposalArgs.commitMessage || "",
+            targetSessionId,
+            workspacePath,
+          );
         }
 
         const filesCount =
@@ -1185,7 +1244,7 @@ const REQUEST_USER_INPUT_FIELD_SCHEMA = {
     "  - singleSelect: options[]; optional allowOther\n" +
     "  - reorder: items[]; optional minItems\n" +
     "  - editText: initialText; optional format ('markdown'|'plain'), placeholder, minLength, maxLength\n" +
-    "  - confirm: optional defaultValue (boolean)",
+    "  - confirm: optional defaultValue (boolean); omit it to make the user pick yes or no before they can submit",
   properties: {
     type: {
       type: "string",
@@ -1255,7 +1314,11 @@ const REQUEST_USER_INPUT_FIELD_SCHEMA = {
     maxLength: { type: "integer", minimum: 1, description: "editText: maximum length." },
 
     // confirm.
-    defaultValue: { type: "boolean", description: "confirm: initial state (default false)." },
+    defaultValue: {
+      type: "boolean",
+      description:
+        "confirm: pre-select yes or no. Omitted means unanswered -- submit stays blocked until the user picks, so an untouched field can never be read as a deliberate no.",
+    },
   },
   required: ["type", "id", "label"],
 };
@@ -1392,8 +1455,9 @@ export async function handleRequestUserInput(
   const { waiterPromptIds: promptIdAliases } = resolveRequestUserInputPromptTargets(promptId);
   const promptIdAliasSet = new Set(promptIdAliases);
   const responseNotBefore = Date.now();
-  const responseChannel = getRequestUserInputResponseChannel(sessionId || "unknown", promptId);
-  const fallbackResponseChannel = getRequestUserInputFallbackResponseChannel(sessionId || "unknown");
+  const sessionKey = sessionId || "unknown";
+  const responseChannel = getRequestUserInputResponseChannel(sessionKey, promptId);
+  const fallbackResponseChannel = getRequestUserInputFallbackResponseChannel(sessionKey);
 
   console.log(
     `[MCP Server] RequestUserInput waiting for response: promptId=${promptId}, sessionId=${sessionId}`,
@@ -1460,6 +1524,13 @@ export async function handleRequestUserInput(
     TrayManager.getInstance().onPromptCreated(sessionId);
   }
 
+  // NIM-1981: track this waiter so the session-scoped fallback can be accepted
+  // safely when it is the only pending prompt for the session.
+  notePendingInteractiveWaiter(sessionKey);
+  // NIM-2208: separate registry (see interactivePromptLiveness) so the
+  // stale-prompt reconcile knows this session is genuinely blocked.
+  if (sessionId) noteLiveInteractivePrompt(sessionId);
+
   return new Promise((resolve) => {
     let settled = false;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -1470,6 +1541,8 @@ export async function handleRequestUserInput(
     ) => {
       if (settled) return;
       settled = true;
+      clearPendingInteractiveWaiter(sessionKey);
+      if (sessionId) clearLiveInteractivePrompt(sessionId);
 
       console.log(
         `[MCP Server] RequestUserInput settled via ${source}: promptId=${promptId}, cancelled=${result?.cancelled}`,
@@ -1607,11 +1680,17 @@ export async function handleRequestUserInput(
         typeof result.rawPromptId === "string" ? result.rawPromptId : null,
       ].filter((value): value is string => typeof value === "string" && value.length > 0);
 
-      const isSyntheticFallbackPrompt = promptId.startsWith("rui-");
+      // NIM-1981: on the Codex path the waiter id and the widget's response id can
+      // be unrelated, so a strict id match would reject the correct answer and hang
+      // the turn. Accept the session-scoped fallback when it is unambiguous (sole
+      // pending prompt); stay strict when several prompts are pending.
       if (
-        !isSyntheticFallbackPrompt
-        && responsePromptIds.length > 0
-        && !responsePromptIds.some((id) => promptIdAliasSet.has(id))
+        !shouldSettleFromSessionFallback({
+          waiterPromptId: promptId,
+          promptIdAliasSet,
+          responsePromptIds,
+          pendingWaiterCountForSession: countPendingInteractiveWaiters(sessionKey),
+        })
       ) {
         return;
       }
@@ -1633,16 +1712,26 @@ export async function handleRequestUserInput(
             clearInterval(pollTimer);
             pollTimer = null;
           }
+          // NIM-1981: on poll timeout the promise is abandoned without settling,
+          // so drop this waiter from the pending count (settle already clears it).
+          if (!settled) {
+            clearPendingInteractiveWaiter(sessionKey);
+          }
           return;
         }
 
         try {
           const messages = await AgentMessagesRepository.listTail(sessionId, 50);
+          // NIM-1981: when this is the sole pending prompt for the session, the
+          // freshest persisted response is unambiguously ours even if the Codex
+          // tool-call ids don't line up (see shouldSettleFromSessionFallback).
+          const matchAnyId = countPendingInteractiveWaiters(sessionKey) <= 1;
           const content = findFreshInteractiveResponse(messages, {
             expectedType: "request_user_input_response",
             idFields: ["promptId", "rawPromptId"],
             acceptedIds: promptIdAliasSet,
             notBefore: responseNotBefore,
+            matchAnyId,
           });
           if (!content) return;
           if (content.cancelled) {

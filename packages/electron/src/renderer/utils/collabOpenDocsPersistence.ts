@@ -15,9 +15,13 @@
  * shipped). Both keys are written for one release cycle so a downgrade
  * doesn't lose the tabs.
  */
+import type { CollabScope } from '@nimbalyst/collab-client/core';
+
 export interface PersistedCollabEntry {
   documentId: string;
   documentType: string;
+  /** Tab-strip presentation state; entry order is the persisted tab order. */
+  isPinned?: boolean;
   /** Last-known server-backed logical path. Warm fallback until index sync. */
   displayPath?: string;
   metadataVersion?: 2;
@@ -33,11 +37,11 @@ interface WorkspaceState {
 
 /** Save the open-doc list to workspace state. */
 export async function persistOpenCollabDocs(
-  workspacePath: string,
+  scope: CollabScope,
   entries: PersistedCollabEntry[],
 ): Promise<void> {
   try {
-    await window.electronAPI?.invoke?.('workspace:update-state', workspacePath, {
+    await window.electronAPI?.invoke?.('workspace:update-state', scope.scopeKey, {
       openCollabDocumentEntries: entries,
       // Keep the legacy key in sync for one release so downgrades still find
       // the tabs (they'll come back as markdown -- better than disappearing).
@@ -54,12 +58,12 @@ export async function persistOpenCollabDocs(
  * tagging each id as `markdown`.
  */
 export async function loadOpenCollabDocs(
-  workspacePath: string,
+  scope: CollabScope,
 ): Promise<PersistedCollabEntry[]> {
   try {
     const state = (await window.electronAPI?.invoke?.(
       'workspace:get-state',
-      workspacePath,
+      scope.scopeKey,
     )) as WorkspaceState | undefined;
     return readEntriesFromState(state);
   } catch {
@@ -73,19 +77,19 @@ export async function loadOpenCollabDocs(
  * config registry was cleared (fresh renderer, HMR, restart).
  */
 export async function getPersistedCollabDocType(
-  workspacePath: string,
+  scope: CollabScope,
   documentId: string,
 ): Promise<string | undefined> {
-  const entries = await loadOpenCollabDocs(workspacePath);
+  const entries = await loadOpenCollabDocs(scope);
   return entries.find((e) => e.documentId === documentId)?.documentType;
 }
 
 /** Full persisted type identity used when rebuilding a cold opener config. */
 export async function getPersistedCollabDocMetadata(
-  workspacePath: string,
+  scope: CollabScope,
   documentId: string,
 ): Promise<PersistedCollabEntry | undefined> {
-  const entries = await loadOpenCollabDocs(workspacePath);
+  const entries = await loadOpenCollabDocs(scope);
   return entries.find((entry) => entry.documentId === documentId);
 }
 
@@ -105,6 +109,7 @@ export function readEntriesFromState(
       .map((entry) => ({
         documentId: entry.documentId,
         documentType: entry.documentType,
+        ...(typeof entry.isPinned === 'boolean' ? { isPinned: entry.isPinned } : {}),
         ...(entry.metadataVersion === 2 ? { metadataVersion: 2 as const } : {}),
         ...(typeof entry.fileExtension === 'string' && entry.fileExtension.trim()
           ? { fileExtension: entry.fileExtension }

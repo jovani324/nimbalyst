@@ -26,6 +26,37 @@ import type {
   PersistDocumentStateCallback,
 } from './types';
 
+const MAX_EDITOR_CONTEXT_DATA_CHARS = 32_768;
+const NON_EDITABLE_CONTEXT_TYPES = new Set(['pull-request', 'extension-panel']);
+
+function isNonEditableContext(fileType: string | undefined): boolean {
+  return !!fileType && NON_EDITABLE_CONTEXT_TYPES.has(fileType);
+}
+
+function pullRequestNumberFromPath(filePath: string | undefined): string | null {
+  if (!filePath) return null;
+  return filePath.match(/\/(\d+)$/)?.[1] ?? null;
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function serializeEditorContextData(data: unknown): string | undefined {
+  try {
+    const serialized = JSON.stringify(data);
+    if (!serialized || serialized.length > MAX_EDITOR_CONTEXT_DATA_CHARS) return undefined;
+    return serialized;
+  } catch {
+    return undefined;
+  }
+}
+
 export class DocumentContextService implements IDocumentContextService {
   /** Per-session document state for transition detection */
   private lastDocumentStateBySession: Map<string, DocumentState> = new Map();
@@ -169,7 +200,10 @@ export class DocumentContextService implements IDocumentContextService {
     });
 
     // Case 1: No document context (user not viewing any file)
-    if (!rawContext || !rawContext.filePath || !rawContext.content) {
+    const hasCurrentContext =
+      !!rawContext?.filePath
+      && (!!rawContext.content || isNonEditableContext(rawContext.fileType));
+    if (!hasCurrentContext || !rawContext?.filePath) {
       if (lastState?.filePath) {
         // Had a document before, now none - 'closed' transition
         return {
@@ -182,11 +216,13 @@ export class DocumentContextService implements IDocumentContextService {
       return { transition: 'none', newState: null };
     }
 
-    // Compute hash of current content
-    const currentHash = hashContent(rawContext.content);
+    // Synthetic contexts may intentionally carry no document body.
+    const currentFilePath = rawContext.filePath;
+    const currentContent = rawContext.content ?? '';
+    const currentHash = hashContent(currentContent);
     const newState: DocumentState = {
-      filePath: rawContext.filePath,
-      content: rawContext.content,
+      filePath: currentFilePath,
+      content: currentContent,
       contentHash: currentHash,
       // Preserve sentEditingInstructions from previous state if same session
       sentEditingInstructions: lastState?.sentEditingInstructions,
@@ -219,7 +255,7 @@ export class DocumentContextService implements IDocumentContextService {
 
     // Case 5: Same file, different content - 'modified' transition
     // Compute a diff to show what changed
-    const diff = computeDiff(lastState.content, rawContext.content, rawContext.filePath);
+    const diff = computeDiff(lastState.content, currentContent, currentFilePath);
 
     return {
       transition: 'modified',
@@ -281,6 +317,11 @@ export class DocumentContextService implements IDocumentContextService {
       baseContext.mockupDrawing = rawContext.mockupDrawing;
     }
 
+    // Add extension-provided selected items (node-like editors) if present
+    if (rawContext?.editorContextItems && rawContext.editorContextItems.length > 0) {
+      baseContext.editorContextItems = rawContext.editorContextItems;
+    }
+
     // For 'none' transition: omit content entirely (nothing changed)
     if (transition === 'none') {
       return baseContext;
@@ -333,7 +374,12 @@ export class DocumentContextService implements IDocumentContextService {
     // Add one-time editing instructions (only on first message with a document open)
     const state = this.lastDocumentStateBySession.get(sessionId);
     const hasDocument = !!documentContext.filePath;
-    if (hasDocument && state && !state.sentEditingInstructions) {
+    if (
+      hasDocument
+      && state
+      && !state.sentEditingInstructions
+      && !isNonEditableContext(documentContext.fileType)
+    ) {
       additions.editingInstructions = documentContext.fileType === 'collab-markdown'
         ? this.getCollabEditingInstructions()
         : this.getEditingInstructions();
@@ -376,8 +422,15 @@ export class DocumentContextService implements IDocumentContextService {
 
     // If we have a document, show its context
     if (hasDocument) {
-      prompt += `The user is currently looking at this document. They are not necessarily asking you about this document, but they may be. Use your best judgement to decide if they are making a general request or asking specifically about this document.\n`;
-      prompt += `<ACTIVE_DOCUMENT>${context.filePath}</ACTIVE_DOCUMENT>\n`;
+      const isPullRequest = context.fileType === 'pull-request';
+      const isExtensionPanel = context.fileType === 'extension-panel';
+      if (isPullRequest) {
+        prompt += `The user is currently looking at this GitHub pull request. They are not necessarily asking you about it, but they may be. Use your best judgement to decide if they are making a general request or asking specifically about this pull request.\n`;
+        prompt += `<ACTIVE_PULL_REQUEST>${context.filePath}</ACTIVE_PULL_REQUEST>\n`;
+      } else {
+        prompt += `The user is currently looking at this document. They are not necessarily asking you about this document, but they may be. Use your best judgement to decide if they are making a general request or asking specifically about this document.\n`;
+        prompt += `<ACTIVE_DOCUMENT>${context.filePath}</ACTIVE_DOCUMENT>\n`;
+      }
 
       // Collaborative documents (collab:// URIs) live in Yjs/Cloudflare Workers,
       // not on disk. Filesystem Read/Edit/Write do NOT work for this URI; the
@@ -389,8 +442,19 @@ export class DocumentContextService implements IDocumentContextService {
         prompt += `This is a shared collaborative document synced in realtime over Yjs. Other users may be editing it concurrently — prefer small, scoped edits over sweeping rewrites.\n`;
         prompt += `To READ this document, call the readCollabDoc tool with this collab:// URI. The filesystem Read tool will not work for collab:// URIs.\n`;
         prompt += `To MODIFY this document, call applyCollabDocEdit (or applyDiff) with this collab:// URI. Filesystem tools like Edit/Write will not propagate via Yjs and will not reach other collaborators.\n`;
+        prompt += `To READ inline comment threads, call readCollabDocComments. To answer one, call replyToCollabDocComment with the thread id and, when known, the specific replyToCommentId. To create a new anchored inline comment, call createCollabDocComment with exact text plus enough prefix/suffix context to identify one location.\n`;
+        prompt += `Agent comment writes are attributed to the active agent session by the app. Never claim a human authored an agent comment, and reuse the same clientMutationId when retrying a write.\n`;
         prompt += `Filesystem tools remain available for OTHER files in the workspace; the constraints above apply only to this active shared document.\n`;
         prompt += `</COLLAB_DOCUMENT_NOTE>\n`;
+      }
+
+      if (isPullRequest) {
+        const prNumber = pullRequestNumberFromPath(context.filePath);
+        prompt += `<PULL_REQUEST_NOTE>\n`;
+        prompt += `This is a GitHub pull request, not a file on disk. Its identifying details are in the selected-items block below.\n`;
+        prompt += `To read its description, diff, or comments, use gh pr view${prNumber ? ` ${prNumber}` : ' <number>'}, gh pr diff${prNumber ? ` ${prNumber}` : ' <number>'}, or gh pr view${prNumber ? ` ${prNumber}` : ' <number>'} --comments against the named remote. You can also inspect the changed files in the workspace checkout.\n`;
+        prompt += `Do not attempt to Read or Edit the pr:// URI.\n`;
+        prompt += `</PULL_REQUEST_NOTE>\n`;
       }
 
       // Add cursor position if available
@@ -427,6 +491,29 @@ export class DocumentContextService implements IDocumentContextService {
         prompt += `\nThe user has drawn annotations on the mockup. Use the capture_editor_screenshot tool to see their annotations.\n`;
       }
 
+      // Add extension-provided selected items (node-like editors: diagrams, CAD,
+      // electronics). Each item is a node the user selected; the renderer has
+      // already excluded any the user dismissed.
+      if (context.editorContextItems && context.editorContextItems.length > 0) {
+        const items = context.editorContextItems;
+        const noun = items.length === 1 ? 'item' : 'items';
+        prompt += `\nThe user has selected the following ${items.length} ${noun} in the editor:\n`;
+        prompt += `<SELECTED_ITEMS>\n`;
+        for (const item of items) {
+          prompt += `  <ITEM label="${escapeXml(item.label)}">\n`;
+          prompt += `  ${escapeXml(item.description)}\n`;
+          if (item.includeData && item.data !== undefined) {
+            const data = serializeEditorContextData(item.data);
+            if (data !== undefined) {
+              prompt += `  <DATA>${escapeXml(data)}</DATA>\n`;
+            }
+          }
+          prompt += `  </ITEM>\n`;
+        }
+        prompt += `</SELECTED_ITEMS>\n`;
+        prompt += `When the user refers to "this", "these", "the selection", or names one of these by label, they mean these selected items.\n`;
+      }
+
       // Add content or diff based on transition.
       // For collab docs on claude-code: skip everything. The agent has the
       // readCollabDoc / applyCollabDocEdit tools and the COLLAB_DOCUMENT_NOTE
@@ -437,20 +524,32 @@ export class DocumentContextService implements IDocumentContextService {
       // chat providers get content inline).
       const isCollab = context.fileType === 'collab-markdown';
       const isClaudeCodeCollab = isCollab && providerType === 'claude-code';
-      if (transition === 'modified' && context.documentDiff && !isClaudeCodeCollab) {
-        prompt += `\nThe document has changed since your last message:\n<DOCUMENT_DIFF>\n${context.documentDiff}\n</DOCUMENT_DIFF>\n`;
-      } else if (transition === 'none' && !isClaudeCodeCollab) {
-        prompt += `\n(Document content unchanged since last message.)\n`;
-      } else if (context.content && providerType !== 'claude-code') {
-        prompt += `\n<DOCUMENT_CONTENT>\n${context.content}\n</DOCUMENT_CONTENT>\n`;
-        if (context.contentTruncated) {
-          const length = context.truncateLength ?? DocumentContextService.DEFAULT_TRUNCATE_LENGTH;
-          prompt += `(Content truncated to first ${length} characters. Use the Read tool to see the full file.)\n`;
+      if (!isPullRequest) {
+        if (transition === 'modified' && context.documentDiff && !isClaudeCodeCollab) {
+          prompt += `\nThe document has changed since your last message:\n<DOCUMENT_DIFF>\n${context.documentDiff}\n</DOCUMENT_DIFF>\n`;
+        } else if (transition === 'none' && !isClaudeCodeCollab) {
+          prompt += `\n(Document content unchanged since last message.)\n`;
+        } else if (
+          context.content
+          && (providerType !== 'claude-code' || isExtensionPanel)
+        ) {
+          prompt += `\n<DOCUMENT_CONTENT>\n${context.content}\n</DOCUMENT_CONTENT>\n`;
+          if (context.contentTruncated) {
+            const length = context.truncateLength ?? DocumentContextService.DEFAULT_TRUNCATE_LENGTH;
+            prompt += `(Content truncated to first ${length} characters. Use the Read tool to see the full file.)\n`;
+          }
         }
       }
 
       // Disambiguation note
-      prompt += `\nWhen the user says "this file", "this document", or "here", they mean "${context.filePath}", not any other files in context.\n`;
+      if (isPullRequest) {
+        const prNumber = pullRequestNumberFromPath(context.filePath);
+        prompt += `\nWhen the user says "this PR" or "this change", they mean ${prNumber ? `PR #${prNumber}` : 'the active pull request'}.\n`;
+      } else if (isExtensionPanel) {
+        prompt += `\nWhen the user says "this panel", "this view", or "here", they mean the active extension panel "${context.filePath}".\n`;
+      } else {
+        prompt += `\nWhen the user says "this file", "this document", or "here", they mean "${context.filePath}", not any other files in context.\n`;
+      }
     }
 
     return prompt || undefined;
@@ -469,14 +568,17 @@ This document lives in a Yjs CRDT synced over Cloudflare Workers. Filesystem Rea
 
 1. Use readCollabDoc(filePath) to view the document — do NOT use the Read tool on the collab:// URI
 2. Use applyCollabDocEdit(filePath, replacements) to modify it (or applyDiff against the collab:// URI). Replacements are { oldText, newText } pairs that must match exactly.
-3. Other users may be editing concurrently — prefer small, scoped replacements over sweeping rewrites
-4. Keep responses brief (2-4 words like "Editing document..." or "Adding section...")
-5. DO NOT explain what you're doing — the user sees the changes propagate live
+3. Use readCollabDocComments to inspect inline comment threads, replyToCollabDocComment to answer an existing comment, and createCollabDocComment to add a new exact-text-anchored comment
+4. Reuse clientMutationId on retries; the app derives your agent session identity and human authorizer
+5. Other users may be editing concurrently — prefer small, scoped replacements over sweeping rewrites
+6. Keep responses brief (2-4 words like "Editing document..." or "Adding section...")
+7. DO NOT explain what you're doing — the user sees the changes propagate live
 
 WORKFLOW:
 1. Call readCollabDoc to see the current content (REQUIRED before editing)
-2. Make your edits with applyCollabDocEdit
-3. Done — the change is live for all collaborators
+2. Call readCollabDocComments when the task involves review comments or replies
+3. Make edits or comment mutations with the matching collaborative tool
+4. Done — the change is live for all collaborators
 </COLLAB_DOC_INSTRUCTIONS>`;
   }
 

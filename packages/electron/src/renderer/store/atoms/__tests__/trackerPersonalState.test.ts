@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { createStore } from 'jotai';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { trackerPersonalStateService } from '../../../services/RendererTrackerPersonalStateService';
@@ -35,11 +36,11 @@ describe('tracker personal state atoms', () => {
 
     state.set(applyTrackerPersonalStateRowAtom, {
       userEmail: 'me@example.com', scope: 'org:org-1:tracker:project-1', itemId: 'NIM-1',
-      isFavorite: true, favoriteUpdatedAt: 10, lastOpenedAt: null, updatedAt: 10,
+      isFavorite: true, favoriteUpdatedAt: 10, lastOpenedAt: null, snoozedUntil: null, updatedAt: 10,
     });
     state.set(applyTrackerPersonalStateRowAtom, {
       userEmail: 'me@example.com', scope: 'org:org-1:tracker:project-2', itemId: 'NIM-2',
-      isFavorite: true, favoriteUpdatedAt: 20, lastOpenedAt: null, updatedAt: 20,
+      isFavorite: true, favoriteUpdatedAt: 20, lastOpenedAt: null, snoozedUntil: null, updatedAt: 20,
     });
 
     expect(state.get(trackerPersonalStateAtom).rowsByItemId.has('NIM-1')).toBe(true);
@@ -49,7 +50,7 @@ describe('tracker personal state atoms', () => {
   it('merges favorite and last-opened timestamps independently', async () => {
     getForScope.mockResolvedValue({ scope: 'org:org-1:tracker:project-1', rows: [{
       userEmail: 'me@example.com', scope: 'org:org-1:tracker:project-1', itemId: 'NIM-1',
-      isFavorite: true, favoriteUpdatedAt: 100, lastOpenedAt: 50, updatedAt: 100,
+      isFavorite: true, favoriteUpdatedAt: 100, lastOpenedAt: 50, snoozedUntil: null, updatedAt: 100,
     }] });
     const state = createStore();
     await state.set(hydrateTrackerPersonalStateAtom, {
@@ -58,7 +59,7 @@ describe('tracker personal state atoms', () => {
 
     state.set(applyTrackerPersonalStateRowAtom, {
       userEmail: 'me@example.com', scope: 'org:org-1:tracker:project-1', itemId: 'NIM-1',
-      isFavorite: false, favoriteUpdatedAt: 90, lastOpenedAt: 200, updatedAt: 200,
+      isFavorite: false, favoriteUpdatedAt: 90, lastOpenedAt: 200, snoozedUntil: null, updatedAt: 200,
     });
 
     expect(state.get(trackerPersonalStateAtom).rowsByItemId.get('NIM-1')).toMatchObject({
@@ -67,5 +68,21 @@ describe('tracker personal state atoms', () => {
       lastOpenedAt: 200,
       updatedAt: 200,
     });
+  });
+
+  it('ignores document-namespaced rows sharing the personal-state transport', async () => {
+    getForScope.mockResolvedValue({
+      scope: 'org:org-1:tracker:project-1',
+      rows: [{
+        userEmail: 'me@example.com', scope: 'org:org-1:tracker:project-1', itemId: 'document:doc-1',
+        isFavorite: true, favoriteUpdatedAt: 100, lastOpenedAt: 50, snoozedUntil: null, updatedAt: 100,
+      }],
+    });
+    const state = createStore();
+    await state.set(hydrateTrackerPersonalStateAtom, {
+      workspacePath: '/machine-a/repo', identityEmail: 'me@example.com',
+    });
+
+    expect(state.get(trackerPersonalStateAtom).rowsByItemId).toEqual(new Map());
   });
 });

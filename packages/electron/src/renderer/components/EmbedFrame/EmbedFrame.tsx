@@ -29,6 +29,7 @@ import React, {
   useState,
   type ReactNode,
 } from 'react';
+import { useAtomValue } from 'jotai';
 import { isAbsolute, join, basename } from 'pathe';
 import {
   $getNodeByKey,
@@ -50,6 +51,24 @@ import { FilePathBreadcrumb } from '../common/FilePathBreadcrumb';
 import { fileChangedOnDiskAtomFamily } from '../../store/atoms/fileWatch';
 import { useTheme } from '../../hooks/useTheme';
 import { createEmbeddedFileHost } from './createEmbeddedFileHost';
+import { CollaborativeEmbedEditor } from './CollaborativeEmbedEditor';
+import {
+  parseCollaborativeEmbedReference,
+  type CollaborativeEmbedProviderRequest,
+  type CollaborativeEmbedReference,
+} from '../../services/CollaborativeEmbedProviderCache';
+import { resolveSharedSpaceEmbedReference } from './sharedSpaceEmbedResolution';
+import {
+  activeCollabScopeAtom,
+  activeTeamOrgIdAtom,
+  pendingCollabDocumentAtom,
+  sharedDocumentsAtom,
+  sharedFoldersAtom,
+} from '../../store/atoms/collabDocuments';
+import { activeWorkspacePathAtom } from '../../store/atoms/openProjects';
+import { setWindowModeAtom } from '../../store/atoms/windowMode';
+import { getCollaborativeDocumentTypeCatalog } from '../../services/CollaborativeDocumentTypeCatalog';
+import { isCollabUri, parseCollabUri } from '../../utils/collabUri';
 
 import './EmbedFrame.css';
 
@@ -152,6 +171,18 @@ function openFileInTab(absolutePath: string): void {
     .catch((error: unknown) => {
       console.error('[EmbedFrame] Failed to open embed in tab:', error);
     });
+}
+
+function openSharedDocumentInTab(documentId: string): void {
+  const scope = store.get(activeCollabScopeAtom);
+  if (!scope) return;
+  store.set(setWindowModeAtom, 'collab');
+  store.set(pendingCollabDocumentAtom, {
+    documentId,
+    scopeKey: scope.scopeKey,
+    orgId: scope.orgId,
+    analyticsSource: 'embedded_document',
+  });
 }
 
 type ReadFileResult =
@@ -344,8 +375,12 @@ function useEmbedResize(
 
 export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
   const { src, label, attrs, nodeKey } = props;
-  const { documentDir } = useDocumentPath();
+  const { documentDir, documentPath } = useDocumentPath();
   const { theme } = useTheme();
+  const sharedDocuments = useAtomValue(sharedDocumentsAtom);
+  const sharedFolders = useAtomValue(sharedFoldersAtom);
+  const activeWorkspacePath = useAtomValue(activeWorkspacePathAtom);
+  const activeTeamOrgId = useAtomValue(activeTeamOrgIdAtom);
   const [editor] = useLexicalComposerContext();
   const [renderError, setRenderError] = useState<Error | null>(null);
 
@@ -357,10 +392,138 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
     [src, documentDir],
   );
 
-  const registration = useMemo(() => {
+  const localRegistration = useMemo(() => {
     if (!absolutePath) return undefined;
     return customEditorRegistry.findRegistrationForFile(absolutePath);
   }, [absolutePath]);
+
+  const hostDocumentOrgId = useMemo(() => {
+    if (!documentPath || !isCollabUri(documentPath)) return null;
+    try {
+      return parseCollabUri(documentPath).orgId;
+    } catch {
+      return null;
+    }
+  }, [documentPath]);
+
+  const explicitCollaborativeReference = useMemo(
+    () => parseCollaborativeEmbedReference(src),
+    [src],
+  );
+
+  // Inside a SHARED host document a plain relative link names a sibling in the
+  // team's collab space, not a file on this machine -- there is no workspace
+  // root to resolve it against. Map it onto a shared document so it takes the
+  // collaborative branch below; `null` falls through to filesystem resolution
+  // exactly as before (NIM-2271). Reduced to a primitive id here for the same
+  // reason the fields below are: the atoms churn on every TeamRoom broadcast.
+  const sharedSpaceDocumentId = useMemo(() => {
+    if (explicitCollaborativeReference) return null;
+    return resolveSharedSpaceEmbedReference({
+      src,
+      hostOrgId: hostDocumentOrgId,
+      documents: sharedDocuments,
+      folders: sharedFolders,
+    })?.documentId ?? null;
+  }, [explicitCollaborativeReference, src, hostDocumentOrgId, sharedDocuments, sharedFolders]);
+
+  const collaborativeReference = useMemo<CollaborativeEmbedReference | null>(() => {
+    if (explicitCollaborativeReference) return explicitCollaborativeReference;
+    if (!sharedSpaceDocumentId || !hostDocumentOrgId) return null;
+    return { documentId: sharedSpaceDocumentId, orgId: hostDocumentOrgId };
+  }, [explicitCollaborativeReference, sharedSpaceDocumentId, hostDocumentOrgId]);
+
+  const effectiveTeamOrgId = hostDocumentOrgId ?? activeTeamOrgId;
+
+  // `sharedDocumentsAtom` is a derived filter: every TeamRoom broadcast --
+  // any teammate creating, renaming, or trashing ANY document -- yields a new
+  // array. Depending on the array directly would rebuild `request` below on
+  // each broadcast, and `CollaborativeEmbedEditor` keys its provider effect on
+  // that identity, so the child room would disconnect and remount constantly.
+  // Read the four fields we need as primitives instead.
+  const sharedDocument = useMemo(
+    () => (collaborativeReference
+      ? sharedDocuments.find(
+          document => document.documentId === collaborativeReference.documentId,
+        )
+      : undefined),
+    [collaborativeReference, sharedDocuments],
+  );
+  const sharedTitle = sharedDocument?.title ?? null;
+  const sharedDocumentType = sharedDocument?.documentType ?? null;
+  const sharedFileExtension = sharedDocument?.fileExtension ?? null;
+  const sharedEditorId = sharedDocument?.editorId ?? null;
+
+  const collaborativeResolution = useMemo<{
+    request: CollaborativeEmbedProviderRequest;
+    registration: NonNullable<ReturnType<typeof customEditorRegistry.findRegistrationForFile>>;
+    displayName: string;
+  } | { error: string } | null>(() => {
+    if (!collaborativeReference) return null;
+    if (!activeWorkspacePath || !effectiveTeamOrgId) {
+      return { error: 'The active team workspace is unavailable.' };
+    }
+    if (collaborativeReference.orgId !== effectiveTeamOrgId) {
+      return { error: 'This embedded document belongs to a different team.' };
+    }
+
+    const catalog = getCollaborativeDocumentTypeCatalog();
+    const hintedExtension = attrs.embedType?.trim().toLowerCase();
+    const metadataResolution = sharedDocumentType
+      ? catalog.resolveMetadata(
+          sharedDocumentType,
+          sharedFileExtension ?? undefined,
+          sharedEditorId ?? undefined,
+        )
+      : hintedExtension
+        ? catalog.resolveShareability(`embedded${hintedExtension}`)
+        : null;
+    if (!metadataResolution || metadataResolution.state !== 'ready') {
+      return { error: 'The collaborative editor for this embed is unavailable.' };
+    }
+    const descriptor = metadataResolution.descriptor;
+    if (descriptor.editor.kind !== 'extension') {
+      return { error: 'Only collaborative custom-editor documents can be embedded.' };
+    }
+    const fileExtension = sharedFileExtension
+      ?? hintedExtension
+      ?? descriptor.defaultExtension;
+    const editorId = sharedEditorId
+      ?? catalog.editorIdForDescriptor(descriptor);
+    const registration = customEditorRegistry.findRegistrationForFile(
+      `embedded${fileExtension}`,
+    );
+    if (!registration || registration.collaboration?.supported !== true) {
+      return { error: 'The installed editor does not support collaborative embeds.' };
+    }
+    const displayName = sharedTitle || label || collaborativeReference.documentId;
+    return {
+      displayName,
+      registration,
+      request: {
+        workspacePath: activeWorkspacePath,
+        orgId: collaborativeReference.orgId,
+        documentId: collaborativeReference.documentId,
+        title: displayName,
+        documentType: sharedDocumentType ?? descriptor.documentType,
+        metadata: {
+          metadataVersion: 2,
+          fileExtension,
+          editorId,
+        },
+      },
+    };
+  }, [
+    activeWorkspacePath,
+    attrs.embedType,
+    collaborativeReference,
+    effectiveTeamOrgId,
+    label,
+    sharedDocumentType,
+    sharedEditorId,
+    sharedFileExtension,
+    sharedTitle,
+  ]);
 
   const heightPx = parsePx(attrs.height, DEFAULT_EMBED_HEIGHT_PX, MIN_EMBED_HEIGHT_PX);
   const widthPx = parseOptionalPx(attrs.width, MIN_EMBED_WIDTH_PX);
@@ -396,11 +559,13 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
       // new tab. We have to handle it here because the shield is on top
       // of the body's onDoubleClick target while it's mounted.
       event.stopPropagation();
-      if (absolutePath) {
+      if (collaborativeReference) {
+        openSharedDocumentInTab(collaborativeReference.documentId);
+      } else if (absolutePath) {
         openFileInTab(absolutePath);
       }
     },
-    [absolutePath],
+    [absolutePath, collaborativeReference],
   );
 
   const themeRef = useRef(theme);
@@ -539,9 +704,12 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
   }, [absolutePath]);
 
   const handleEditClick = useCallback(() => {
-    if (!absolutePath) return;
-    openFileInTab(absolutePath);
-  }, [absolutePath]);
+    if (collaborativeReference) {
+      openSharedDocumentInTab(collaborativeReference.documentId);
+    } else if (absolutePath) {
+      openFileInTab(absolutePath);
+    }
+  }, [absolutePath, collaborativeReference]);
 
   const handleBodyDoubleClick = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
@@ -587,6 +755,111 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
   );
 
   // ---- Failure / missing-capability placeholders -----------------------
+  if (collaborativeReference) {
+    if (!collaborativeResolution || 'error' in collaborativeResolution) {
+      const error = collaborativeResolution?.error ?? 'Could not resolve shared embed.';
+      return (
+        <div
+          className="embed-frame embed-frame--error"
+          data-testid="collaborative-embed-unresolved"
+        >
+          <EmbedChrome
+            relativePath={label || src}
+            absolutePath={null}
+            label={label}
+            isReadOnly
+            isDirty={false}
+            onToggleReadOnly={null}
+            onEditClick={() => openSharedDocumentInTab(collaborativeReference.documentId)}
+          />
+          <div className="embed-frame__body embed-frame__body--placeholder">
+            <MaterialSymbol icon="link_off" size={28} />
+            <p>{error}</p>
+            <code>{src}</code>
+          </div>
+        </div>
+      );
+    }
+
+    const { registration, request, displayName } = collaborativeResolution;
+    return (
+      <div
+        ref={frameRef}
+        className={`embed-frame${isResizing ? ' embed-frame--resizing' : ''}${isSelected ? ' embed-frame--selected' : ''}`}
+        data-testid="embed-frame"
+        data-embed-extension={registration.extensionId}
+        data-embed-mode="view"
+        data-embed-collaborative="true"
+        data-embed-selected={isSelected ? 'true' : 'false'}
+        style={frameStyle}
+      >
+        <EmbedChrome
+          relativePath={displayName}
+          absolutePath={null}
+          label={label}
+          isReadOnly
+          isDirty={false}
+          onToggleReadOnly={null}
+          onEditClick={() => openSharedDocumentInTab(request.documentId)}
+        />
+        <div
+          ref={bodyRef}
+          className="embed-frame__body"
+          style={{ height: heightPx }}
+          onPointerDown={handleSelectedEmbedPointerDown}
+          onMouseDown={handleSelectedEmbedMouseDown}
+          onClick={handleSelectedEmbedClick}
+          onDoubleClick={handleBodyDoubleClick}
+        >
+          <div
+            className="embed-frame__editor-host"
+            {...(isSelected ? {} : { inert: '' as unknown as boolean })}
+          >
+            <EmbedErrorBoundary onError={setRenderError} absolutePath={null}>
+              <React.Suspense
+                fallback={<div className="embed-frame__loading">Loading shared embed...</div>}
+              >
+                <CollaborativeEmbedEditor
+                  registration={registration}
+                  request={request}
+                />
+              </React.Suspense>
+            </EmbedErrorBoundary>
+          </div>
+          {!isSelected && (
+            <div
+              className="embed-frame__shield"
+              data-testid="embed-frame-shield"
+              onClick={handleShieldClick}
+              onDoubleClick={handleShieldDoubleClick}
+              aria-hidden="true"
+            />
+          )}
+        </div>
+        {renderError && (
+          <div className="embed-frame__error-footer" data-testid="embed-frame-error-footer">
+            {renderError.message}
+          </div>
+        )}
+        <div
+          className="embed-frame__resizer embed-frame__resizer--e"
+          data-testid="embed-frame-resize-e"
+          onPointerDown={(event) => onResizeStart(event, DIRECTION.east)}
+        />
+        <div
+          className="embed-frame__resizer embed-frame__resizer--s"
+          data-testid="embed-frame-resize-s"
+          onPointerDown={(event) => onResizeStart(event, DIRECTION.south)}
+        />
+        <div
+          className="embed-frame__resizer embed-frame__resizer--se"
+          data-testid="embed-frame-resize-se"
+          onPointerDown={(event) => onResizeStart(event, DIRECTION.south | DIRECTION.east)}
+        />
+      </div>
+    );
+  }
+
   if (!absolutePath) {
     return (
       <div className="embed-frame embed-frame--error" data-testid="embed-frame-unresolved">
@@ -608,7 +881,7 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
     );
   }
 
-  if (!registration) {
+  if (!localRegistration) {
     return (
       <div className="embed-frame embed-frame--no-extension" data-testid="embed-frame-no-extension">
         <EmbedChrome
@@ -630,14 +903,14 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
     );
   }
 
-  const ExtensionComponent = registration.component;
+  const ExtensionComponent = localRegistration.component;
 
   return (
     <div
       ref={frameRef}
       className={`embed-frame${isResizing ? ' embed-frame--resizing' : ''}${isReadOnly ? '' : ' embed-frame--edit-mode'}${isDirty ? ' embed-frame--dirty' : ''}${isSelected ? ' embed-frame--selected' : ''}`}
       data-testid="embed-frame"
-      data-embed-extension={registration.extensionId}
+      data-embed-extension={localRegistration.extensionId}
       data-embed-mode={isReadOnly ? 'view' : 'edit'}
       data-embed-dirty={isDirty ? 'true' : 'false'}
       data-embed-selected={isSelected ? 'true' : 'false'}

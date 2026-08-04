@@ -182,6 +182,10 @@ export interface SyncProvider {
         sentBy: 'mobile' | 'desktop';
       };
       isExecuting?: boolean;
+      /** Number of prompts queued from mobile, including explicit zero. */
+      queuedPromptCount?: number;
+      /** Decrypted queued prompts when the payload is present. */
+      queuedPrompts?: SyncedQueuedPrompt[];
     }>;
     projects: Array<{
       projectId: string;
@@ -252,6 +256,8 @@ export interface SyncProvider {
       sentBy: 'mobile' | 'desktop';
     };
     isExecuting?: boolean;
+    /** Number of prompts queued from mobile, including explicit zero. */
+    queuedPromptCount?: number;
     /** Decrypted queued prompts */
     queuedPrompts?: Array<{ id: string; prompt: string; timestamp: number }>;
   } | undefined;
@@ -418,6 +424,23 @@ export interface SessionIndexData {
   metadata?: Record<string, any>;
   /** Optional messages to sync to the session Y.Doc */
   messages?: AgentMessage[];
+}
+
+/**
+ * Tutorial fixtures are local examples, not user conversations. Keep them out
+ * of personal device sync even when a caller supplies an unfiltered session
+ * list directly to a sync provider.
+ */
+export function isSessionEligibleForPersonalSync(
+  session: Pick<SessionIndexData, 'metadata'>
+): boolean {
+  return session.metadata?.tutorial !== true;
+}
+
+export function filterSessionsForPersonalSync<T extends Pick<SessionIndexData, 'metadata'>>(
+  sessions: T[]
+): T[] {
+  return sessions.filter(isSessionEligibleForPersonalSync);
 }
 
 /** Types of changes that can be synced */

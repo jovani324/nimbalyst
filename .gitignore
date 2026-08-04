@@ -16,6 +16,9 @@ out/
 out2/
 release/
 packages/electron/release/
+# Not a build output: the Android release source set holds the inert
+# screenshot-mode stubs, and assembleRelease fails without them.
+!packages/android/app/src/release/
 
 # Development
 .vite/
@@ -169,8 +172,10 @@ nimbalyst-local/
 # workspace root; they're personal working files, not source).
 plans/
 
-# Stray patch files (working snapshots, never source)
+# Stray patch files (working snapshots, never source). patches/ is the
+# exception: patch-package reads it from postinstall, so those ARE source.
 *.patch
+!patches/*.patch
 
 # MCP config (may contain personal API tokens)
 .mcp.json
@@ -198,6 +203,7 @@ packages/electron/e2e/permissions/screenshots/
 packages/electron/e2e/smoke/screenshots/
 packages/electron/e2e/walkthroughs/screenshots/
 packages/ios/screenshots/
+packages/android/screenshots/
 
 # Auto-generated platform artifacts
 packages/android/app/schemas/
@@ -232,3 +238,18 @@ packages/electron/memories.db
 # Local RAG/memory-tool artifacts (SQLite stores + caches created in the cwd)
 memories.db
 .rag-cache/
+
+# Generated .d.ts emitted next to its source. collab-bundle's declaration build
+# (tsconfig.types.json) compiles across package boundaries via rootDir ".."; drop
+# or mistype its outDir and tsc writes every .d.ts beside the .ts it came from,
+# where it silently rots against the source. 450 such files reached a commit this
+# way. Hand-written ambient declarations are negated below; any other intentional
+# .d.ts here needs `git add -f` and a comment saying why.
+packages/runtime/src/**/*.d.ts
+packages/runtime/src/**/*.d.ts.map
+packages/collab-client/src/**/*.d.ts
+packages/collab-client/src/**/*.d.ts.map
+!packages/runtime/src/**/env.d.ts
+!packages/runtime/src/**/*-env.d.ts
+!packages/runtime/src/types/*.d.ts
+!packages/runtime/src/editor/types/*.d.ts

@@ -4,12 +4,12 @@
 // resolves from inside the packaged tree. The validator catches the failure
 // class where the build is green but the feature is broken in production
 // because the SDK's package.json/exports map is missing or unresolvable --
-// something `validate-extra-resources.js` (input-only validation) cannot
-// detect.
+// something the pre-pack input validation cannot detect.
 
 const path = require('path');
 const fs = require('fs');
 const { spawnSync } = require('child_process');
+const { validatePackagedTutorialProject } = require('./validate-extra-resources.js');
 
 exports.default = async function(context) {
   const { appOutDir, packager } = context;
@@ -84,6 +84,9 @@ exports.default = async function(context) {
     }
   }
 
+  pruneSqlitePrebuilds(resourcesDir, platformName, arch);
+  pruneNodePtyPrebuilds(resourcesDir, platformName, arch);
+
   // Ensure node-pty's `spawn-helper` is executable in the packaged tree.
   // node-pty ships via extraResources to resources/node-pty; the macOS/Linux
   // PTY path execs prebuilds/<platform-arch>/spawn-helper, and the copy into
@@ -141,9 +144,131 @@ exports.default = async function(context) {
   // releases with zero bundled extensions. Assert the output here so it fails
   // the build instead of silently shipping.
   validateBundledExtensions(resourcesDir);
+  validatePackagedTutorialProject(resourcesDir);
 
   console.log('AfterPack: Complete');
 };
+
+// Names of the better-sqlite3 prebuilds that `lib/binding.js#getPrebuildPath()`
+// can resolve at runtime for a given build target. Linux picks linuxmusl-* when
+// glibc is absent, so both variants must survive; a universal mac build
+// resolves by `process.arch` at runtime and needs both slices.
+exports.prebuildsForTarget = prebuildsForTarget;
+function prebuildsForTarget(platformName, arch) {
+  const keep = new Set(
+    arch === 'universal'
+      ? [`${platformName}-x64.node`, `${platformName}-arm64.node`]
+      : [`${platformName}-${arch}.node`],
+  );
+  if (platformName === 'linux') {
+    for (const name of [...keep]) keep.add(name.replace(/^linux-/, 'linuxmusl-'));
+  }
+  return keep;
+}
+
+// Prune non-target better-sqlite3 prebuilds from the packaged tree.
+// v13 ships N-API prebuilds for all 8 platform/arch combos (~16MB) instead of
+// the single node-gyp binary v12 built, and the extraResources copy takes the
+// whole package -- so without this a mac DMG carries the Windows and Linux
+// .node files too. Returns a summary for logging/testing.
+exports.pruneSqlitePrebuilds = pruneSqlitePrebuilds;
+function pruneSqlitePrebuilds(resourcesDir, platformName, arch) {
+  const prebuildsDir = path.join(resourcesDir, 'node_modules/better-sqlite3/prebuilds');
+  const keep = prebuildsForTarget(platformName, arch);
+  if (!fs.existsSync(prebuildsDir)) {
+    return { removedCount: 0, keptCount: 0, removedSize: 0, skipped: true };
+  }
+
+  let removedCount = 0;
+  let removedSize = 0;
+  let keptCount = 0;
+  for (const entry of fs.readdirSync(prebuildsDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.node')) continue;
+    if (keep.has(entry.name)) {
+      keptCount++;
+      continue;
+    }
+    const filePath = path.join(prebuildsDir, entry.name);
+    removedSize += fs.statSync(filePath).size;
+    fs.rmSync(filePath);
+    removedCount++;
+  }
+
+  // A zero-kept prune means we just deleted the binary the app needs to boot
+  // -- unless this target is source-built, where lib/binding.js falls back to
+  // build/Release. Fail loudly rather than ship an app whose database won't
+  // open (e.g. because a better-sqlite3 bump renamed the prebuilds).
+  const legacyBinary = path.join(
+    resourcesDir, 'node_modules/better-sqlite3/build/Release/better_sqlite3.node',
+  );
+  if (keptCount === 0 && !fs.existsSync(legacyBinary)) {
+    throw new Error(
+      `AfterPack: pruned every better-sqlite3 prebuild in ${prebuildsDir} -- none matched the ` +
+      `build target (${[...keep].join(', ')}) and there is no source-built fallback at ` +
+      `${legacyBinary}. The packaged app would fail to open its database. Check that the ` +
+      `better-sqlite3 prebuild naming still matches lib/binding.js#getPrebuildPath.`,
+    );
+  }
+
+  console.log(
+    `AfterPack: Pruned ${removedCount} non-target better-sqlite3 prebuilds ` +
+    `(kept ${[...keep].join(', ')}, saved ${Math.round(removedSize / 1024 / 1024)}MB)`,
+  );
+  return { removedCount, keptCount, removedSize, skipped: false };
+}
+
+// Prune non-target node-pty prebuilds from the packaged tree.
+// node-pty ships prebuilds for darwin-{arm64,x64} and win32-{arm64,x64}, and
+// the extraResources copy takes the whole package -- so a Windows build also
+// carried the Mach-O pty.node files and a mac build carried the PE ones.
+// Beyond the dead weight, the foreign binaries broke the release workflow's
+// recursive Authenticode sweep (a Mach-O file can never carry a Windows
+// signature), which killed the v0.72.0 build after its tag was already
+// pushed. Linux has no prebuild dir -- CI source-builds it into build/Release
+// -- so a zero-kept prune is only fatal when that fallback is missing too.
+exports.pruneNodePtyPrebuilds = pruneNodePtyPrebuilds;
+function pruneNodePtyPrebuilds(resourcesDir, platformName, arch) {
+  const prebuildsDir = path.join(resourcesDir, 'node-pty/prebuilds');
+  const keep = new Set(
+    arch === 'universal'
+      ? [`${platformName}-x64`, `${platformName}-arm64`]
+      : [`${platformName}-${arch}`],
+  );
+  if (!fs.existsSync(prebuildsDir)) {
+    return { removedCount: 0, keptCount: 0, removedSize: 0, skipped: true };
+  }
+
+  let removedCount = 0;
+  let removedSize = 0;
+  let keptCount = 0;
+  for (const entry of fs.readdirSync(prebuildsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (keep.has(entry.name)) {
+      keptCount++;
+      continue;
+    }
+    const dirPath = path.join(prebuildsDir, entry.name);
+    removedSize += getDirSize(dirPath);
+    fs.rmSync(dirPath, { recursive: true });
+    removedCount++;
+  }
+
+  const sourceBuilt = path.join(resourcesDir, 'node-pty/build/Release/pty.node');
+  if (keptCount === 0 && !fs.existsSync(sourceBuilt)) {
+    throw new Error(
+      `AfterPack: pruned every node-pty prebuild in ${prebuildsDir} -- none matched the build ` +
+      `target (${[...keep].join(', ')}) and there is no source-built fallback at ${sourceBuilt}. ` +
+      `The packaged app could not start a terminal. Check that node-pty's prebuild dir naming ` +
+      `still matches <process.platform>-<process.arch>.`,
+    );
+  }
+
+  console.log(
+    `AfterPack: Pruned ${removedCount} non-target node-pty prebuilds ` +
+    `(kept ${[...keep].join(', ')}, saved ${Math.round(removedSize / 1024 / 1024)}MB)`,
+  );
+  return { removedCount, keptCount, removedSize, skipped: false };
+}
 
 // Assert every buildable source extension made it into resources/extensions
 // with its manifest.json (and dist/ when the source has one). Throws on any

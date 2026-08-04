@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createPGLiteSessionStore } from '../PGLiteSessionStore';
+import {
+  createPGLiteSessionStore,
+  getAllSessionsForSync,
+} from '../PGLiteSessionStore';
 
 describe('PGLiteSessionStore archive filters', () => {
   it('filters out sessions that belong to archived worktrees in list()', async () => {
@@ -32,6 +35,97 @@ describe('PGLiteSessionStore archive filters', () => {
 
     expect(queries[0]).toContain('LEFT JOIN worktrees w ON s.worktree_id = w.id');
     expect(queries[0]).toContain('(s.worktree_id IS NULL OR w.is_archived = FALSE OR w.is_archived IS NULL)');
+  });
+});
+
+describe('PGLiteSessionStore personal sync snapshot', () => {
+  it('excludes tutorial sessions identified by parsed metadata', async () => {
+    const db = {
+      query: vi.fn(async () => ({
+        rows: [
+          {
+            id: 'tutorial-session',
+            workspace_id: '/tutorial',
+            provider: 'claude-code',
+            title: 'Tutorial',
+            created_at: new Date(0),
+            updated_at: new Date(0),
+            metadata: '{"tutorial":true}',
+          },
+          {
+            id: 'personal-session',
+            workspace_id: '/project',
+            provider: 'claude-code',
+            title: 'Personal',
+            created_at: new Date(0),
+            updated_at: new Date(0),
+            metadata: '{"phase":"implementing"}',
+          },
+        ],
+      })),
+    };
+    createPGLiteSessionStore(db as any);
+
+    const sessions = await getAllSessionsForSync();
+
+    expect(sessions.map((session) => session.id)).toEqual([
+      'personal-session',
+    ]);
+  });
+});
+
+// Regression (GitHub #925 item 3 / NIM-1831): archiving a workstream PARENT
+// left its child sessions (linked by parent_session_id) with is_archived=FALSE,
+// so they became invisible orphans still counting toward the active total.
+// updateMetadata must cascade an is_archived toggle down to direct children.
+describe('PGLiteSessionStore archive cascade to workstream children', () => {
+  const captureDb = () => {
+    const calls: Array<{ sql: string; params: any[] }> = [];
+    const db = {
+      query: vi.fn(async (sql: string, params: any[] = []) => {
+        calls.push({ sql, params });
+        return { rows: [] };
+      }),
+    };
+    return { db, calls };
+  };
+
+  it('cascades is_archived=true to child sessions by parent_session_id when archiving', async () => {
+    const { db, calls } = captureDb();
+    const store = createPGLiteSessionStore(db as any);
+
+    await store.updateMetadata('parent-1', { isArchived: true });
+
+    const cascade = calls.find(
+      (c) => /UPDATE ai_sessions SET is_archived/i.test(c.sql) && /parent_session_id/i.test(c.sql),
+    );
+    expect(cascade, 'expected a cascade UPDATE keyed on parent_session_id').toBeTruthy();
+    expect(cascade!.params).toContain('parent-1');
+    expect(cascade!.params).toContain(true);
+  });
+
+  it('cascades is_archived=false to children when unarchiving', async () => {
+    const { db, calls } = captureDb();
+    const store = createPGLiteSessionStore(db as any);
+
+    await store.updateMetadata('parent-1', { isArchived: false });
+
+    const cascade = calls.find(
+      (c) => /UPDATE ai_sessions SET is_archived/i.test(c.sql) && /parent_session_id/i.test(c.sql),
+    );
+    expect(cascade, 'expected a cascade UPDATE keyed on parent_session_id').toBeTruthy();
+    expect(cascade!.params).toContain('parent-1');
+    expect(cascade!.params).toContain(false);
+  });
+
+  it('does NOT emit a parent_session_id cascade when isArchived is not part of the update', async () => {
+    const { db, calls } = captureDb();
+    const store = createPGLiteSessionStore(db as any);
+
+    await store.updateMetadata('parent-1', { title: 'Renamed' });
+
+    const cascade = calls.find((c) => /parent_session_id/i.test(c.sql));
+    expect(cascade).toBeFalsy();
   });
 });
 
@@ -236,5 +330,40 @@ describe('PGLiteSessionStore.updateMetadata defense-in-depth', () => {
     expect(updateCalls.length).toBe(0);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+describe('PGLiteSessionStore.updateMetadata nullable column clears', () => {
+  // NIM-2308 / GH #1098: an expired Claude Code session could never be
+  // recovered because the "clear the dead provider session id" write was a
+  // silent no-op. Every column here is guarded by `!== undefined`, so the
+  // clear must travel as an explicit null or it never reaches SQL.
+  it('writes SQL NULL when provider_session_id is cleared with null', async () => {
+    const db = { query: vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [] })) };
+    const store = createPGLiteSessionStore(db as any);
+
+    await store.updateMetadata('s1', { providerSessionId: null });
+
+    const updateCall = db.query.mock.calls.find((c: any[]) =>
+      typeof c[0] === 'string' && /UPDATE\s+ai_sessions\s+SET/i.test(c[0])
+    );
+    expect(updateCall).toBeDefined();
+    expect(updateCall![0]).toContain('provider_session_id =');
+    // values[0] is the session id; the bound clear value must be null, not
+    // undefined -- undefined would leave the stale id on the row.
+    expect(updateCall![1]).toEqual(['s1', null]);
+  });
+
+  it('still skips the column when providerSessionId is absent from the payload', async () => {
+    const db = { query: vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [] })) };
+    const store = createPGLiteSessionStore(db as any);
+
+    await store.updateMetadata('s1', { title: 'Renamed' });
+
+    const updateCall = db.query.mock.calls.find((c: any[]) =>
+      typeof c[0] === 'string' && /UPDATE\s+ai_sessions\s+SET/i.test(c[0])
+    );
+    expect(updateCall).toBeDefined();
+    expect(updateCall![0]).not.toContain('provider_session_id =');
   });
 });

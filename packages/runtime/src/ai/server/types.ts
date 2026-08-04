@@ -3,6 +3,7 @@
  */
 
 import type { ToolDefinition } from '../tools';
+import type { EditorContextItem } from '@nimbalyst/extension-sdk';
 import type { EffortLevel, ThinkingMode } from './effortLevels';
 import type { ToolResult } from './protocols/ProtocolInterface';
 import { ModelIdentifier } from './ModelIdentifier';
@@ -36,6 +37,10 @@ export interface DocumentContext {
   textSelection?: string;  // Just the selected text (filePath is already on document context)
   textSelectionTimestamp?: number | null;  // For staleness detection
 
+  // Extension-provided selected items from node-like editors (diagrams, CAD,
+  // electronics). Already filtered to non-dismissed items by the renderer.
+  editorContextItems?: EditorContextItem[];
+
   // AI mode at time of message submission (planning vs agent vs auto)
   mode?: 'planning' | 'agent' | 'auto';
 
@@ -51,6 +56,7 @@ export interface DocumentContext {
 
   // Session context (populated by backend before sending to provider)
   sessionType?: SessionType;
+  hasBeenNamed?: boolean;  // Session already has a caller-assigned name; suppresses in-band self-naming
   permissionsPath?: string;  // Path for permission lookups (may differ from worktreePath)
   mcpConfigWorkspacePath?: string;  // Path for MCP config lookup (parent project for worktrees)
   attachments?: ChatAttachment[];
@@ -63,6 +69,25 @@ export interface DocumentContext {
 
   /** Identifies the origin of this message when it comes from an automated source (e.g. 'wakeup_resume'). */
   promptOrigin?: string;
+
+  /** Durable authorship provenance for prompt search and audit surfaces. */
+  promptProvenance?: PromptProvenance;
+}
+
+export type PromptActor = 'human' | 'agent' | 'system';
+
+export type PromptProvenanceOrigin =
+  | 'composer'
+  | 'session-orchestration'
+  | 'child-session-update'
+  | 'mobile'
+  | 'automation';
+
+export interface PromptProvenance {
+  actor: PromptActor;
+  origin: PromptProvenanceOrigin;
+  originSessionId?: string;
+  queuedPromptId?: string;
 }
 
 export interface ChatAttachment {
@@ -218,14 +243,14 @@ export function shouldBlockStartedSessionProviderSwitch(
  * modelConstants.ts.
  *
  * `fable` is the Fable 5 tier above Opus — the CLI accepts it as a first-class
- * alias (`--model fable`, `/model fable`). On the current CLI plain `fable`
- * already runs a 1M window at a flat price (the `[1m]` suffix is a no-op —
- * GitHub #825), so it's a single row with no `-1m` duplicate (see
- * `CLAUDE_CODE_NATIVE_1M_VARIANTS`). The earlier 200k client-side windowing was
- * real on CLI 2.1.175 but is now stale. Note it requires usage credits on
- * subscription plans (the CLI surfaces that itself when unavailable).
+ * alias (`--model fable`, `/model fable`). Its plain row runs a 1M window when
+ * the plan auto-upgrades it, and it also gets an explicit `-1m` row for the
+ * cases where that upgrade doesn't apply (Pro without credits, or any
+ * `ANTHROPIC_BASE_URL` gateway) — see `CLAUDE_CODE_VARIANTS_WITH_1M`. Note it
+ * requires usage credits on subscription plans (the CLI surfaces that itself
+ * when unavailable).
  */
-export const CLAUDE_CODE_VARIANTS = ['fable', 'opus', 'opus-4-7', 'opus-4-6', 'sonnet', 'sonnet-4-6', 'haiku'] as const;
+export const CLAUDE_CODE_VARIANTS = ['fable', 'opus', 'opus-4-8', 'opus-4-7', 'opus-4-6', 'sonnet', 'sonnet-4-6', 'haiku'] as const;
 
 /**
  * Resolves a configured model string to the SDK model value.

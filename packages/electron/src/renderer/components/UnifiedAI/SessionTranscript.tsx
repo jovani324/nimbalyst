@@ -35,6 +35,7 @@ import { recordClaudeActivity } from '../../store/listeners/claudeUsageListeners
 import { recordCodexActivity } from '../../store/listeners/codexUsageListeners';
 import { PendingReviewBanner } from '../AIChat/PendingReviewBanner';
 import { WakeupBanner } from '../AIChat/WakeupBanner';
+import { McpLockdownBanner } from '../AIChat/McpLockdownBanner';
 import type { AIMode } from './ModeTag';
 // Note: ExitPlanMode, AskUserQuestion, and ToolPermission use inline widgets via InteractiveWidgetHost (in runtime package)
 import { SlashCommandSuggestions } from './SlashCommandSuggestions';
@@ -43,8 +44,11 @@ import { activeTipIdAtom } from '../../tips/atoms';
 import { supportsWorkspaceSlashCommands } from '../Typeahead/slashCommandAutocomplete';
 import type { TextSelection } from './TextSelectionIndicator';
 import { type SerializableDocumentContext } from '../../hooks/useDocumentContext';
+import { serializeEditorContextItemsForIpc } from './editorContextSerialization';
 import { isClaudeCliTerminalSession } from './claudeCliInputRouting';
+import { expandSessionMentions } from './sessionMentions';
 import { diffTreeGroupByDirectoryAtom, setDiffTreeGroupByDirectoryAtom } from '../../store/atoms/projectState';
+import { openSettingsCommandAtom } from '../../store/atoms/settingsNavigation';
 import {
   sessionDraftInputAtom,
   sessionDraftHydratedAtom,
@@ -105,13 +109,14 @@ import {
 } from '../../store/atoms/terminals';
 import { scrollToTeammateAtom, scrollToMessageAtom, requestOpenSessionAtom } from '../../store/atoms/agentMode';
 import { usePostHog } from 'posthog-js/react';
-import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, chatShowToolCallsAtom, developerModeAtom } from '../../store/atoms/appSettings';
-import { supportsEffortLevel, supportsThinkingToggle, parseEffortLevel, parseThinkingMode, type EffortLevel, type ThinkingMode } from '../../utils/modelUtils';
+import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAtom, externalEditorNameAtom, openInExternalEditorAtom, defaultAgentModelAtom, defaultEffortLevelAtom, defaultThinkingModeAtom, chatShowToolCallsAtom, developerModeAtom } from '../../store/atoms/appSettings';
+import { supportsEffortLevel, supportsThinkingToggle, parseEffortLevel, resolveThinkingMode, type EffortLevel, type ThinkingMode } from '../../utils/modelUtils';
 import { buildPlanImplementationPrompt, resolvePlanFilePath } from '../../utils/pathUtils';
 import { resolveTranscriptClickPath } from '../../utils/resolveTranscriptClickPath';
 import { autoCommitEnabledAtom, setAutoCommitEnabledAtom } from '../../store/atoms/autoCommitAtoms';
 import { diffPeekSizeAtom, setDiffPeekSizeAtom } from '../../store/atoms/diffPeekSizeAtoms';
 import { registerSessionWorkspace, loadInitialSessionFileState } from '../../store/listeners/fileStateListeners';
+import { sessionFileEditsAtom } from '../../store/atoms/sessionFiles';
 import { SESSION_PHASE_COLUMNS, setSessionPhaseAtom, type SessionPhase } from '../../store/atoms/sessionKanban';
 
 /**
@@ -141,26 +146,6 @@ function isCorruptedSpreadOfString(value: unknown): boolean {
     if (k in obj) return false;
   }
   return true;
-}
-
-/**
- * Expand @@[name](shortId) session mentions to @@[name](fullUuid).
- * Short IDs (5 chars) are used in the textarea for readability;
- * at send time we resolve them to full UUIDs for the agent.
- */
-function expandSessionMentions(
-  message: string,
-  registry: Map<string, import('@nimbalyst/runtime').SessionMeta>
-): string {
-  return message.replace(/@@\[([^\]]+)\]\(([a-f0-9]+)\)/g, (_match, name, shortId) => {
-    for (const [fullId] of registry) {
-      if (fullId.startsWith(shortId)) {
-        return `@@[${name}](${fullId})`;
-      }
-    }
-    // No match found -- leave as-is
-    return _match;
-  });
 }
 
 function makeOptimisticError(text: string, extra?: Partial<TranscriptViewMessage>): TranscriptViewMessage {
@@ -213,6 +198,7 @@ interface Todo {
 
 export interface SessionTranscriptRef {
   focusInput: () => void;
+  insertPrompt: (text: string) => void;
 }
 
 export interface SessionTranscriptProps {
@@ -278,8 +264,7 @@ function serializeDocumentContext(
     textSelectionTimestamp: documentContext.textSelectionTimestamp,
     mockupSelection: documentContext.mockupSelection,
     mockupDrawing: documentContext.mockupDrawing,
-    editorContext: documentContext.editorContext,
-    editorContextTimestamp: documentContext.editorContextTimestamp,
+    editorContextItems: serializeEditorContextItemsForIpc(documentContext.editorContextItems),
   };
 }
 
@@ -479,6 +464,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const sessionParentId = useAtomValue(sessionParentIdAtom(sessionId));
   const defaultModel = useAtomValue(defaultAgentModelAtom);
   const defaultEffortLevel = useAtomValue(defaultEffortLevelAtom);
+  const defaultThinkingMode = useAtomValue(defaultThinkingModeAtom);
 
   const sessionData = useMemo(() => {
     if (!hasSessionData) return null;
@@ -543,7 +529,10 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   // (adaptive/enabled) applies.
   const developerMode = useAtomValue(developerModeAtom);
   const showThinkingToggle = useMemo(() => developerMode && supportsThinkingToggle(currentModel), [developerMode, currentModel]);
-  const thinkingMode = useMemo(() => parseThinkingMode(rawThinkingMode), [rawThinkingMode]);
+  const thinkingMode = useMemo(
+    () => resolveThinkingMode(rawThinkingMode, defaultThinkingMode),
+    [rawThinkingMode, defaultThinkingMode]
+  );
 
   // Memoize the teammate list passed to AgentTranscriptPanel so its memo
   // comparison doesn't see a new array reference on every keystroke. Without
@@ -828,6 +817,11 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
     });
   }, [sessionId, workspacePath]);
 
+  // Edited files for the transcript's Files sidebar. The atom above is kept
+  // current by fileStateListeners; the panel takes this as a prop rather than
+  // running its own IPC subscription (docs/IPC_LISTENERS.md).
+  const sessionFileEdits = useAtomValue(sessionFileEditsAtom(sessionId));
+
   // ============================================================
   // Auto-focus input when session data loads
   // ============================================================
@@ -1047,7 +1041,11 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   // ============================================================
   useImperativeHandle(ref, () => ({
     focusInput: () => inputRef.current?.focus(),
-  }));
+    insertPrompt: (text: string) => {
+      setDraftInput(text);
+      inputRef.current?.focus();
+    },
+  }), [setDraftInput]);
 
   // ============================================================
   // Handlers
@@ -1493,7 +1491,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       // may race or, in some edge cases, may not fire cleanly after abort.
       await window.electronAPI.invoke('ai:interruptCurrentTurn', sessionId);
       if (workspacePath) {
-        await window.electronAPI.invoke('ai:triggerQueueProcessing', sessionId, workspacePath);
+        await window.electronAPI.invoke('ai:triggerQueueProcessing', sessionId, workspacePath, 'send-now');
       }
     } catch (error) {
       console.error('[SessionTranscript] Failed to interrupt for send-now:', error);
@@ -1563,6 +1561,9 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const handleThinkingModeChange = useCallback(async (mode: ThinkingMode) => {
     const previousMode = thinkingMode;
     await updateSessionMetadataField(sessionId, 'thinkingMode', mode, null, updateSessionStore);
+    // Sticky across sessions: without this the selector reset to "Extended: On"
+    // at the start of every new session (GitHub #1034).
+    setAgentModeSettings({ defaultThinkingMode: mode });
     posthog?.capture('ai_thinking_mode_changed', {
       thinking_mode: mode,
       previous_mode: previousMode,
@@ -2015,6 +2016,42 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         }
       },
 
+      getAttachmentStagingGitignoreStatus: async () => {
+        return window.electronAPI.invoke(
+          'attachment:workspace-staging-status',
+          workspacePath,
+        );
+      },
+      retryAttachmentStaging: async (prompt, blockedAttachments, addGitignore) => {
+        try {
+          const result = await window.electronAPI.invoke('attachment:retry-in-workspace', {
+            workspacePath,
+            sessionId,
+            attachments: blockedAttachments,
+            addGitignore,
+          }) as { success: boolean; attachments?: ChatAttachment[]; error?: string };
+          if (!result.success || !result.attachments) {
+            return { success: false, error: result.error ?? 'Failed to re-stage attachments' };
+          }
+
+          setDraftInput(prompt);
+          setDraftAttachments(result.attachments);
+          await Promise.resolve();
+          await handleSend();
+          return { success: true };
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      },
+      openAttachmentSettings: () => {
+        store.set(openSettingsCommandAtom, {
+          category: 'agent-features',
+          scope: 'application',
+          anchor: 'attachment-staging-settings',
+          timestamp: Date.now(),
+        });
+      },
+
       // Common operations
       openFile: async (filePath: string) => {
         if (onFileClick) {
@@ -2055,6 +2092,9 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       gitFileDiff: (...args) => liveHostRef.current!.gitFileDiff!(...args),
       setDiffPeekSize: (...args) => liveHostRef.current!.setDiffPeekSize!(...args),
       superLoopBlockedFeedback: (...args) => liveHostRef.current!.superLoopBlockedFeedback(...args),
+      getAttachmentStagingGitignoreStatus: (...args) => liveHostRef.current!.getAttachmentStagingGitignoreStatus!(...args),
+      retryAttachmentStaging: (...args) => liveHostRef.current!.retryAttachmentStaging!(...args),
+      openAttachmentSettings: (...args) => liveHostRef.current!.openAttachmentSettings!(...args),
       openFile: (...args) => liveHostRef.current!.openFile(...args),
       trackEvent: (...args) => liveHostRef.current!.trackEvent(...args),
     };
@@ -2069,13 +2109,6 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
   const enableSlashCommands = supportsWorkspaceSlashCommands(provider);
   const enableAttachments = true;
   const enableHistoryNavigation = true;
-
-  // Last user message timestamp for mockup annotation indicator
-  const lastUserMessageTimestamp = React.useMemo(() => {
-    const userMessages = messages.filter(m => m.type === 'user_message');
-    if (userMessages.length === 0) return null;
-    return userMessages[userMessages.length - 1].createdAt?.getTime() || null;
-  }, [messages]);
 
   // Extra content rendered in the empty-session panel: an inline contextual
   // tip (any provider) above the slash command suggestions (claude-code
@@ -2410,6 +2443,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
             onCloseAndArchive={handleCloseAndArchive}
             onUnarchive={handleUnarchive}
             readFile={readFile}
+            fileEdits={sessionFileEdits}
             renderFilesHeader={mode === 'agent' ? () => (
               <>
                 <WakeupBanner sessionId={sessionId} />
@@ -2551,6 +2585,7 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
       {/* Wakeup + pending review banners - only in chat mode, hidden when collapsed */}
       {mode === 'chat' && !collapseTranscript && (
         <>
+          <McpLockdownBanner provider={typeof provider === 'string' ? provider : undefined} />
           <WakeupBanner sessionId={sessionId} />
           <PendingReviewBanner workspacePath={workspacePath} sessionId={sessionId} />
         </>
@@ -2628,7 +2663,6 @@ export const SessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscr
         onQueue={handleQueue}
         queueCount={queuedPrompts.length}
         currentFilePath={currentFilePath}
-        lastUserMessageTimestamp={lastUserMessageTimestamp}
         onLaunchActionInNewSession={handleLaunchActionInNewSession}
       />
     </div>

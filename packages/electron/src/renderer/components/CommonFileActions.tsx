@@ -2,7 +2,7 @@
  * CommonFileActions - Shared menu items for file operations.
  *
  * Renders the common file action items (Open in Default App, Open in External Editor,
- * Show in Finder, Copy Path, Share Link, Share to Team) used across multiple context menus:
+ * Show in system file browser, Copy Path, Share Link, Share to Team) used across multiple context menus:
  * - FileContextMenu (file tree right-click)
  * - TabBar context menu (tab right-click)
  * - UnifiedEditorHeaderBar (header actions dropdown)
@@ -11,11 +11,22 @@
  */
 
 import React, { useCallback, useMemo, useSyncExternalStore } from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import {
+  copyToClipboard,
+  getEmbeddableExtensions,
+  getShowInFileBrowserLabel,
+  MaterialSymbol,
+} from '@nimbalyst/runtime';
 import { store } from '@nimbalyst/runtime/store';
 import { useAtomValue } from 'jotai';
 import { useFileActions } from '../hooks/useFileActions';
-import { workspaceHasTeamAtom } from '../store/atoms/collabDocuments';
+import {
+  activeTeamOrgIdAtom,
+  buildSharedDocumentDeepLink,
+  trashSharedDocument,
+  resolveDesktopCollabScope,
+  workspaceHasTeamAtom,
+} from '../store/atoms/collabDocuments';
 import { activeWorkspacePathAtom } from '../store/atoms/openProjects';
 import { getRelativePath } from '../utils/pathUtils';
 import { dialogRef, DIALOG_IDS } from '../dialogs';
@@ -30,6 +41,18 @@ import {
   CollaborativeDocumentCreationError,
   createCollaborativeDocument,
 } from '../services/collaborativeDocumentCreationOrchestrator';
+import {
+  discoverEmbeddedDocuments,
+  rewriteEmbeddedDocumentLinks,
+  shareEmbeddedDocuments,
+  type EmbeddedDocumentCandidate,
+} from '../services/embeddedDocumentShare';
+import {
+  bucketItemCount,
+  categorizeTeamAnalyticsError,
+  toStableAnalyticsCategory,
+} from '../../shared/analytics/teamAnalytics';
+import { trackTeamAnalyticsEvent } from '../utils/teamAnalytics';
 
 interface CommonFileActionsProps {
   filePath: string;
@@ -95,8 +118,20 @@ export function CommonFileActions({
     folderPath: string,
     sharedName: string,
     selectedDescriptor: CollaborativeDocumentTypeDescriptor,
+    embeddedDocuments: EmbeddedDocumentCandidate[] = [],
+    selectedEmbeddedDocumentPaths: string[] = [],
   ) => {
     const { errorNotificationService } = await import('../services/ErrorNotificationService');
+    const trackShareFailure = (error: unknown) => {
+      trackTeamAnalyticsEvent('collab_operation_failed', {
+        surface: 'desktop',
+        operation: 'share_to_team',
+        source: 'share_to_team',
+        actorType: 'user',
+        documentType: toStableAnalyticsCategory(selectedDescriptor.documentType),
+        errorCategory: categorizeTeamAnalyticsError('document', error),
+      });
+    };
     const matchedSuffix = [...selectedDescriptor.fileExtensions]
       .sort((left, right) => right.length - left.length)
       .find(suffix => fileName.toLowerCase().endsWith(suffix.toLowerCase()))
@@ -107,6 +142,7 @@ export function CommonFileActions({
       documentTypeCatalog.editorIdForDescriptor(selectedDescriptor),
     );
     if (liveResolution.state !== 'ready') {
+      trackShareFailure(liveResolution.reason);
       errorNotificationService.showError(
         'Could not share to team',
         liveResolution.reason,
@@ -121,6 +157,7 @@ export function CommonFileActions({
     try {
       initialContent = await readShareToTeamSourceContent(filePath, descriptor);
     } catch (err) {
+      trackShareFailure(err);
       errorNotificationService.showError(
         'Could not share to team',
         err instanceof Error ? err.message : String(err),
@@ -139,6 +176,17 @@ export function CommonFileActions({
     // base64 images, mindmap's no-attachments) are handled differently or
     // not at all; we skip the markdown rewriter for them entirely.
     const workspacePath = store.get(activeWorkspacePathAtom);
+    const scope = workspacePath
+      ? (await resolveDesktopCollabScope(workspacePath)).scope
+      : null;
+    if (!scope) {
+      trackShareFailure('Collaboration scope is unavailable.');
+      errorNotificationService.showError(
+        'Could not share to team',
+        'The active team collaboration scope is unavailable.',
+      );
+      return;
+    }
     const normalizedFolder = normalizeCollabPath(folderPath);
     const trimmedName = sharedName.trim() || fileName;
     // joinCollabPath handles empty parent -> root and normalizes separators.
@@ -206,6 +254,14 @@ export function CommonFileActions({
     }
 
     if (migrationToast.kind === 'total-failure') {
+      trackTeamAnalyticsEvent('collab_share_asset_migration_completed', {
+        surface: 'desktop',
+        outcome: 'failed',
+        assetCountBucket: bucketItemCount(migrationToast.failedCount ?? 0),
+        linkedDocumentCountBucket: bucketItemCount(selectedEmbeddedDocumentPaths.length),
+        errorCategory: 'asset_migration_failed',
+      });
+      trackShareFailure(new Error('Asset migration failed'));
       errorNotificationService.showError(
         'Could not share to team',
         `All ${migrationToast.failedCount ?? ''} attached images failed to upload. Check your connection and try again.`,
@@ -214,9 +270,47 @@ export function CommonFileActions({
       return;
     }
 
+    let embeddedShareResult: Awaited<ReturnType<typeof shareEmbeddedDocuments>> = {
+      sharedReferences: new Map(),
+      createdDocumentIds: [],
+      failures: [],
+    };
+    if (
+      documentType === 'markdown'
+      && typeof migratedContent === 'string'
+      && workspacePath
+      && embeddedDocuments.length > 0
+      && selectedEmbeddedDocumentPaths.length > 0
+    ) {
+      embeddedShareResult = await shareEmbeddedDocuments({
+        candidates: embeddedDocuments,
+        selectedPaths: new Set(selectedEmbeddedDocumentPaths),
+        parentFolderId: folderId,
+        readSourceContent: candidate =>
+          readShareToTeamSourceContent(candidate.absolutePath, candidate.descriptor),
+        createDocument: input => createCollaborativeDocument({ ...input, scope }),
+        generateId: () => crypto.randomUUID(),
+        resolveOrgId: async () => {
+          const orgId = store.get(activeTeamOrgIdAtom);
+          if (!orgId) {
+            throw new Error('The active team organization is unavailable.');
+          }
+          return orgId;
+        },
+      });
+      migratedContent = rewriteEmbeddedDocumentLinks({
+        markdown: migratedContent,
+        sourceFilePath: filePath,
+        workspacePath,
+        candidates: embeddedDocuments,
+        sharedReferences: embeddedShareResult.sharedReferences,
+      });
+    }
+
     let createdDocument;
     try {
       createdDocument = await createCollaborativeDocument({
+        scope,
         descriptor,
         requestedName: trimmedName,
         parentFolderId: folderId,
@@ -227,8 +321,28 @@ export function CommonFileActions({
         },
         operationId: documentId,
         documentId,
+        analyticsSource: 'share_to_team',
+        analyticsActorType: 'user',
+        analyticsLinkedDocumentCount: selectedEmbeddedDocumentPaths.length,
+        analyticsAssetMigrationOutcome:
+          migrationToast.kind === 'no-assets'
+            ? 'not_needed'
+            : migrationToast.kind === 'ok'
+              ? 'success'
+              : migrationToast.kind === 'partial'
+                ? 'partial'
+                : 'failed',
       });
     } catch (error) {
+      // The cascade already created the child documents. Without this the
+      // team is left with orphaned embeds whose parent never existed.
+      for (const orphanId of embeddedShareResult.createdDocumentIds) {
+        try {
+          trashSharedDocument(scope, orphanId);
+        } catch (rollbackError) {
+          console.warn('[CommonFileActions] Could not roll back linked document:', rollbackError);
+        }
+      }
       const details = error instanceof CollaborativeDocumentCreationError
         ? `${error.code} (document ${error.documentId})`
         : undefined;
@@ -240,6 +354,41 @@ export function CommonFileActions({
       return;
     }
     const finalTitle = createdDocument.title;
+    const teamOrgId = store.get(activeTeamOrgIdAtom);
+    const copyLinkAction = teamOrgId
+      ? {
+          label: 'Copy Link',
+          onClick: () => {
+            const deepLink = buildSharedDocumentDeepLink(createdDocument.documentId, teamOrgId);
+            void copyToClipboard(deepLink).catch((error: unknown) => {
+              console.error('[CommonFileActions] Failed to copy shared document link:', error);
+              errorNotificationService.showError(
+                'Copy failed',
+                'Could not write the link to the clipboard.',
+              );
+            });
+          },
+        }
+      : undefined;
+    const linkedCount = embeddedShareResult.sharedReferences.size;
+    const linkedFailureCount = embeddedShareResult.failures.length;
+    const assetCount = (migrationToast.okCount ?? 0) + (migrationToast.failedCount ?? 0);
+    const migrationOutcome = migrationToast.kind === 'partial'
+      || migrationToast.kind === 'unavailable'
+      || linkedFailureCount > 0
+      ? 'partial'
+      : 'success';
+    trackTeamAnalyticsEvent('collab_share_asset_migration_completed', {
+      surface: 'desktop',
+      outcome: migrationOutcome,
+      assetCountBucket: bucketItemCount(assetCount),
+      linkedDocumentCountBucket: bucketItemCount(linkedCount + linkedFailureCount),
+      ...(migrationToast.kind === 'partial' || migrationToast.kind === 'unavailable'
+        ? { errorCategory: 'asset_migration_failed' as const }
+        : linkedFailureCount > 0
+          ? { errorCategory: 'linked_document_failed' as const }
+          : {}),
+    });
 
     // Remember the destination folder so the next share defaults to it.
     if (workspacePath && window.electronAPI?.invoke) {
@@ -255,53 +404,124 @@ export function CommonFileActions({
       });
     }
 
+    // Attachment and linked-document outcomes are independent: a doc can lose
+    // an image upload AND a linked embed. Report both in one toast rather than
+    // letting either result hide the other.
+    const linkedParts: string[] = [];
+    if (linkedCount > 0) {
+      linkedParts.push(`Shared ${linkedCount} linked document${linkedCount === 1 ? '' : 's'}.`);
+    }
+    if (linkedFailureCount > 0) {
+      linkedParts.push(`${linkedFailureCount} linked document${linkedFailureCount === 1 ? '' : 's'} could not be shared and remain local links.`);
+    }
+    const linkedSummary = linkedParts.length > 0 ? ` ${linkedParts.join(' ')}` : '';
+    const linkedDetails = linkedFailureCount > 0
+      ? embeddedShareResult.failures
+          .map(failure => `${failure.fileName}: ${failure.error}`)
+          .join('\n')
+      : undefined;
+
     switch (migrationToast.kind) {
       case 'ok':
-        errorNotificationService.showInfo(
-          'Shared to team',
-          `"${finalTitle}" is now a collaborative document. Migrated ${migrationToast.okCount} attachment${migrationToast.okCount === 1 ? '' : 's'}.`,
-          { duration: 4000 },
-        );
+      case 'no-assets':
+      default: {
+        const body = migrationToast.kind === 'ok'
+          ? `"${finalTitle}" is now a collaborative document. Migrated ${migrationToast.okCount} attachment${migrationToast.okCount === 1 ? '' : 's'}.${linkedSummary}`
+          : `"${finalTitle}" is now a collaborative document.${linkedSummary}`;
+        if (linkedFailureCount > 0) {
+          errorNotificationService.showWarning(
+            'Shared with missing linked documents',
+            body,
+            { details: linkedDetails, duration: 10000, action: copyLinkAction },
+          );
+        } else {
+          errorNotificationService.showInfo(
+            'Shared to team',
+            body,
+            { duration: 4000, action: copyLinkAction },
+          );
+        }
         break;
+      }
       case 'partial':
         errorNotificationService.showWarning(
           'Shared with missing attachments',
-          `"${finalTitle}" was shared but ${migrationToast.failedCount} attachment${migrationToast.failedCount === 1 ? '' : 's'} failed to upload.`,
-          { duration: 8000 },
+          `"${finalTitle}" was shared but ${migrationToast.failedCount} attachment${migrationToast.failedCount === 1 ? '' : 's'} failed to upload.${linkedSummary}`,
+          { details: linkedDetails, duration: 8000, action: copyLinkAction },
         );
         break;
       case 'unavailable':
         errorNotificationService.showWarning(
           'Shared to team',
-          `"${finalTitle}" is now collaborative, but image attachments could not be migrated${migrationToast.message ? `: ${migrationToast.message}` : '.'}`,
-          { duration: 8000 },
-        );
-        break;
-      case 'no-assets':
-      default:
-        errorNotificationService.showInfo(
-          'Shared to team',
-          `"${finalTitle}" is now a collaborative document.`,
-          { duration: 4000 },
+          `"${finalTitle}" is now collaborative, but image attachments could not be migrated${migrationToast.message ? `: ${migrationToast.message}` : '.'}${linkedSummary}`,
+          { details: linkedDetails, duration: 8000, action: copyLinkAction },
         );
         break;
     }
   }, [documentTypeCatalog, filePath, fileName]);
 
-  const openShareToTeamDialog = useCallback(() => {
+  const openShareToTeamDialog = useCallback(async () => {
     if (shareability.state !== 'ready') return;
     const descriptor = shareability.descriptor;
     const workspacePath = store.get(activeWorkspacePathAtom);
     const sourceRelPath = workspacePath ? getRelativePath(workspacePath, filePath) || fileName : fileName;
+    let embeddedDocuments: EmbeddedDocumentCandidate[] = [];
+    if (descriptor.documentType === 'markdown' && workspacePath) {
+      try {
+        const source = await readShareToTeamSourceContent(filePath, descriptor);
+        if (typeof source === 'string') {
+          embeddedDocuments = await discoverEmbeddedDocuments({
+            markdown: source,
+            sourceFilePath: filePath,
+            workspacePath,
+            embeddableExtensions: getEmbeddableExtensions(),
+            catalog: documentTypeCatalog,
+            expectedOrgId: store.get(activeTeamOrgIdAtom),
+            // `file:exists` stats the path. Reading the file just to learn it
+            // exists pulls whole binary embeds (STEP, large drawings) into the
+            // renderer on every context-menu open.
+            fileExists: async absolutePath => {
+              const exists = await window.electronAPI?.invoke?.('file:exists', absolutePath);
+              return exists === true;
+            },
+            findExisting: async absolutePath => {
+              const result = await window.electronAPI?.documentSync?.findLocalOriginLink?.(
+                workspacePath,
+                absolutePath,
+              );
+              const binding = result?.success ? result.binding : null;
+              return binding
+                ? { documentId: binding.documentId, orgId: binding.orgId }
+                : null;
+            },
+          });
+        }
+      } catch (error) {
+        console.warn('[CommonFileActions] Could not inspect embedded documents:', error);
+      }
+    }
     dialogRef.current?.open<ShareToTeamData>(DIALOG_IDS.SHARE_TO_TEAM, {
       fileName,
       sourceRelPath,
       descriptor,
-      onConfirm: ({ folderId, folderPath, sharedName }) => {
-        runShareToTeam(folderId, folderPath, sharedName, descriptor);
+      embeddedDocuments,
+      onConfirm: ({
+        folderId,
+        folderPath,
+        sharedName,
+        selectedEmbeddedDocumentPaths,
+      }) => {
+        runShareToTeam(
+          folderId,
+          folderPath,
+          sharedName,
+          descriptor,
+          embeddedDocuments,
+          selectedEmbeddedDocumentPaths,
+        );
       },
     });
-  }, [filePath, fileName, runShareToTeam, shareability]);
+  }, [documentTypeCatalog, filePath, fileName, runShareToTeam, shareability]);
 
   const Item = useButtons ? 'button' : 'div';
 
@@ -327,23 +547,25 @@ export function CommonFileActions({
         </Item>
       )}
 
-      {/* Show in Finder */}
+      {/* Show in system file browser */}
       <Item
         className={menuItemClass}
         onClick={() => { actions.revealInFinder(); onClose(); }}
       >
         {showIcons && <MaterialSymbol icon="folder_open" size={iconSize} />}
-        <span>Show in Finder</span>
+        <span>{getShowInFileBrowserLabel()}</span>
       </Item>
 
       {/* Copy Path */}
-      <Item
-        className={menuItemClass}
-        onClick={() => { actions.copyFilePath(); onClose(); }}
-      >
-        {showIcons && <MaterialSymbol icon="content_copy" size={iconSize} />}
-        <span>Copy Path</span>
-      </Item>
+      {!isCollabUri(filePath) && (
+        <Item
+          className={menuItemClass}
+          onClick={() => { actions.copyFilePath(); onClose(); }}
+        >
+          {showIcons && <MaterialSymbol icon="content_copy" size={iconSize} />}
+          <span>Copy Path</span>
+        </Item>
+      )}
 
       {/* Share Link (conditional on file type) */}
       {actions.isShareable && (
@@ -365,7 +587,7 @@ export function CommonFileActions({
           title={shareability.state === 'unsupported' ? shareability.reason : undefined}
           onClick={() => {
             if (shareability.state !== 'ready') return;
-            openShareToTeamDialog();
+            void openShareToTeamDialog();
             onClose();
           }}
         >

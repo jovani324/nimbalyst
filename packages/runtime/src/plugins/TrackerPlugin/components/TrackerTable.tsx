@@ -5,13 +5,13 @@
 
 import type { JSX } from 'react';
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { useFloating, offset, flip, shift, FloatingPortal } from '@floating-ui/react';
 import { useAtomValue } from 'jotai';
 import type {
   TrackerItemType,
 } from '../../../core/DocumentService';
 import type { TrackerRecord } from '../../../core/TrackerRecord';
 import { trackerItemsByTypeAtom, trackerDataLoadedAtom } from '../trackerDataAtoms';
+import { TrackerRowContextMenu } from './TrackerRowContextMenu';
 import {
   EXTENSION_OWNED_KEYS,
   LEGACY_KEY_TO_TYPE,
@@ -38,9 +38,18 @@ import { TrackerUnreadDot } from '../../../readReceipts/TrackerUnreadDot';
 import { DisplayOptionsPanel } from './DisplayOptionsPanel';
 import { useTrackerRows } from './useTrackerRows';
 import { TrackerFavoriteStar } from './TrackerFavoriteStar';
+import { groupTrackerRecords, searchMatchesRecord } from './trackerRowData';
 
 export type SortColumn = 'title' | 'type' | 'status' | 'priority' | 'progress' | 'module' | 'lastIndexed' | (string & {});
 export type SortDirection = 'asc' | 'desc';
+
+/**
+ * Keep schema field names scoped so common names such as `progress` cannot
+ * collide with global utility or extension styles.
+ */
+export function getTrackerTableCellClassName(columnId: string): string {
+  return `tracker-table-cell tracker-table-cell-${columnId}`;
+}
 
 interface TrackerTableProps {
   filterType?: TrackerItemType | 'all';
@@ -65,6 +74,12 @@ interface TrackerTableProps {
    *  exactly one item is selected. Callers omit this when the workspace
    *  has no team configured. */
   onCopyDeepLink?: (itemId: string) => void;
+  /**
+   * Open a row's tracker item as a document (the focused document view). When
+   * the host offers it, double-clicking a row goes there instead of opening the
+   * backing file in the editor, and the row context menu gains the action.
+   */
+  onOpenDocument?: (itemId: string) => void;
   /** External search query from parent toolbar (replaces internal search input) */
   searchQuery?: string;
   /** Whether filters owned by the parent are active (for the filtered empty state). */
@@ -78,6 +93,8 @@ interface TrackerTableProps {
   favoriteItemIds?: ReadonlySet<string>;
   onToggleFavorite?: (itemId: string) => void;
   preserveItemOrder?: boolean;
+  /** Parent renders the shared tracker-view controls. */
+  hideToolbar?: boolean;
 }
 
 /**
@@ -466,7 +483,7 @@ export function convertFullDocumentToTrackerItems(metadata: any[], trackerType: 
  * Render a cell value based on column definition.
  * Extracted to keep the row rendering clean.
  *
- * Exported so the new `TrackerTableGrid` view can render the same cell
+ * Exported so other tracker surfaces can render the same cell
  * content without duplicating the field-by-field switch.
  */
 export function renderCell(
@@ -668,8 +685,9 @@ export function renderCell(
         case 'date':
           if (value instanceof Date) return <span className="text-[var(--nim-text-faint)] text-xs">{formatRelativeDate(value)}</span>;
           if (typeof value === 'string') {
-            const d = new Date(value);
-            return <span className="text-[var(--nim-text-faint)] text-xs">{isNaN(d.getTime()) ? value : formatRelativeDate(d)}</span>;
+            // parseDate, not `new Date`: a calendar-day string is local, not UTC midnight (nimbalyst#1135).
+            const d = parseDate(value);
+            return <span className="text-[var(--nim-text-faint)] text-xs">{d ? formatRelativeDate(d) : value}</span>;
           }
           return null;
 
@@ -755,6 +773,7 @@ export function TrackerTable({
   onArchiveItems,
   onDeleteItems,
   onCopyDeepLink,
+  onOpenDocument,
   searchQuery: externalSearchQuery,
   hasExternalFilters = false,
   onClearFilters,
@@ -763,6 +782,7 @@ export function TrackerTable({
   favoriteItemIds = new Set<string>(),
   onToggleFavorite,
   preserveItemOrder = false,
+  hideToolbar = false,
 }: TrackerTableProps): JSX.Element {
   // Type filter: use prop filterType when hideTypeTabs is true, otherwise use internal state
   const [internalTypeFilter, setInternalTypeFilter] = useState<TrackerItemType | 'all'>('all');
@@ -901,18 +921,8 @@ export function TrackerTable({
 
   const filteredItems = items
     .filter(item => {
-      // Apply search filter
-      if (searchTerm) {
-        const searchLower = searchTerm.toLowerCase();
-        const matchesSearch =
-          item.issueKey?.toLowerCase().includes(searchLower) ||
-          String(item.issueNumber ?? '').includes(searchLower) ||
-          getRecordTitle(item).toLowerCase().includes(searchLower) ||
-          (item.system.documentPath ?? '').toLowerCase().includes(searchLower) ||
-          (String(getFieldByRole(item, 'assignee') ?? '')).toLowerCase().includes(searchLower) ||
-          (Array.isArray(getFieldByRole(item, 'tags')) && (getFieldByRole(item, 'tags') as string[]).some((tag: string) => tag.toLowerCase().includes(searchLower)));
-        if (!matchesSearch) return false;
-      }
+      // Apply search filter -- the same predicate the tracker's other views use.
+      if (!searchMatchesRecord(item, searchTerm)) return false;
 
       // Apply type filter
       if (activeTypeFilter !== 'all' && item.primaryType !== activeTypeFilter) {
@@ -947,10 +957,26 @@ export function TrackerTable({
 
   // console.log('[TrackerTable] Render - items:', items.length, 'filtered:', filteredItems.length, 'typeFilter:', typeFilter);
   const sortedItems = preserveItemOrder ? filteredItems : sortItems(filteredItems, currentSortBy, currentSortDirection);
+  const groupedRecords = useMemo(
+    () => groupTrackerRecords(sortedItems, effectiveColumnConfig.groupBy),
+    [effectiveColumnConfig.groupBy, sortedItems],
+  );
+  const displayItems = useMemo(
+    () => groupedRecords.flatMap(group => group.items),
+    [groupedRecords],
+  );
+  const groupHeadersByItemId = useMemo(() => {
+    const headers = new Map<string, { label: string; count: number }>();
+    for (const group of groupedRecords) {
+      const first = group.items[0];
+      if (group.label && first) headers.set(first.id, { label: group.label, count: group.items.length });
+    }
+    return headers;
+  }, [groupedRecords]);
 
-  // Row interaction model -- shared with TrackerTableGrid via useTrackerRows.
+  // Row interaction model -- shared with TrackerGridView via useTrackerRows.
   const rows = useTrackerRows({
-    items: sortedItems,
+    items: displayItems,
     activeTypeFilter,
     onItemSelect,
     onDeleteItems,
@@ -977,9 +1003,11 @@ export function TrackerTable({
     contextRefs,
     contextFloatingStyles,
     handleContextMenu,
+    openContextMenuForIds,
     closeContextMenu,
     handleBulkStatusUpdate,
     handleBulkPriorityUpdate,
+    statusOptionsForBulk,
   } = rows;
 
   const handleColumnClick = (column: SortColumn) => {
@@ -1118,7 +1146,7 @@ export function TrackerTable({
   return (
     <div className="tracker-table-wrapper flex flex-col h-full w-full bg-[var(--nim-bg)]" data-testid="tracker-table">
       {/* Display options panel (positioned relative to wrapper) */}
-      {showDisplayOptions && onColumnConfigChange && (
+      {!hideToolbar && showDisplayOptions && onColumnConfigChange && (
         <div className="relative">
           <DisplayOptionsPanel
             availableColumns={allColumns}
@@ -1150,7 +1178,7 @@ export function TrackerTable({
       )}
 
       {/* Toolbar: filter + display options + count */}
-      {items.length > 0 && (
+      {!hideToolbar && items.length > 0 && (
         <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-[var(--nim-border)] bg-[var(--nim-bg)]">
           {/* Filter button */}
           <div className="relative" ref={filterMenuRef}>
@@ -1317,31 +1345,50 @@ export function TrackerTable({
             )}
           </div>
         ) : (
-          sortedItems.map((item, index) => {
+          displayItems.map((item, index) => {
             const title = getRecordTitle(item);
             const status = getRecordStatus(item);
             const priority = getRecordPriority(item);
             const statusColor = getStatusColor(status, item.primaryType);
             const lastIndexed = item.system.lastIndexed ? new Date(item.system.lastIndexed) : new Date(0);
             const editable = isItemEditable(item);
+            const groupHeader = groupHeadersByItemId.get(item.id);
 
             return (
-              <div
-                key={item.id || index}
-                className={`tracker-table-row flex items-center gap-3 px-3 py-[7px] border-b border-[var(--nim-border)] cursor-pointer transition-colors duration-100 hover:bg-[var(--nim-bg-secondary)] select-none ${
-                  selectedIds.has(item.id) ? 'bg-[var(--nim-bg-secondary)]' : ''
-                } ${
-                  selectedItemId && item.id === selectedItemId ? 'bg-[var(--nim-bg-secondary)]' : ''
-                } ${
-                  focusedIndex === index ? 'outline outline-1 outline-[var(--nim-primary)] -outline-offset-1' : ''
-                }`}
-                data-testid="tracker-table-row"
-                data-item-id={item.id}
-                data-item-title={item.fields.title as string}
-                onClick={(e) => handleRowClick(item, index, e)}
-                onDoubleClick={() => { if (item.system.documentPath) openItemInEditor(item); }}
-                onContextMenu={(e) => handleContextMenu(e, item, index)}
-              >
+              <React.Fragment key={item.id || index}>
+                {groupHeader && (
+                  <div
+                    className="tracker-table-group-header sticky top-0 z-[1] flex items-center gap-2 border-b border-nim bg-nim-secondary px-3 py-1.5 text-[11px] font-semibold text-nim"
+                    data-testid="tracker-table-group-header"
+                  >
+                    <span>{groupHeader.label}</span>
+                    <span className="font-normal tabular-nums text-nim-faint">{groupHeader.count}</span>
+                  </div>
+                )}
+                <div
+                  className={`tracker-table-row group flex items-center gap-3 px-3 py-[7px] border-b border-[var(--nim-border)] cursor-pointer transition-colors duration-100 hover:bg-[var(--nim-bg-secondary)] select-none ${
+                    selectedIds.has(item.id) ? 'bg-[var(--nim-bg-secondary)]' : ''
+                  } ${
+                    selectedItemId && item.id === selectedItemId ? 'bg-[var(--nim-bg-secondary)]' : ''
+                  } ${
+                    focusedIndex === index ? 'outline outline-1 outline-[var(--nim-primary)] -outline-offset-1' : ''
+                  }`}
+                  data-testid="tracker-table-row"
+                  data-item-id={item.id}
+                  data-item-title={item.fields.title as string}
+                  onClick={(e) => handleRowClick(item, index, e)}
+                  onDoubleClick={() => {
+                    // Double-click is the primary "open the document" gesture
+                    // where the host offers one; elsewhere it keeps opening the
+                    // backing file in the editor.
+                    if (onOpenDocument) {
+                      onOpenDocument(item.id);
+                      return;
+                    }
+                    if (item.system.documentPath) openItemInEditor(item);
+                  }}
+                  onContextMenu={(e) => handleContextMenu(e, item, index)}
+                >
                 {/* Unread dot (nothing when read) */}
                 <TrackerUnreadDot itemId={item.id} className="w-2" />
                 <TrackerFavoriteStar
@@ -1385,188 +1432,66 @@ export function TrackerTable({
                 </div>
 
                 {/* Right-side metadata: render visible columns (except type/title which are already shown) */}
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="tracker-table-row-meta flex items-center gap-2 shrink-0">
                   {visibleColumnDefs.filter(col => col.id !== 'type' && col.id !== 'title').map(col => {
                     const value = getCellValue(item, col.id);
                     return (
-                      <div key={col.id} className={`tracker-table-cell ${col.id}`}>
+                      <div
+                        key={col.id}
+                        className={getTrackerTableCellClassName(col.id)}
+                        data-column-id={col.id}
+                      >
                         {renderCell(col, item, value, editingCell, isItemEditable, setEditingCell, editingTitle, setEditingTitle, titleInputRef, handleFieldUpdate)}
                       </div>
                     );
                   })}
                 </div>
-              </div>
+                <button
+                  type="button"
+                  aria-label={`Actions for ${item.issueKey ?? title}`}
+                  title="Item actions"
+                  data-testid="tracker-row-more-actions"
+                  className="tracker-row-more-actions shrink-0 inline-flex h-6 w-6 items-center justify-center rounded border-none bg-transparent p-0 text-[var(--nim-text-faint)] opacity-0 transition-opacity hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)] focus-visible:opacity-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--nim-border-focus)] group-hover:opacity-100"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onDoubleClick={(event) => event.stopPropagation()}
+                  onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    openContextMenuForIds(
+                      selectedIds.has(item.id) ? Array.from(selectedIds) : [item.id],
+                      { x: rect.right, y: rect.bottom },
+                    );
+                  }}
+                >
+                  <span className="material-symbols-outlined text-[17px] leading-none">more_horiz</span>
+                </button>
+                </div>
+              </React.Fragment>
             );
           })
         )}
       </div>
 
-      {/* Context menu */}
-      {contextAnchor && selectedIds.size > 0 && (
-        <FloatingPortal>
-        <div
-          ref={contextRefs.setFloating}
-          className="z-50 min-w-[180px] bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded-md shadow-lg py-1 text-[13px]"
-          style={contextFloatingStyles}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="px-3 py-1 text-[11px] text-[var(--nim-text-faint)] font-medium">
-            {selectedIds.size} item{selectedIds.size > 1 ? 's' : ''} selected
-          </div>
-          <div className="border-b border-[var(--nim-border)] my-1" />
-
-          {/* Status submenu */}
-          <ContextSubmenu label="Set Status" icon="swap_horiz">
-            {(() => {
-              const tracker = activeTypeFilter !== 'all' ? globalRegistry.get(activeTypeFilter) : null;
-              const statusFieldName = activeTypeFilter !== 'all' ? resolveRoleFieldName(activeTypeFilter, 'workflowStatus') : 'status';
-              const statusField = tracker?.fields.find(f => f.name === statusFieldName);
-              const rawOptions: Array<string | { value: string; label: string }> = statusField?.options || [
-                { value: 'to-do', label: 'To Do' },
-                { value: 'in-progress', label: 'In Progress' },
-                { value: 'in-review', label: 'In Review' },
-                { value: 'done', label: 'Done' },
-                { value: 'blocked', label: 'Blocked' },
-              ];
-              return rawOptions.map(opt => {
-                const val = typeof opt === 'string' ? opt : opt.value;
-                const label = typeof opt === 'string' ? opt.split('-').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ') : opt.label;
-                return (
-                  <button
-                    key={val}
-                    className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] cursor-pointer"
-                    onClick={() => handleBulkStatusUpdate(val)}
-                  >
-                    <span
-                      className="w-2 h-2 rounded-full shrink-0"
-                      style={{ backgroundColor: getStatusColor(val as string, activeTypeFilter !== 'all' ? activeTypeFilter : undefined) }}
-                    />
-                    {label}
-                  </button>
-                );
-              });
-            })()}
-          </ContextSubmenu>
-
-          {/* Priority submenu */}
-          <ContextSubmenu label="Set Priority" icon="flag">
-            {['critical', 'high', 'medium', 'low'].map(p => (
-              <button
-                key={p}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] cursor-pointer"
-                onClick={() => handleBulkPriorityUpdate(p)}
-              >
-                <span
-                  className="w-2 h-2 rounded-full shrink-0"
-                  style={{ backgroundColor: getPriorityColor(p as string) }}
-                />
-                {p.charAt(0).toUpperCase() + p.slice(1)}
-              </button>
-            ))}
-          </ContextSubmenu>
-
-          <div className="border-b border-[var(--nim-border)] my-1" />
-
-          {/* Copy Link (single-selection only) */}
-          {onCopyDeepLink && selectedIds.size === 1 && (
-            <button
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] cursor-pointer"
-              onClick={() => {
-                const [onlyId] = selectedIds;
-                closeContextMenu();
-                onCopyDeepLink(onlyId);
-              }}
-            >
-              <span className="material-symbols-outlined text-sm">link</span>
-              Copy Link
-            </button>
-          )}
-
-          {/* Archive */}
-          {onArchiveItems && (
-            <button
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] cursor-pointer"
-              onClick={() => {
-                closeContextMenu();
-                onArchiveItems(Array.from(selectedIds), true);
-                setSelectedIds(new Set());
-              }}
-            >
-              <span className="material-symbols-outlined text-sm">archive</span>
-              Archive
-            </button>
-          )}
-
-          {/* Delete */}
-          {onDeleteItems && (
-            <button
-              className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[#ef4444] hover:bg-[var(--nim-bg-hover)] cursor-pointer"
-              onClick={() => {
-                closeContextMenu();
-                const ids = Array.from(selectedIds);
-                if (window.confirm(`Delete ${ids.length} item${ids.length > 1 ? 's' : ''}? This cannot be undone.`)) {
-                  onDeleteItems(ids);
-                  setSelectedIds(new Set());
-                }
-              }}
-            >
-              <span className="material-symbols-outlined text-sm">delete</span>
-              Delete
-            </button>
-          )}
-        </div>
-        </FloatingPortal>
-      )}
+      {/* Context menu -- shared with the RevoGrid table view */}
+      <TrackerRowContextMenu
+        anchor={contextAnchor}
+        refs={contextRefs}
+        floatingStyles={contextFloatingStyles}
+        selectedIds={selectedIds}
+        activeTypeFilter={activeTypeFilter}
+        statusOptions={statusOptionsForBulk}
+        onSetStatus={handleBulkStatusUpdate}
+        onSetPriority={handleBulkPriorityUpdate}
+        onCopyDeepLink={onCopyDeepLink}
+        onOpenDocument={onOpenDocument}
+        onArchiveItems={onArchiveItems}
+        onDeleteItems={onDeleteItems}
+        closeContextMenu={closeContextMenu}
+        clearSelection={() => setSelectedIds(new Set())}
+      />
     </div>
   );
 }
-
-/** Context menu submenu with hover-expand. Exported for reuse in the new
- *  TrackerTableGrid context menu. */
-export const ContextSubmenu: React.FC<{
-  label: string;
-  icon: string;
-  children: React.ReactNode;
-}> = ({ label, icon, children }) => {
-  const [open, setOpen] = useState(false);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const { refs, floatingStyles } = useFloating({
-    placement: 'right-start',
-    middleware: [offset(2), flip({ padding: 8 }), shift({ padding: 8 })],
-  });
-
-  const handleEnter = () => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    setOpen(true);
-  };
-  const handleLeave = () => {
-    timeoutRef.current = setTimeout(() => setOpen(false), 150);
-  };
-
-  return (
-    <div
-      ref={refs.setReference as React.RefCallback<HTMLDivElement>}
-      onMouseEnter={handleEnter}
-      onMouseLeave={handleLeave}
-    >
-      <div className="flex items-center gap-2 px-3 py-1.5 text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] cursor-pointer">
-        <span className="material-symbols-outlined text-sm">{icon}</span>
-        <span className="flex-1">{label}</span>
-        <span className="material-symbols-outlined text-xs text-[var(--nim-text-faint)]">chevron_right</span>
-      </div>
-      {open && (
-        <FloatingPortal>
-          <div
-            ref={refs.setFloating}
-            className="min-w-[140px] bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded-md shadow-lg py-1 z-[60]"
-            style={floatingStyles}
-            onMouseEnter={handleEnter}
-            onMouseLeave={handleLeave}
-          >
-            {children}
-          </div>
-        </FloatingPortal>
-      )}
-    </div>
-  );
-};

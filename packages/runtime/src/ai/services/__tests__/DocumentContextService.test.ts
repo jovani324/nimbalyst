@@ -433,6 +433,147 @@ function test6() {
         expect(result.userMessageAdditions.documentContextPrompt).not.toContain('const x = 1;');
       });
 
+      it('describes pull-request context without treating the synthetic URI as a file', () => {
+        const rawContext: RawDocumentContext = {
+          filePath: 'pr://nimbalyst/nimbalyst/1408',
+          fileType: 'pull-request',
+          content: '',
+          editorContextItems: [
+            {
+              id: 'pr-1408',
+              label: 'PR #1408',
+              description: 'Pull request: #1408 Add PR chat context',
+            },
+          ],
+        };
+
+        const result = service.prepareContext(
+          rawContext,
+          'session-pr',
+          'claude-code',
+          undefined,
+        );
+        const prompt = result.userMessageAdditions.documentContextPrompt ?? '';
+
+        expect(prompt).toContain('<ACTIVE_PULL_REQUEST>pr://nimbalyst/nimbalyst/1408</ACTIVE_PULL_REQUEST>');
+        expect(prompt).toContain('<PULL_REQUEST_NOTE>');
+        expect(prompt).toContain('gh pr view 1408');
+        expect(prompt).toContain('gh pr diff 1408');
+        expect(prompt).toContain('Do not attempt to Read or Edit the pr:// URI.');
+        expect(prompt).toContain('<SELECTED_ITEMS>');
+        expect(prompt).toContain('Pull request: #1408 Add PR chat context');
+        expect(prompt).toContain('they mean PR #1408');
+        expect(prompt).not.toContain('<DOCUMENT_CONTENT>');
+        expect(prompt).not.toContain('<DOCUMENT_DIFF>');
+        expect(prompt).not.toContain('Document content unchanged');
+        expect(prompt).not.toContain('this file');
+        expect(result.userMessageAdditions.editingInstructions).toBeUndefined();
+      });
+
+      it('switches from a real file to an empty-body pull-request context', () => {
+        service.prepareContext(
+          {
+            filePath: '/test/file.ts',
+            fileType: 'typescript',
+            content: 'const x = 1;',
+          },
+          'session-file-to-pr',
+          'claude-code',
+          undefined,
+        );
+
+        const result = service.prepareContext(
+          {
+            filePath: 'pr://nimbalyst/nimbalyst/1408',
+            fileType: 'pull-request',
+            content: '',
+            editorContextItems: [
+              {
+                id: 'pr-1408',
+                label: 'PR #1408',
+                description: 'Pull request: #1408 Add PR chat context',
+              },
+            ],
+          },
+          'session-file-to-pr',
+          'claude-code',
+          undefined,
+        );
+        const prompt = result.userMessageAdditions.documentContextPrompt ?? '';
+
+        expect(result.documentContext.documentTransition).toBe('switched');
+        expect(prompt).toContain('switched from "/test/file.ts"');
+        expect(prompt).toContain('<PULL_REQUEST_NOTE>');
+        expect(prompt).not.toContain('closed the document');
+      });
+
+      it('keeps extension-panel content without file-editing claims', () => {
+        const rawContext: RawDocumentContext = {
+          filePath: 'extension:database-browser',
+          fileType: 'extension-panel',
+          content: '{"database":"app.db"}',
+        };
+
+        const result = service.prepareContext(
+          rawContext,
+          'session-extension-panel',
+          'claude-code',
+          undefined,
+        );
+        const prompt = result.userMessageAdditions.documentContextPrompt ?? '';
+
+        expect(prompt).toContain('<ACTIVE_DOCUMENT>extension:database-browser</ACTIVE_DOCUMENT>');
+        expect(prompt).toContain('<DOCUMENT_CONTENT>');
+        expect(prompt).toContain('{"database":"app.db"}');
+        expect(prompt).toContain('they mean the active extension panel');
+        expect(prompt).not.toContain('When the user says "this file"');
+        expect(result.userMessageAdditions.editingInstructions).toBeUndefined();
+      });
+
+      it('preserves the plain-file prompt text', () => {
+        const rawContext: RawDocumentContext = {
+          filePath: '/test/file.ts',
+          fileType: 'typescript',
+          content: 'const x = 1;',
+        };
+
+        const result = service.prepareContext(rawContext, 'session-plain-regression', 'claude', undefined);
+
+        expect(result.userMessageAdditions.documentContextPrompt).toBe(
+          'The user is currently looking at this document. They are not necessarily asking you about this document, but they may be. Use your best judgement to decide if they are making a general request or asking specifically about this document.\n'
+          + '<ACTIVE_DOCUMENT>/test/file.ts</ACTIVE_DOCUMENT>\n'
+          + '\n<DOCUMENT_CONTENT>\nconst x = 1;\n</DOCUMENT_CONTENT>\n'
+          + '\nWhen the user says "this file", "this document", or "here", they mean "/test/file.ts", not any other files in context.\n',
+        );
+      });
+
+      it('preserves collaborative-document prompting and editing instructions', () => {
+        const rawContext: RawDocumentContext = {
+          filePath: 'collab://org:test:doc:one',
+          fileType: 'collab-markdown',
+          content: 'Shared content',
+        };
+
+        const result = service.prepareContext(
+          rawContext,
+          'session-collab-regression',
+          'claude-code',
+          undefined,
+        );
+        const prompt = result.userMessageAdditions.documentContextPrompt ?? '';
+
+        expect(prompt).toContain('<ACTIVE_DOCUMENT>collab://org:test:doc:one</ACTIVE_DOCUMENT>');
+        expect(prompt).toContain('<COLLAB_DOCUMENT_NOTE>');
+        expect(prompt).toContain('call the readCollabDoc tool');
+        expect(prompt).not.toContain('<DOCUMENT_CONTENT>');
+        expect(prompt).toContain(
+          'When the user says "this file", "this document", or "here", they mean "collab://org:test:doc:one", not any other files in context.',
+        );
+        expect(result.userMessageAdditions.editingInstructions).toContain(
+          '<COLLAB_DOC_INSTRUCTIONS>',
+        );
+      });
+
       it('includes cursor position in document context prompt when provided', () => {
         const rawContext: RawDocumentContext = {
           filePath: '/test/file.ts',
@@ -835,6 +976,86 @@ function test6() {
       // Full content should be sent since we can't compute diff without previous content
       expect(result.documentContext.content).toBe('const x = 999;');
       expect(result.documentContext.documentDiff).toBeUndefined();
+    });
+  });
+
+  describe('editor context items (multi-selection)', () => {
+    it('emits a SELECTED_ITEMS block with each item label and description', () => {
+      const rawContext: RawDocumentContext = {
+        filePath: '/test/diagram.excalidraw',
+        fileType: 'excalidraw',
+        content: '{}',
+        editorContextItems: [
+          { id: 'a1', label: 'Rectangle 3', description: 'A rectangle at (10, 20).' },
+          { id: 'b2', label: 'Arrow 7', description: 'An arrow from Rectangle 3 to Ellipse 1.' },
+        ],
+      };
+
+      const result = service.prepareContext(rawContext, 'session-items', 'claude', undefined);
+      const prompt = result.userMessageAdditions.documentContextPrompt ?? '';
+
+      expect(prompt).toContain('<SELECTED_ITEMS>');
+      expect(prompt).toContain('selected the following 2 items');
+      expect(prompt).toContain('<ITEM label="Rectangle 3">');
+      expect(prompt).toContain('A rectangle at (10, 20).');
+      expect(prompt).toContain('<ITEM label="Arrow 7">');
+      expect(prompt).toContain('An arrow from Rectangle 3 to Ellipse 1.');
+    });
+
+    it('inlines structured data only when includeData is set', () => {
+      const rawContext: RawDocumentContext = {
+        filePath: '/test/board.circuit.tsx',
+        fileType: 'code',
+        content: '{}',
+        editorContextItems: [
+          { id: 'r12', label: 'R12', description: 'A resistor.', data: { value: '10k' }, includeData: true },
+          { id: 'c3', label: 'C3', description: 'A capacitor.', data: { value: '100n' } },
+        ],
+      };
+
+      const result = service.prepareContext(rawContext, 'session-data', 'claude', undefined);
+      const prompt = result.userMessageAdditions.documentContextPrompt ?? '';
+
+      // R12 opted in -> data present; C3 did not -> data omitted
+      expect(prompt).toContain('<DATA>{&quot;value&quot;:&quot;10k&quot;}</DATA>');
+      expect(prompt).not.toContain('100n');
+    });
+
+    it('escapes item markup and omits data that cannot be serialized safely', () => {
+      const rawContext: RawDocumentContext = {
+        filePath: '/test/diagram.excalidraw',
+        fileType: 'excalidraw',
+        content: '{}',
+        editorContextItems: [
+          {
+            id: 'unsafe',
+            label: 'Text "quoted" <node>',
+            description: 'Contains </ITEM> & more',
+            data: { count: 1n },
+            includeData: true,
+          },
+        ],
+      };
+
+      const result = service.prepareContext(rawContext, 'session-unsafe', 'claude', undefined);
+      const prompt = result.userMessageAdditions.documentContextPrompt ?? '';
+
+      expect(prompt).toContain('label="Text &quot;quoted&quot; &lt;node&gt;"');
+      expect(prompt).toContain('Contains &lt;/ITEM&gt; &amp; more');
+      expect(prompt).not.toContain('<DATA>');
+    });
+
+    it('produces no SELECTED_ITEMS block when there are no items', () => {
+      const rawContext: RawDocumentContext = {
+        filePath: '/test/file.ts',
+        fileType: 'typescript',
+        content: 'const x = 1;',
+      };
+
+      const result = service.prepareContext(rawContext, 'session-empty', 'claude', undefined);
+      const prompt = result.userMessageAdditions.documentContextPrompt ?? '';
+
+      expect(prompt).not.toContain('<SELECTED_ITEMS>');
     });
   });
 });

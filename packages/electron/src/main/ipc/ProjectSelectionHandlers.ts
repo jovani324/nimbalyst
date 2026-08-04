@@ -5,6 +5,7 @@ import { getWindowId, windowStates } from '../window/WindowManager';
 import { loadFileIntoWindow } from '../file/FileOperations';
 import { logger } from '../utils/logger';
 import { basename } from 'path';
+import { getDialogDefaultPath, rememberDialogSelection } from '../utils/dialogPaths';
 
 export function registerProjectSelectionHandlers() {
   // Get recent workspaces for project selection dialog
@@ -14,8 +15,29 @@ export function registerProjectSelectionHandlers() {
 
   // Show native folder selection dialog
   safeHandle('dialog-show-open-dialog', async (event, options) => {
-    const result = await dialog.showOpenDialog(options);
-    return result;
+    const window = BrowserWindow.fromWebContents(event.sender);
+    // The renderer's only reaction to a rejected invoke is a console.error, and
+    // renderer console output is not captured in packaged builds — so a failure
+    // anywhere in here reads to the user as "the button does nothing" with no
+    // trace at all. Log it where a bug reporter can find it, then let it
+    // propagate rather than handing back a fake result.
+    try {
+      const dialogOptions: Electron.OpenDialogOptions = {
+        ...(options ?? {}),
+        defaultPath: getDialogDefaultPath({ window, explicitPath: options?.defaultPath }),
+      };
+      const result = window
+        ? await dialog.showOpenDialog(window, dialogOptions)
+        : await dialog.showOpenDialog(dialogOptions);
+      if (!result.canceled) {
+        const isDirectory = dialogOptions.properties?.includes('openDirectory') === true;
+        rememberDialogSelection(result.filePaths[0], isDirectory ? 'directory' : 'file');
+      }
+      return result;
+    } catch (error) {
+      logger.main.error('[ProjectSelection] open dialog failed:', error);
+      throw error;
+    }
   });
 
   // Handle project selection - user chose a project for the file

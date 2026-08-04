@@ -5,7 +5,6 @@ import { setClaudeCliAutoNameApplyTitleFn } from './ai/claudeCliSessionAutoNameS
 import {
   setUpdateSessionTitleFn,
   setUpdateSessionMetadataFn,
-  setGetWorkspaceTagsFn,
   setGetSessionTagsFn,
   setGetSessionTitleFn,
   setGetSessionPhaseFn,
@@ -72,69 +71,12 @@ export class SessionNamingService {
           this.applySessionTitle(sessionId, title)
         );
 
-        // Set the metadata update function (for tags, phase, etc.)
-        setUpdateSessionMetadataFn(async (sessionId: string, metadata: Record<string, unknown>) => {
-          const normalizedMetadata = normalizeSessionPhaseMetadataUpdate(metadata);
-          // SyncedSessionStore.updateMetadata is the single source of truth for
-          // what reaches other devices; phase/tags forwarding lives there now.
-          await AISessionsRepository.updateMetadata(sessionId, { metadata: normalizedMetadata });
-
-          // Notify renderer windows so UI updates in real time
-          const windows = BrowserWindow.getAllWindows();
-          for (const window of windows) {
-            if (!window.isDestroyed()) {
-              window.webContents.send('sessions:session-updated', sessionId, normalizedMetadata);
-            }
-          }
-        });
-
-        // Set the workspace tags query function
-        setGetWorkspaceTagsFn(async (sessionId: string) => {
-          const db = getDatabase();
-          if (!db) return [];
-
-          try {
-            // Look up workspace_id from the session row, then query tags across that workspace
-            const wsResult = await db.query<{ workspace_id: string }>(
-              `SELECT workspace_id FROM ai_sessions WHERE id = $1 LIMIT 1`,
-              [sessionId]
-            );
-            const workspaceId = wsResult.rows[0]?.workspace_id;
-            if (!workspaceId) return [];
-
-            // Pull metadata for every non-archived session in the workspace and
-            // explode the tags array in JS. SQL-level array explosion has no
-            // portable form (PGLite jsonb_array_elements_text vs SQLite json_each
-            // produce different row shapes), and the per-workspace volume is
-            // small enough that materializing metadata is cheaper than a
-            // dialect-specific lateral join.
-            const result = await db.query<{ metadata: unknown }>(
-              `SELECT metadata FROM ai_sessions
-               WHERE workspace_id = $1
-                 AND (is_archived = false OR is_archived IS NULL)`,
-              [workspaceId]
-            );
-            const counts = new Map<string, number>();
-            for (const row of result.rows) {
-              const meta = row.metadata;
-              let parsed: any = meta;
-              if (typeof meta === 'string') {
-                try { parsed = JSON.parse(meta); } catch { parsed = null; }
-              }
-              const tags = parsed?.tags;
-              if (!Array.isArray(tags)) continue;
-              for (const tag of tags) {
-                if (typeof tag !== 'string' || tag.length === 0) continue;
-                counts.set(tag, (counts.get(tag) ?? 0) + 1);
-              }
-            }
-            return Array.from(counts.entries())
-              .map(([name, count]) => ({ name, count }))
-              .sort((a, b) => b.count - a.count);
-          } catch {
-            return [];
-          }
-        });
+        // Set the metadata update function (for tags, phase, etc.). The body
+        // lives in applySessionMetadata so the commit-proposal path can reuse
+        // the same persist/broadcast path when a commit closes a tracker item.
+        setUpdateSessionMetadataFn((sessionId: string, metadata: Record<string, unknown>) =>
+          this.applySessionMetadata(sessionId, metadata)
+        );
 
         // Set the session tags query function (for reading current tags)
         setGetSessionTagsFn(async (sessionId: string) => {
@@ -169,6 +111,30 @@ export class SessionNamingService {
     })();
 
     await this.starting;
+  }
+
+  /**
+   * Persist a session metadata patch (tags, phase, workflow preset) and tell
+   * every renderer window about it. Called by the naming MCP server for
+   * agent-driven updates, and by the commit-proposal path when an approved
+   * commit closes the session's tracker items.
+   */
+  public async applySessionMetadata(
+    sessionId: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    const normalizedMetadata = normalizeSessionPhaseMetadataUpdate(metadata);
+    // SyncedSessionStore.updateMetadata is the single source of truth for
+    // what reaches other devices; phase/tags forwarding lives there now.
+    await AISessionsRepository.updateMetadata(sessionId, { metadata: normalizedMetadata });
+
+    // Notify renderer windows so UI updates in real time
+    const windows = BrowserWindow.getAllWindows();
+    for (const window of windows) {
+      if (!window.isDestroyed()) {
+        window.webContents.send('sessions:session-updated', sessionId, normalizedMetadata);
+      }
+    }
   }
 
   /**

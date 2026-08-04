@@ -1,4 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import {
+  categorizeTeamAnalyticsError,
+  normalizeTeamAnalyticsCallerRole,
+} from '../../../../shared/analytics/teamAnalytics';
+import { trackTeamAnalyticsEvent } from '../../../utils/teamAnalytics';
 
 interface AccessGrant { userId: string; projectRole: string }
 interface Member { memberId: string; email: string; name: string; role: string }
@@ -38,7 +43,24 @@ export function ProjectAccessEditor({ orgId, projectId }: { orgId: string; proje
                 const promise = role
                   ? window.electronAPI.invoke('org:grant-project-access', orgId, projectId, member.memberId, role)
                   : window.electronAPI.invoke('org:revoke-project-access', orgId, projectId, member.memberId);
-                void promise.then(refresh);
+                void promise.then((result) => {
+                  if (result?.success === false) throw new Error(result.error ?? 'Could not change project access');
+                  trackTeamAnalyticsEvent('team_project_access_changed', {
+                    surface: 'desktop',
+                    action: role ? 'granted' : 'revoked',
+                    callerRole: normalizeTeamAnalyticsCallerRole(callerRole),
+                    targetRole: role === 'project-admin' ? 'admin' : role === 'project-viewer' ? 'viewer' : 'member',
+                  });
+                  return refresh();
+                }).catch((error) => {
+                  trackTeamAnalyticsEvent('team_operation_failed', {
+                    surface: 'desktop',
+                    operation: 'change_project_access',
+                    entryPoint: 'project_sharing',
+                    callerRole: normalizeTeamAnalyticsCallerRole(callerRole),
+                    errorCategory: categorizeTeamAnalyticsError('project', error),
+                  });
+                });
               }}
             >
               <option value="">No project access</option>

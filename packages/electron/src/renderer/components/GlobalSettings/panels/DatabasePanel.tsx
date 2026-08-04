@@ -14,7 +14,19 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { useAtom } from 'jotai';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import {
+  dbMigrationFailureAtom,
+  dbMigrationPhaseAtom,
+  dbMigrationProgressAtom,
+  dbMigrationRunningAtom,
+  dbMigrationSummaryAtom,
+  type MigrationFailure,
+  type MigrationPhaseEvent as PhaseEvent,
+  type MigrationProgressEvent as ProgressEvent,
+  type MigrationSummary,
+} from '../../../store/atoms/dbMigration';
 
 type Backend = 'pglite' | 'sqlite';
 
@@ -41,48 +53,12 @@ interface DryRunResult {
   pgliteDirBytes: number;
 }
 
-interface PhaseEvent {
-  phase: string;
-  info?: ProgressEvent;
-}
-
-interface ProgressEvent {
-  phase?: string;
-  table?: string;
-  currentTable?: string;
-  rowsCopied?: number;
-  rowsTotal?: number;
-  rowsExpected?: number;
-  totalRowsCopied?: number;
-  tableRowsCopied?: number;
-  tableRowsExpected?: number;
-  tablesCompleted?: number;
-  tablesTotal?: number;
-  percentOfTotal?: number;
-  elapsedMs?: number;
-}
-
 interface PreflightResult {
   ok: boolean;
   reason?: string;
   pgliteDirBytes: number;
   freeBytes: number;
   requiredBytes: number;
-}
-
-interface MigrationSummary {
-  totalRowsCopied: number;
-  tablesCopied: Array<{ name: string; rows: number }>;
-  durationMs: number;
-  integrityCheck: string;
-  foreignKeyViolations: number;
-  spotCheckCount: number;
-}
-
-interface MigrationFailure {
-  phase: string;
-  message: string;
-  stack?: string;
 }
 
 function formatBytes(bytes: number): string {
@@ -106,14 +82,16 @@ export function DatabasePanel(): React.ReactElement {
   const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null);
   const [dryRunError, setDryRunError] = useState<string | null>(null);
   const [dryRunRunning, setDryRunRunning] = useState(false);
-  const [phase, setPhase] = useState<PhaseEvent | null>(null);
-  const [progress, setProgress] = useState<ProgressEvent | null>(null);
+  // Migration progress lives in atoms fed by dbMigrationListeners, so it
+  // survives the settings dialog being closed mid-run.
+  const [phase, setPhase] = useAtom(dbMigrationPhaseAtom);
+  const [progress, setProgress] = useAtom(dbMigrationProgressAtom);
   const [showMigrationModal, setShowMigrationModal] = useState(false);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [preflightError, setPreflightError] = useState<string | null>(null);
-  const [migrationRunning, setMigrationRunning] = useState(false);
-  const [migrationSummary, setMigrationSummary] = useState<MigrationSummary | null>(null);
-  const [migrationFailure, setMigrationFailure] = useState<MigrationFailure | null>(null);
+  const [migrationRunning, setMigrationRunning] = useAtom(dbMigrationRunningAtom);
+  const [migrationSummary, setMigrationSummary] = useAtom(dbMigrationSummaryAtom);
+  const [migrationFailure, setMigrationFailure] = useAtom(dbMigrationFailureAtom);
   const [dryRunAvailable, setDryRunAvailable] = useState<{
     completedAt: string;
     totalRows: number;
@@ -168,38 +146,12 @@ export function DatabasePanel(): React.ReactElement {
     void loadStatus();
   }, [loadStatus]);
 
-  // Subscribe to the migration event channels so the dry-run flow shows
-  // live progress. The renderer-side IPC listener pattern is documented in
-  // /docs/IPC_LISTENERS.md; we register here and clean up on unmount.
-  useEffect(() => {
-    if (!window.electronAPI) return;
-    // preload's electronAPI.on strips the IPC event, so callbacks receive
-    // (payload) directly — not (event, payload).
-    const onPhase = (payload: PhaseEvent) => setPhase(payload);
-    const onProgress = (payload: ProgressEvent) => setProgress(payload);
-    const onComplete = (payload: MigrationSummary) => {
-      setMigrationRunning(false);
-      setMigrationFailure(null);
-      setMigrationSummary(payload);
-    };
-    const onFailed = (payload: MigrationFailure) => {
-      setMigrationRunning(false);
-      setMigrationFailure(payload);
-    };
-    window.electronAPI.on('db:migration:phase', onPhase);
-    window.electronAPI.on('db:migration:progress', onProgress);
-    window.electronAPI.on('db:migration:complete', onComplete);
-    window.electronAPI.on('db:migration:failed', onFailed);
-    return () => {
-      window.electronAPI?.off?.('db:migration:phase', onPhase);
-      window.electronAPI?.off?.('db:migration:progress', onProgress);
-      window.electronAPI?.off?.('db:migration:complete', onComplete);
-      window.electronAPI?.off?.('db:migration:failed', onFailed);
-    };
-  }, []);
-
   const startDryRun = useCallback(async () => {
-    if (!window.electronAPI || dryRunRunning) return;
+    if (
+      !window.electronAPI
+      || dryRunRunning
+      || status?.activeBackend !== 'pglite'
+    ) return;
     setDryRunRunning(true);
     setDryRunError(null);
     setDryRunResult(null);
@@ -220,7 +172,7 @@ export function DatabasePanel(): React.ReactElement {
       setDryRunRunning(false);
       void loadStatus();
     }
-  }, [dryRunRunning, loadStatus]);
+  }, [dryRunRunning, loadStatus, status?.activeBackend]);
 
   const adoptDryRun = useCallback(async () => {
     if (!window.electronAPI || adoptRunning) return;
@@ -389,76 +341,94 @@ export function DatabasePanel(): React.ReactElement {
       </div>
 
       {/* Dry run section ------------------------------------------------- */}
-      <div className="provider-panel-section mb-6">
-        <h4 className="provider-panel-section-title text-base font-semibold mb-2 text-[var(--nim-text)]">
-          Test the SQLite migration (dry run)
-        </h4>
-        <p className="provider-panel-hint text-sm text-[var(--nim-text-muted)] mb-3">
-          Copies your data into a throwaway SQLite database alongside the live one,
-          reports row counts and integrity, then deletes the temporary copy.
-          Your real PGLite database is never touched. Safe to run any time.
-        </p>
+      {status?.activeBackend === 'pglite' && (
+        <div className="provider-panel-section mb-6">
+          <h4 className="provider-panel-section-title text-base font-semibold mb-2 text-[var(--nim-text)]">
+            Test the SQLite migration (dry run)
+          </h4>
+          <p className="provider-panel-hint text-sm text-[var(--nim-text-muted)] mb-3">
+            Copies your data into a throwaway SQLite database alongside the live one,
+            reports row counts and integrity, then deletes the temporary copy.
+            Your real PGLite database is never touched. Available only while PGLite is active.
+          </p>
 
-        <button
-          type="button"
-          onClick={startDryRun}
-          disabled={dryRunRunning || !status}
-          className="nim-database-dry-run-button setting-button inline-flex items-center gap-2 py-1.5 px-3 rounded-md text-sm font-medium bg-[var(--nim-primary)] text-white border-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--nim-primary-hover)]"
-        >
-          <MaterialSymbol icon={dryRunRunning ? 'sync' : 'play_arrow'} size={16} />
-          {dryRunRunning ? 'Running dry run...' : 'Run dry-run migration'}
-        </button>
+          <button
+            type="button"
+            onClick={startDryRun}
+            disabled={dryRunRunning}
+            className="nim-database-dry-run-button setting-button inline-flex items-center gap-2 py-1.5 px-3 rounded-md text-sm font-medium bg-[var(--nim-primary)] text-white border-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--nim-primary-hover)]"
+          >
+            <MaterialSymbol icon={dryRunRunning ? 'sync' : 'play_arrow'} size={16} />
+            {dryRunRunning ? 'Running dry run...' : 'Run dry-run migration'}
+          </button>
 
-        {(dryRunRunning && (phase || progress)) && (
-          <DryRunProgress phase={phase} progress={progress} />
-        )}
+          {(dryRunRunning && (phase || progress)) && (
+            <DryRunProgress phase={phase} progress={progress} />
+          )}
 
-        {dryRunError && (
-          <div className="mt-3 p-3 rounded-md bg-[rgba(220,38,38,0.1)] border border-[rgba(220,38,38,0.3)] text-sm text-[var(--nim-text)] nim-database-dry-run-error">
-            Dry run failed: {dryRunError}
-          </div>
-        )}
+          {dryRunError && (
+            <div className="mt-3 p-3 rounded-md bg-[rgba(220,38,38,0.1)] border border-[rgba(220,38,38,0.3)] text-sm text-[var(--nim-text)] nim-database-dry-run-error">
+              Dry run failed: {dryRunError}
+            </div>
+          )}
 
-        {dryRunResult && (
-          <div className="mt-3 nim-database-dry-run-result">
-            <DryRunResultCard result={dryRunResult} />
-          </div>
-        )}
+          {dryRunResult && (
+            <div className="mt-3 nim-database-dry-run-result">
+              <DryRunResultCard result={dryRunResult} />
+            </div>
+          )}
 
-        {dryRunAvailable && status?.activeBackend === 'pglite' && (
-          <AdoptDryRunSection
-            available={dryRunAvailable}
-            running={adoptRunning}
-            phase={phase}
-            progress={progress}
-            error={adoptError}
-            result={adoptResult}
-            onAdopt={() => { void adoptDryRun(); }}
-          />
-        )}
-      </div>
+          {dryRunAvailable && (
+            <AdoptDryRunSection
+              available={dryRunAvailable}
+              running={adoptRunning}
+              phase={phase}
+              progress={progress}
+              error={adoptError}
+              result={adoptResult}
+              onAdopt={() => { void adoptDryRun(); }}
+            />
+          )}
+        </div>
+      )}
 
       {/* Migrate (gated) section ----------------------------------------- */}
-      <div className="provider-panel-section mb-6">
-        <h4 className="provider-panel-section-title text-base font-semibold mb-2 text-[var(--nim-text)]">
-          Migrate to SQLite
-        </h4>
-        <p className="provider-panel-hint text-sm text-[var(--nim-text-muted)] mb-3">
-          Moves all your data from PGLite to SQLite. The original PGLite directory
-          is preserved at <code className="px-1 py-0.5 rounded bg-[var(--nim-bg-tertiary)] text-xs">pglite-db.migrated-&lt;timestamp&gt;/</code> and
-          can be restored from this panel.
-        </p>
+      {status?.activeBackend === 'pglite' && (
+        <div className="provider-panel-section mb-6">
+          <h4 className="provider-panel-section-title text-base font-semibold mb-2 text-[var(--nim-text)]">
+            Migrate to SQLite
+          </h4>
+          <p className="provider-panel-hint text-sm text-[var(--nim-text-muted)] mb-3">
+            Moves all your data from PGLite to SQLite. The original PGLite directory
+            is preserved at <code className="px-1 py-0.5 rounded bg-[var(--nim-bg-tertiary)] text-xs">pglite-db.migrated-&lt;timestamp&gt;/</code> and
+            can be restored from this panel.
+          </p>
 
-        <button
-          type="button"
-          onClick={() => { void openMigrationModal(); }}
-          disabled={!status || status.activeBackend !== 'pglite'}
-          className="setting-button inline-flex items-center gap-2 py-1.5 px-3 rounded-md text-sm font-medium bg-[var(--nim-primary)] text-white border-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--nim-primary-hover)]"
-        >
-          <MaterialSymbol icon="upgrade" size={16} />
-          Migrate to SQLite
-        </button>
-      </div>
+          <button
+            type="button"
+            onClick={() => { void openMigrationModal(); }}
+            className="setting-button inline-flex items-center gap-2 py-1.5 px-3 rounded-md text-sm font-medium bg-[var(--nim-primary)] text-white border-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--nim-primary-hover)]"
+          >
+            <MaterialSymbol icon="upgrade" size={16} />
+            Migrate to SQLite
+          </button>
+        </div>
+      )}
+
+      {status?.activeBackend === 'sqlite' && (
+        <div className="provider-panel-section mb-6 nim-database-already-migrated">
+          <h4 className="provider-panel-section-title text-base font-semibold mb-2 text-[var(--nim-text)]">
+            Migrated to SQLite
+          </h4>
+          <p className="provider-panel-hint text-sm text-[var(--nim-text-muted)] flex items-start gap-2">
+            <MaterialSymbol icon="check_circle" size={16} />
+            <span>
+              Your data is already stored in the faster SQLite backend. No further
+              migration is needed.
+            </span>
+          </p>
+        </div>
+      )}
 
       {/* Rollback section (only visible if a migrated dir exists) -------- */}
       {status && status.migratedDirs.length > 0 && (

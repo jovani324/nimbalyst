@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAtomValue } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import {
   createSharedFolder,
+  activeCollabScopeAtom,
   refreshSharedFolders,
   sharedFoldersAtom,
   type SharedFolder,
@@ -13,6 +14,7 @@ import {
   normalizeCollabPath,
 } from '../CollabMode/collabTree';
 import type { CollaborativeDocumentTypeDescriptor } from '../../services/CollaborativeDocumentTypeCatalog';
+import type { EmbeddedDocumentCandidate } from '../../services/embeddedDocumentShare';
 
 export interface ShareToTeamDialogProps {
   isOpen: boolean;
@@ -21,11 +23,17 @@ export interface ShareToTeamDialogProps {
   descriptor: CollaborativeDocumentTypeDescriptor;
   /** Workspace-relative path used as the source label in the dialog. */
   sourceRelPath: string;
+  embeddedDocuments?: EmbeddedDocumentCandidate[];
   /**
    * Called when the user confirms. Returns the selected destination folder
    * (empty string = team root) and the shared name (with extension).
    */
-  onConfirm: (params: { folderId: string | null; folderPath: string; sharedName: string }) => void;
+  onConfirm: (params: {
+    folderId: string | null;
+    folderPath: string;
+    sharedName: string;
+    selectedEmbeddedDocumentPaths: string[];
+  }) => void;
 }
 
 export interface ShareFolderNode {
@@ -35,6 +43,8 @@ export interface ShareFolderNode {
   depth: number;
   children: ShareFolderNode[];
 }
+
+const EMPTY_EMBEDDED_DOCUMENTS: EmbeddedDocumentCandidate[] = [];
 
 export function splitShareFileName(
   fileName: string,
@@ -84,10 +94,12 @@ export function ShareToTeamDialog({
   fileName,
   descriptor,
   sourceRelPath,
+  embeddedDocuments = EMPTY_EMBEDDED_DOCUMENTS,
   onConfirm,
 }: ShareToTeamDialogProps) {
   const sharedFolders = useAtomValue(sharedFoldersAtom);
   const workspacePath = useAtomValue(activeWorkspacePathAtom);
+  const collabScope = useAtomValue(activeCollabScopeAtom);
 
   const [lastSharedFolderId, setLastSharedFolderId] = useState<string | null | undefined>(undefined);
   const [legacyLastSharedFolderPath, setLegacyLastSharedFolderPath] = useState<string>('');
@@ -106,6 +118,9 @@ export function ShareToTeamDialog({
   const [sharedBaseName, setSharedBaseName] = useState<string>(fileNameParts.baseName);
   const [newFolderParentId, setNewFolderParentId] = useState<string | null | undefined>(undefined);
   const [newFolderName, setNewFolderName] = useState<string>('');
+  const [selectedEmbeddedDocumentPaths, setSelectedEmbeddedDocumentPaths] = useState<Set<string>>(
+    () => new Set(embeddedDocuments.map(document => document.absolutePath)),
+  );
 
   // Reset transient state every time the dialog opens for a different file.
   useEffect(() => {
@@ -114,7 +129,10 @@ export function ShareToTeamDialog({
     setNewFolderParentId(undefined);
     setNewFolderName('');
     setHasInitializedSelection(false);
-  }, [fileNameParts.baseName, isOpen]);
+    setSelectedEmbeddedDocumentPaths(
+      new Set(embeddedDocuments.map(document => document.absolutePath)),
+    );
+  }, [embeddedDocuments, fileNameParts.baseName, isOpen]);
 
   // Every open asks TeamRoom for a current folder-index snapshot. While that
   // round trip is pending, do not paint the previously cached tree.
@@ -123,7 +141,12 @@ export function ShareToTeamDialog({
     let cancelled = false;
     setIsRefreshingFolders(true);
     setFolderRefreshFailed(false);
-    void refreshSharedFolders(workspacePath ?? undefined)
+    if (!collabScope || collabScope.scopeKey !== workspacePath) {
+      setFolderRefreshFailed(true);
+      setIsRefreshingFolders(false);
+      return;
+    }
+    void refreshSharedFolders(collabScope)
       .then((refreshed) => {
         if (!cancelled && !refreshed) setFolderRefreshFailed(true);
       })
@@ -136,7 +159,7 @@ export function ShareToTeamDialog({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, workspacePath]);
+  }, [collabScope, isOpen, workspacePath]);
 
   // Load workspace-persisted state for the last-used destination. Folder rows
   // themselves come only from TeamRoom, never workspace/PGLite state.
@@ -295,7 +318,8 @@ export function ShareToTeamDialog({
       return;
     }
     try {
-      const folderId = await createSharedFolder(trimmed, parentFolderId);
+      if (!collabScope) return;
+      const folderId = await createSharedFolder(collabScope, trimmed, parentFolderId);
       setSelectedFolderId(folderId);
       setExpandedFolders(prev => {
         const next = new Set(prev);
@@ -306,7 +330,7 @@ export function ShareToTeamDialog({
     } catch (error) {
       console.error('[ShareToTeamDialog] Failed to create shared folder:', error);
     }
-  }, [folderLookups, newFolderName, newFolderParentId]);
+  }, [collabScope, folderLookups, newFolderName, newFolderParentId]);
 
   const cancelNewFolder = useCallback(() => {
     setNewFolderParentId(undefined);
@@ -325,6 +349,7 @@ export function ShareToTeamDialog({
       folderId: selectedFolderId,
       folderPath: selectedFolderId ? (folderLookups.pathById.get(selectedFolderId) ?? '') : '',
       sharedName: `${trimmedName}${fileNameParts.suffix}`,
+      selectedEmbeddedDocumentPaths: [...selectedEmbeddedDocumentPaths],
     });
     onClose();
   }, [
@@ -335,6 +360,7 @@ export function ShareToTeamDialog({
     onClose,
     onConfirm,
     selectedFolderId,
+    selectedEmbeddedDocumentPaths,
     fileNameParts.suffix,
     sharedBaseName,
   ]);
@@ -448,6 +474,14 @@ export function ShareToTeamDialog({
     && !folderRefreshFailed
     && hasInitializedSelection;
   const previewSharedName = `${sharedBaseName.trim() || fileNameParts.baseName}${fileNameParts.suffix}`;
+  const selectedEmbeddedCount = selectedEmbeddedDocumentPaths.size;
+  // Already-shared embeds are reused, not created, so they don't count toward
+  // what this action will actually share.
+  const newlySharedEmbeddedCount = embeddedDocuments.filter(
+    document => selectedEmbeddedDocumentPaths.has(document.absolutePath)
+      && !document.alreadyShared,
+  ).length;
+  const shareDocumentCount = 1 + newlySharedEmbeddedCount;
 
   return (
     <div
@@ -455,7 +489,7 @@ export function ShareToTeamDialog({
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        className="share-to-team-dialog w-[460px] max-w-[92%] bg-[var(--nim-bg)] border border-[var(--nim-border)] rounded-xl shadow-2xl overflow-hidden"
+        className="share-to-team-dialog flex max-h-[90vh] w-[460px] max-w-[92%] flex-col overflow-hidden rounded-xl border border-[var(--nim-border)] bg-[var(--nim-bg)] shadow-2xl"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-label="Share to Team"
@@ -484,7 +518,7 @@ export function ShareToTeamDialog({
         </div>
 
         {/* Body */}
-        <div className="px-5 pt-3 pb-2">
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 pt-3 pb-2">
           <div className="text-[11px] uppercase tracking-wider font-semibold text-[var(--nim-text-faint)] mb-1.5">
             Source file
           </div>
@@ -630,10 +664,67 @@ export function ShareToTeamDialog({
               {previewSharedName}
             </span>
           </div>
+
+          {embeddedDocuments.length > 0 && (
+            <div className="share-to-team-linked-documents mb-3">
+              <div className="text-[11px] uppercase tracking-wider font-semibold text-[var(--nim-text-faint)] mb-1.5">
+                Linked documents
+              </div>
+              <div className="max-h-[260px] overflow-y-auto rounded-md border border-[var(--nim-border-subtle,var(--nim-border))] bg-[var(--nim-bg-secondary)]">
+                <div className="px-3 py-2 text-[12px] leading-snug text-[var(--nim-text-muted)] border-b border-[var(--nim-border-subtle,var(--nim-border))]">
+                  Sharing this document will also share the documents it embeds so your team can see them.
+                </div>
+                {embeddedDocuments.map(document => {
+                  const checked = selectedEmbeddedDocumentPaths.has(document.absolutePath);
+                  return (
+                    <label
+                      key={document.absolutePath}
+                      className="flex items-center gap-2.5 px-3 py-2 text-[12px] text-[var(--nim-text)] hover:bg-[var(--nim-bg-tertiary)] cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          setSelectedEmbeddedDocumentPaths(previous => {
+                            const next = new Set(previous);
+                            if (next.has(document.absolutePath)) next.delete(document.absolutePath);
+                            else next.add(document.absolutePath);
+                            return next;
+                          });
+                        }}
+                        aria-label={`Share ${document.fileName}`}
+                      />
+                      <MaterialSymbol
+                        icon={document.descriptor.icon}
+                        size={17}
+                        className="text-[var(--nim-primary)] shrink-0"
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-medium">{document.fileName}</span>
+                        <span className="block truncate text-[11px] text-[var(--nim-text-faint)]">
+                          {document.descriptor.displayName}
+                        </span>
+                      </span>
+                      {document.alreadyShared && (
+                        <span className="shrink-0 rounded-full bg-[var(--nim-primary)]/15 px-1.5 py-0.5 text-[10px] font-medium text-[var(--nim-primary)]">
+                          Already shared
+                        </span>
+                      )}
+                    </label>
+                  );
+                })}
+                {selectedEmbeddedCount < embeddedDocuments.length && (
+                  <div className="px-3 py-2 text-[11px] leading-snug text-[var(--nim-warning)] border-t border-[var(--nim-border-subtle,var(--nim-border))]">
+                    Unchecked documents stay as local links that teammates cannot open.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Footer */}
-        <div className="flex justify-end gap-2 px-5 py-3 border-t border-[var(--nim-border)]">
+        <div className="flex shrink-0 justify-end gap-2 border-t border-[var(--nim-border)] px-5 py-3">
           <button
             type="button"
             onClick={onClose}
@@ -652,7 +743,9 @@ export function ShareToTeamDialog({
             }`}
           >
             <MaterialSymbol icon="group_add" size={16} />
-            Share to Team
+            {embeddedDocuments.length > 0
+              ? `Share ${shareDocumentCount} document${shareDocumentCount === 1 ? '' : 's'}`
+              : 'Share to Team'}
           </button>
         </div>
       </div>

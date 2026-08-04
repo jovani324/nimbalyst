@@ -1,5 +1,5 @@
 import { getExtensionLoader } from '@nimbalyst/runtime';
-import { MarkdownCollabContentAdapter } from '@nimbalyst/runtime/sync';
+import { MarkdownCollabContentAdapter } from '@nimbalyst/runtime/collab-lexical';
 import type {
   CollabCodec,
   CustomEditorContribution,
@@ -17,6 +17,7 @@ import {
   CODE_COLLAB_FILE_EXTENSIONS,
   CodeCollabContentAdapter,
 } from '../utils/CodeCollabContentAdapter';
+import { registerElectronCollabDocumentTypes } from './ElectronCollabHost';
 
 export interface CollaborativeDocumentTypeDescriptor {
   documentType: string;
@@ -183,7 +184,22 @@ function getMenuIcon(
 function defaultExtensionSource(): CollaborativeCatalogExtensionSource {
   const loader = getExtensionLoader();
   return {
-    getLoadedExtensions: () => loader.getLoadedExtensions(),
+    getLoadedExtensions: () => {
+      const loaded = loader.getLoadedExtensions();
+      const availableEditors = loader.getCustomEditors();
+      const deferred = loader.getDeferredExtensions().map(({ manifest }) => ({
+        manifest,
+        enabled: true,
+        module: {
+          components: Object.fromEntries(
+            availableEditors
+              .filter(editor => editor.extensionId === manifest.id)
+              .map(editor => [editor.contribution.component, editor.component]),
+          ),
+        },
+      }));
+      return [...loaded, ...deferred];
+    },
     subscribe: listener => loader.subscribe(listener),
   };
 }
@@ -612,5 +628,10 @@ export function resetCollaborativeDocumentTypeCatalogForTests(): void {
   catalogSingleton?.dispose();
   catalogSingleton = null;
 }
+
+registerElectronCollabDocumentTypes(
+  () => getCollaborativeDocumentTypeCatalog().getDescriptors(),
+  (listener) => getCollaborativeDocumentTypeCatalog().subscribe(listener),
+);
 
 export { longestMatchingSuffix, normalizeSuffix };

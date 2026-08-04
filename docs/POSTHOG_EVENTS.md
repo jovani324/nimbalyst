@@ -95,11 +95,20 @@ All events include `$session_id` property automatically. Dev users are marked wi
 
 | Event Name | File(s) | Trigger | Properties | First Added (Public) | Significant Changes |
 | --- | --- | --- | --- | --- | --- |
-| `content_mode_switched` | `NavigationGutter.tsx:111` | User switches between Files and Agent modes via navigation gutter | `fromMode` (files/agent/settings)<br/>`toMode` (files/agent/settings) | v0.48.13 (2025-12-17) |  |
+| `content_mode_switched` | `NavigationGutter.tsx` | User switches between primary content modes via the navigation gutter | `fromMode` / `toMode` (`files`, `agent`, `tracker`, `collab`, `pr-review`, `settings`) | v0.48.13 (2025-12-17) | (pending release): Documented Tracker, Shared Docs, and PR Review values |
 | `editor_type_opened` | `TabEditor.tsx:277` | User opens a file in an editor tab | `editorCategory` (markdown/monaco/image or extension name like "Spreadsheet Editor", "PDF Viewer", "Excalidraw Editor", "Data Model Editor")<br/>`fileExtension` (e.g., .md, .csv, .prisma, .mockup.html)<br/>`hasMermaid` (boolean, for markdown)<br/>`hasDataModel` (boolean, for markdown) | v0.48.13 (2025-12-17) | (pending release): Renamed editorType to editorCategory; editorCategory now uses extension displayName for custom editors; fileExtension contains actual extension<br/>(pending release): Defer emit until the editor type settles and re-arm on registry changes, so late-registering extension editors (e.g. .mockup.html, .calc.md) report their compound key/displayName instead of the fallback (.html/.md/monaco) |
 | `markdown_view_mode_switched` | `TabEditor.tsx:1556, 1606` | User switches between rich text (lexical) and raw markdown (monaco) view modes | `fromMode` (lexical/monaco)<br/>`toMode` (lexical/monaco) | v0.48.13 (2025-12-17) |  |
 | `session_view_mode_switched` | `SessionHistory.tsx` | User switches between list and kanban views for session history | `fromMode` (list/card/kanban)<br/>`toMode` (list/card/kanban) | (pending release) |  |
 | `session_list_filter_applied` | `SessionHistory.tsx` | User applies a tag filter or searches in the sessions list panel | `filterType` (tag/search)<br/>`activeTagCount` (number of active tag filters) | (pending release) |  |
+
+### Contextual Tips
+
+| Event Name | File(s) | Trigger | Properties | First Added (Public) | Significant Changes |
+| --- | --- | --- | --- | --- | --- |
+| `tip_shown` | `TipProvider.tsx:169, 289`<br/>`FilesEmptyTipDisplay.tsx` | A contextual tip card is displayed (floating card, developer menu, or Files empty state) | `tip_id`<br/>`tip_name`<br/>`source` (developer_menu, when triggered manually)<br/>`surface` (files_empty, when shown on the Files empty state) | v0.56.8 (2026-03-23) | (pending release as of 6ddf1d7): Added files_empty surface |
+| `tip_action_clicked` | `TipProvider.tsx:185, 200`<br/>`InlineTipDisplay.tsx:111, 127`<br/>`FilesEmptyTipDisplay.tsx` | User clicks a tip's primary or secondary action button | `tip_id`<br/>`tip_name`<br/>`action_label`<br/>`action_type` (secondary, when applicable)<br/>`surface` (inline_empty_transcript / files_empty) | v0.56.8 (2026-03-23) | (pending release as of 6ddf1d7): Added files_empty surface |
+| `tip_all_tips_opened` | `InlineTipDisplay.tsx:143`<br/>`FilesEmptyTipDisplay.tsx` | User opens the All Tips dialog from an inline tip card | `from_tip_id`<br/>`surface` (inline_empty_transcript / files_empty) | v0.56.8 (2026-03-23) | (pending release as of 6ddf1d7): Added files_empty surface |
+| `tip_navigated` | `FilesEmptyTipDisplay.tsx` | User clicks "Next tip" on the Files empty-state tip card | `from_tip_id`<br/>`to_tip_id`<br/>`direction` (next)<br/>`reason` (next_button)<br/>`surface` (files_empty) | (pending release as of 6ddf1d7) |  |
 
 ### Session Kanban Board
 
@@ -169,15 +178,37 @@ All events include `$session_id` property automatically. Dev users are marked wi
 | `content_shared` | `ShareHandlers.ts` | User shares a session or file as an encrypted link | `content_type` (session/file)<br/>`is_update` (boolean) | (pending release as of c28302ea) |  |
 | `share_deleted` | `ShareHandlers.ts` | User deletes (unshares) a shared session or file | None | (pending release as of c28302ea) |  |
 
-### Shared Folders (Collab)
+### Nimbalyst Teams and Collaboration
 
-| Event Name | File(s) | Trigger | Properties | First Added (Public) | Significant Changes |
-| --- | --- | --- | --- | --- | --- |
-| `collab_folder_created` | `CollabSidebar.tsx` | User creates a first-class shared folder | `nested` (boolean) | (pending release) |  |
-| `collab_folder_renamed` | `CollabSidebar.tsx` | User renames a shared folder | None | (pending release) |  |
-| `collab_folder_moved` | `CollabSidebar.tsx` | User moves a shared folder (drag reparent) | `toRoot` (boolean) | (pending release) |  |
-| `collab_folder_deleted` | `CollabSidebar.tsx` | User deletes a shared folder (recursive) | `documentCount`<br/>`subfolderCount` | (pending release) |  |
-| `collab_folder_link_copied` | `CollabSidebar.tsx` | User copies a shared-folder deep link | None | (pending release) |  |
+The canonical property allowlists live in `packages/electron/src/shared/analytics/teamAnalytics.ts`. Renderer and main-process emitters use the shared adapters, which validate every event at runtime and reject unknown properties, identifying value shapes, raw paths, URLs, and emails. Counts, durations, retry counts, and query lengths use bounded category helpers.
+
+| Event family | Events | Authoritative success seam |
+| --- | --- | --- |
+| Organization and membership | `team_surface_opened`, `team_organization_created`, `team_organization_switched`, `team_invitation_sent`, `team_invitation_accepted`, `team_member_role_changed`, `team_member_removed`, `team_organization_merged`, `team_organization_deleted`, `team_operation_failed` | Organization service response or explicit surface transition |
+| Project sharing and access | `team_project_added`, `team_project_identity_changed`, `team_project_moved`, `team_project_access_changed` | Project-sharing service response |
+| Shared-document discovery | `collab_home_opened`, `collab_home_searched` | Visible Shared Docs home and debounced committed search |
+| Shared-document lifecycle | `collab_document_created`, `collab_document_opened`, `collab_document_first_edited`, `collab_document_action`, `collab_operation_failed` | Creation orchestrator, successful tab open/reuse, first local Yjs mutation, or accepted document action |
+| Shared-folder lifecycle | `collab_folder_created`, `collab_folder_renamed`, `collab_folder_moved`, `collab_folder_deleted`, `collab_folder_link_copied` | Accepted folder mutation or successful link copy |
+| Shared trackers | `tracker_item_clicked`, `tracker_table_sort`, `tracker_item_mutated`, `tracker_item_scope_changed`, `tracker_mutation_rejected` | Tracker service mutation, explicit view interaction, or sync-rejection seam |
+| Collaboration health | `collab_sync_attempt_completed`, `collab_outbox_replay_completed`, `collab_share_asset_migration_completed`, `collab_server_mutation_rejected` | Coalesced client-observed terminal attempt or replay/migration/rejection outcome |
+
+Common Teams properties are low-cardinality subsets of `surface`, `entryPoint`, `source`, `outcome`, `errorCategory`, `actorType`, `callerRole` (`owner`, `admin`, `member`, `viewer`, or `unknown`), `documentType`, `editorCategory`, `collaborationScope`, `resourceType`, `connectionPath`, `encryptionMode`, `durationCategory`, and the defined count/retry buckets. Event-specific enums and permitted fields are enforced by the shared contract.
+
+Never add organization, project, document, folder, member, account, room, or session IDs to these events. Also forbidden are names, email addresses, titles, filenames, paths, git remotes, raw errors, URLs, tokens, content, payloads, and exact values where a bucket exists.
+
+#### Volume rules
+
+Several of these seams are reached by debounced autosave or by a retrying transport rather than by a discrete user action. Emitting one event per occurrence would both distort the metrics and cost real money, so the following caps are part of the contract — do not remove them when adding a call site:
+
+| Seam | Cap | Why |
+| --- | --- | --- |
+| `tracker_item_mutated` with `action=field_changed` | One per item per 10 minutes, shared across the IPC and MCP paths (`trackerMutationAnalytics.ts`) | Field saves arrive on a 500ms typing debounce. Discrete actions (`created`, `status_changed`, `assigned`, `commented`, `deleted`) are never throttled. |
+| Tracker body content saves | Not instrumented at all | The body editor autosaves every 800ms. First-edit intent is already covered by `collab_document_first_edited`. |
+| `collab_sync_attempt_completed` | One per resource per 60 seconds (`collaborationHealth.ts`) | A flapping socket can restart an attempt in a tight loop. |
+| `collab_outbox_replay_completed` | One per document per 5 minutes (`CollaborativeTabEditor.tsx`) | Every local edit enqueues an outbox entry, so cycles complete continuously while typing. |
+| `collab_document_first_edited` | Once per open lifecycle | Fired from the Yjs local-update callback, which fires per keystroke. |
+
+Health-event caps apply to **every outcome equally**. Suppressing only successes (or only failures) would bias the failure-rate alerts these events feed.
 
 ### Session Export
 
@@ -206,7 +237,7 @@ All events include `$session_id` property automatically. Dev users are marked wi
 | --- | --- | --- | --- | --- | --- |
 | `mcp_server_added` | `MCPServersPanel.tsx:1003` | User successfully saves an MCP server configuration (add or edit) | `templateId` (null if custom)<br/>`scope` (user/workspace)<br/>`isCustom`<br/>`authType` (oauth/api-key/none)<br/>`transportType` (stdio/sse/http)<br/>`isNew` (true if adding, false if editing) | (pending release as of 4734f601) | (pending release as of 8a7a1220): Renamed from mcp_server_configured, added isNew property, added http transportType |
 | `mcp_server_test_result` | `MCPServersPanel.tsx:1134` | User tests MCP server connection | `templateId` (null if custom)<br/>`success`<br/>`errorType` (command_not_found/timeout/auth_failure/network/other/exception, only on failure)<br/>`durationMs` | (pending release as of 4734f601) |  |
-| `mcp_oauth_authorize` | `MCPServersPanel.tsx:805,817,830,914` | OAuth authorization attempt completes (success or failure) | `templateId` (null if custom)<br/>`success`<br/>`errorType` (stale_port/auth_rejected/exception, only on failure) | (pending release as of 4734f601) | (pending release as of 8a7a1220): Renamed from mcp_oauth_result, added stale_port errorType |
+| `mcp_oauth_authorize` | `MCPServersPanel.tsx`<br/>`mcpOAuthAnalytics.ts` | OAuth authorization attempt completes (success or failure) | `templateId` (known built-in template ID or null)<br/>`success`<br/>`outcome` (authorized/rejected/timed_out/failed)<br/>`errorType` (invalid_config/timeout/browser_launch/stale_pending_auth/port_conflict/command_unavailable/provider_rejected/dynamic_registration_unsupported/callback_validation/token_exchange/network/process_error/process_exit/ipc_error/unknown, only on failure)<br/>`retryAfterCacheClear` (true only for cache-clear retries) | (pending release as of 4734f601) | (pending release as of 8a7a1220): Renamed from mcp_oauth_result, added stale_port errorType<br/>(pending release): Replaced the catch-all auth_rejected/exception values with bounded observable outcome/error categories; added an analytics allowlist that excludes raw OAuth errors, provider text, URLs, codes, tokens, state values, and paths; cache-clear retry failures are now captured as well as successes |
 
 ### Terminal
 
@@ -259,7 +290,7 @@ All events include `$session_id` property automatically. Dev users are marked wi
 | --- | --- | --- | --- | --- | --- |
 | `menu_action_used` | `ApplicationMenu.ts:476, 968` | User clicks certain menu items | Varies by menu item | v0.45.25 (2025-11-14) |  |
 | `global_settings_opened` | `ApplicationMenu.ts:517, 1282`<br/>`AIModelsWindow.ts:50` | User opens global settings or AI models window | None | v0.45.25 (2025-11-14) |  |
-| `help_accessed` | `ApplicationMenu.ts:1336, 1348, 1363, 1381, 1396, 1408, 1423` | User clicks help menu items | Varies by help item | v0.45.25 (2025-11-14) |  |
+| `help_accessed` | `ApplicationMenu.ts:1336, 1348, 1363, 1381, 1396, 1408, 1423`<br/>`helpMenuActions.ts:16` | User clicks help menu items | Varies by help item (`helpType: 'tutorial'` for Launch Tutorial) | v0.45.25 (2025-11-14) |  |
 | `keyboard_shortcut_used` | `AnalyticsHandlers.ts:29` | User triggers keyboard shortcut (reported from renderer) | `shortcut`<br/>`context` | v0.45.25 (2025-11-14) |  |
 | `toolbar_button_clicked` | `AnalyticsHandlers.ts:37` | User clicks toolbar button (reported from renderer) | `button`<br/>`isFirstUse` | v0.45.25 (2025-11-14) |  |
 | `social_link_clicked` | `DiscordInvitation.tsx:99` | User clicks a social media link or Discord link in the community popup | `channel` (discord/linkedin/youtube/x/tiktok/instagram) | (pending release) |  |
@@ -269,19 +300,21 @@ All events include `$session_id` property automatically. Dev users are marked wi
 | Event Name | File(s) | Trigger | Properties | First Added (Public) | Significant Changes |
 | --- | --- | --- | --- | --- | --- |
 | `uncaught_error` | `ErrorNotificationService.ts:210, 242` | Uncaught exception or unhandled promise rejection in renderer | `errorType` (exception/unhandled_rejection)<br/>`errorCategory` (TypeError/ReferenceError/Error/etc) | v0.47.2 (2025-12-10) |  |
-| `database_error` | `PGLiteDatabaseWorker.ts:255, 275` | Database operation fails | `operation` (read/write)<br/>`errorType`<br/>`tableName` | v0.45.25 (2025-11-14) |  |
+| `database_error` | `PGLiteDatabaseWorker.ts`<br/>`DatabaseErrorTelemetry.ts` | PGLite or SQLite database operation fails; identical backend/operation/category/code/sqlState/table signatures are emitted at most once per minute, with the occurrences in between counted, while every occurrence remains in local logs | `backend` (pglite/sqlite)<br/>`operation` (read/write)<br/>`errorCategory` (availability/concurrency/constraint/corruption/permission/query/resource/schema/storage/timeout/unknown)<br/>`errorCode` (fixed enum documented in `DatabaseErrorTelemetry.ts`)<br/>`sqlState` (engine code such as `42P01`/`SQLITE_BUSY`, or `none`)<br/>`tableName` (allowlisted core table/`transaction`/system_catalog/unknown)<br/>`suppressedSinceLastReport` | v0.45.25 (2025-11-14) | (pending release): Replaced raw heuristic `errorType` and unconstrained SQL identifier extraction with privacy-safe categories/codes, backend attribution, allowlisted table names, and rate limiting, after a single session emitted ~62k events on 2026-08-03 that were all `errorType: unknown`; added SQLite coverage |
 | `database_corruption_detected` | `PGLiteDatabaseWorker.ts:131` | Database corruption detected during initialization | `hasBackups` | v0.45.25 (2025-11-14) |  |
 | `database_corruption_recovery_choice` | `PGLiteDatabaseWorker.ts:153, 215, 222, 272` | User makes a choice in database corruption recovery dialog | `choice` (restore_from_backup/start_fresh/auto_fresh)<br/>`confirmed` (for start_fresh)<br/>`reason` (for auto_fresh) | v0.45.25 (2025-11-14) |  |
 | `database_corruption_restore_result` | `PGLiteDatabaseWorker.ts:165, 185, 232, 253` | Result of attempting to restore from backup | `success`<br/>`source` (current/previous)<br/>`errorType` (verification_failed/restore_failed)<br/>`trigger` (cancel_start_fresh) | v0.45.25 (2025-11-14) |  |
 | `database_init_failed_with_backups` | `PGLiteDatabaseWorker.ts:333` | Database initialization failed but backups are available | `hasBackups` (always true) | (pending release) |  |
 | `database_init_failed_recovery_choice` | `PGLiteDatabaseWorker.ts:343, 399, 408` | User makes a choice in init failure recovery dialog | `choice` (restore_from_backup/start_fresh)<br/>`confirmed` (for start_fresh) | (pending release) |  |
-| `known_error` | Various (see Known Error IDs below) | A recognized error condition occurs that we want to track and monitor | `errorId` (see Known Error IDs)<br/>`context` (where the error occurred)<br/>`errorMessage` (optional, truncated) | (pending release as of c597008b) |  |
+| `known_error` | Various (see Known Error IDs below) | A recognized error condition occurs that we want to track and monitor | `errorId` (see Known Error IDs)<br/>`context` (where the error occurred)<br/>fixed categorical properties documented per error ID; never raw error text | (pending release as of c597008b) | (pending release): Removed raw `errorMessage` because truncation does not prevent usernames and filesystem paths from reaching PostHog |
 | `feature_first_use` | `AIService.ts:406`<br/>`WindowManager.ts:230`<br/>`AnalyticsHandlers.ts:45` | User uses a feature for the first time | `feature`<br/>`daysSinceInstall` | v0.45.25 (2025-11-14) |  |
 | `migration_completed` | `MigrationOrchestrator.ts` | PGLite → SQLite migration finished successfully | `pglite_dir_size_bytes` (gauge of pre-migration store size)<br/>`target_row_count` (total rows migrated)<br/>`duration_ms`<br/>`tables_migrated`<br/>`spot_check_count`<br/>`foreign_key_violations`<br/>`integrity_check` ("ok") | (pending release) |  |
-| `migration_failed` | `MigrationOrchestrator.ts` | PGLite → SQLite migration aborted before cutover | `phase` (closing-pglite / opening-pglite / opening-sqlite / migrating / verifying-* / cutover)<br/>`message` (first 500 chars of error) | (pending release) |  |
+| `migration_failed` | `MigrationOrchestrator.ts`<br/>`MigrationHandlers.ts` | PGLite → SQLite migration aborted before cutover | `phase` (optional: closing-pglite/opening-pglite/opening-sqlite/migrating/verifying-*/cutover)<br/>`errorCategory` (fixed enum)<br/>`errorCode` (fixed enum)<br/>`sqlState` (engine code or `none`) | (pending release) | (pending release): Replaced raw error message with privacy-safe category/code |
 | `pglite_legacy_dir_present` | `database/initialize.ts` | Heartbeat fired at startup when a `pglite-db.migrated-*` directory still exists; gates the decision to retire the PGLite reader | `active_backend` (sqlite/pglite) | (pending release) |  |
 | `migration_dry_run_completed` | `ipc/MigrationHandlers.ts` | Alpha-grade preview: migration ran against a live PGLite to a throwaway SQLite dir without cutover | `target_row_count`<br/>`duration_ms`<br/>`tables_migrated`<br/>`sqlite_file_bytes` (estimated post-cutover footprint)<br/>`pglite_dir_bytes` (current PGLite footprint)<br/>`foreign_key_violations`<br/>`integrity_check` | (pending release) |  |
-| `migration_dry_run_failed` | `ipc/MigrationHandlers.ts` | Dry-run aborted before completion (schema open / read / verification failure) | `message` (first 500 chars of error) | (pending release) |  |
+| `migration_dry_run_failed` | `ipc/MigrationHandlers.ts` | Dry-run aborted before completion (schema open / read / verification failure) | `errorCategory` (fixed enum)<br/>`errorCode` (fixed enum)<br/>`sqlState` (engine code or `none`) | (pending release) | (pending release): Replaced raw error message with privacy-safe category/code |
+| `migration_adopted_dry_run` | `ipc/MigrationHandlers.ts` | A successful dry-run is adopted as the active SQLite database | `rows_added`<br/>`duration_ms` | (pending release) |  |
+| `migration_adopt_failed` | `MigrationAdopter.ts`<br/>`ipc/MigrationHandlers.ts` | Adopting a successful dry-run fails | `phase` (optional)<br/>`errorCategory` (fixed enum)<br/>`errorCode` (fixed enum)<br/>`sqlState` (engine code or `none`) | (pending release) | (pending release): Replaced raw error message with privacy-safe category/code |
 
 #### Known Error IDs
 
@@ -289,8 +322,8 @@ The `known_error` event uses an `errorId` property to identify specific error co
 
 | Error ID | File(s) | Description | Additional Properties |
 | --- | --- | --- | --- |
-| `pglite_wasm_runtime_crash` | `index.ts:418` | PGLite WASM runtime crashed during database initialization (often resolved by restarting computer) | `context`: database_initialization |
-| `database_initialization_failed` | `index.ts:424` | Database initialization failed for unknown reasons | `context`: database_initialization<br/>`errorMessage`: truncated error |
+| `pglite_wasm_runtime_crash` | `index.ts` | PGLite WASM runtime crashed during database initialization (often resolved by restarting computer). Selected by the same check that routes the recovery dialog, so it also covers `DATABASE_INIT_FAILED` | `context`: database_initialization<br/>`backend` (pglite/sqlite)<br/>`errorCategory` (fixed enum)<br/>`errorCode` (fixed enum)<br/>`sqlState` (engine code or `none`) |
+| `database_initialization_failed` | `index.ts` | PGLite or SQLite database initialization failed for any other reason | `context`: database_initialization<br/>`backend` (pglite/sqlite)<br/>`errorCategory` (fixed enum)<br/>`errorCode` (fixed enum)<br/>`sqlState` (engine code or `none`); raw error text remains in local logs only |
 | `image_compression_failed` | `AttachmentService.ts:136` | Image compression failed when saving attachment (original image is used as fallback) | `context`: attachment_save<br/>`errorType`: heic_decode_failed/unsupported_format/compression_failed/unexpected<br/>`mimeType`: original image mime type |
 | `share_upload_failed` | `ShareHandlers.ts` | Share upload failed (session or file) | `context`: share<br/>`content_type`: session/file |
 | `share_not_signed_in` | `ShareHandlers.ts` | User attempted to share but is not signed in | `context`: share<br/>`content_type`: session/file |
@@ -303,7 +336,7 @@ The `known_error` event uses an `errorId` property to identify specific error co
 | `unified_onboarding_skipped` | `App.tsx` | User skips the unified onboarding flow | None | (pending release) | Replaces `onboarding_skipped` |
 | ~~`feature_walkthrough_completed`~~ | ~~`FeatureWalkthrough.tsx`~~ | ~~User completes or skips the feature walkthrough~~ | ~~`total_time_ms`<br/>`slide_times` (object with editor/mockup/agent keys)<br/>`skipped` (boolean)<br/>`skipped_at_slide` (editor/mockup/agent, only if skipped)~~ | v0.45.25 (2025-11-14) | **DEPRECATED**: No longer sent; walkthrough slides removed in unified onboarding |
 | ~~`onboarding_completed`~~ | ~~`OnboardingDialog.tsx`~~ | ~~User completes the role/email onboarding dialog~~ | ~~`user_role`<br/>`custom_role_provided`<br/>`custom_role_text`<br/>`email_provided`~~ | v0.45.25 (2025-11-14) | **DEPRECATED**: Replaced by `unified_onboarding_completed`, then re-used (see below) |
-| `onboarding_completed` | `useOnboarding.ts` | User completes the unified onboarding dialog (has role or referral data) | `user_role` (raw value, e.g. `developer`, `product_manager`, `other`)<br/>`custom_role_text` (only when user typed a custom role)<br/>`referral_source` (raw value, e.g. `search`, `social`, `ai`, `other`)<br/>`referral_ai_detail` (only for `ai` referral)<br/>`referral_other_detail` (only for `other` referral)<br/>`referral_social_detail` (only for `social` referral)<br/>`developer_mode` (boolean)<br/>`email_provided` (boolean) | (pending release) | Replaces programmatic `survey sent` for the Onboarding Profile Survey. Property names and raw values match the existing `Devs` / `Product Managers` / `role_other` cohorts. |
+| `onboarding_completed` | `useOnboarding.ts` | User completes the unified onboarding dialog (has role or referral data) | `user_role` (raw value, e.g. `developer`, `product_manager`, `other`)<br/>`custom_role_text` (only when user typed a custom role)<br/>`referral_source` (raw value: `search`, `social`, `friend`, `ai`, `ad`, `youtube`, `github`, `course_training`, `podcast`, `newsletter_article`, or `other`)<br/>`referral_search_detail` (only for `search` referral)<br/>`referral_ai_detail` (only for `ai` referral)<br/>`referral_other_detail` (only for `other` referral)<br/>`referral_social_detail` (only for `social` referral)<br/>`developer_mode` (boolean)<br/>`email_provided` (boolean) | (pending release) | Replaces programmatic `survey sent` for the Onboarding Profile Survey. Property names and raw values match the existing `Devs` / `Product Managers` / `role_other` cohorts.<br/>(pending release): Added YouTube, GitHub, Course/Training, Podcast, and Newsletter/Article referral sources and search query details. |
 | ~~`onboarding_deferred`~~ | ~~`App.tsx`~~ | ~~User clicks "Ask me later" on onboarding dialog~~ | ~~None~~ | v0.45.25 (2025-11-14) | **DEPRECATED**: Removed in unified onboarding |
 | ~~`onboarding_skipped`~~ | ~~`App.tsx`~~ | ~~User clicks "Never ask again" on onboarding dialog~~ | ~~None~~ | v0.45.25 (2025-11-14) | **DEPRECATED**: Replaced by `unified_onboarding_skipped` |
 | `claude_commands_toast_shown` | `App.tsx:894` | Claude commands install toast is displayed | None | v0.47.2 (2025-12-10) |  |
@@ -396,32 +429,9 @@ The `known_error` event uses an `errorId` property to identify specific error co
 Events from the iOS companion app. These events share the same PostHog project and analytics ID (via QR pairing) as the desktop app.
 
 
-## Event Summary Statistics
+## Catalog Verification
 
-- **Total Events**: 118 unique event names
-- **Main Process Events**: 57 (via AnalyticsService)
-- **Renderer Process Events**: 54 (via usePostHog hook)
-- **Mobile Events**: 7 (via Capacitor AnalyticsService)
-- **File Operations**: 7 events
-- **Workspace Operations**: 4 events
-- **Navigation & Editor Mode**: 4 events
-- **Session Kanban Board**: 6 events
-- **File History**: 2 events
-- **AI-Related**: 24 events
-- **Blitz Mode**: 1 event
-- **Session/File Sharing**: 2 events
-- **Session Export**: 1 event
-- **Feature Toggles**: 3 events
-- **MCP Configuration**: 3 events
-- **Terminal**: 1 event
-- **Extensions**: 1 event
-- **Account & Sync**: 7 events
-- **Onboarding**: 8 events
-- **Surveys & Feedback**: 3 events
-- **Permissions**: 4 events
-- **Auto-Update**: 6 events
-- **Voice Mode**: 3 events
-- **System/Infrastructure**: 13 events
+The event catalog is verified by focused tests instead of a manually maintained total, which previously drifted from the implementation. The Teams contract test requires every contract event name to appear in this document.
 
 ## Super Properties (on every event)
 
@@ -440,7 +450,8 @@ Person properties are attached to user profiles in PostHog via `posthog.people.s
 | `email` | `string` | `useOnboarding.ts` | User's email address (if provided during onboarding) |
 | `user_role` | `string` | `useOnboarding.ts` | User's role as raw enum value (`developer`, `product_manager`, `designer`, `writer`, `researcher`, `marketing`, `sales`, `finance`, `student`, `hobbyist`, `other`). Cohorts and breakdowns filter on these exact values. |
 | `custom_role_text` | `string` | `useOnboarding.ts` | Free-text role typed by the user when they picked "Other" (only set in that case) |
-| `referral_source` | `string` | `useOnboarding.ts` | How user heard about Nimbalyst as raw enum value (`search`, `social`, `friend`, `ai`, `ad`, `other`) |
+| `referral_source` | `string` | `useOnboarding.ts` | How user heard about Nimbalyst as raw enum value (`search`, `social`, `friend`, `ai`, `ad`, `youtube`, `github`, `course_training`, `podcast`, `newsletter_article`, `other`) |
+| `referral_search_detail` | `string` | `useOnboarding.ts` | Search terms entered when `referral_source = 'search'` |
 | `referral_ai_detail` | `string` | `useOnboarding.ts` | Specific AI tool when `referral_source = 'ai'` |
 | `referral_other_detail` | `string` | `useOnboarding.ts` | Free-text detail when `referral_source = 'other'` |
 | `referral_social_detail` | `string` | `useOnboarding.ts` | Specific platform when `referral_source = 'social'` |
@@ -450,6 +461,11 @@ Person properties are attached to user profiles in PostHog via `posthog.people.s
 | `is_dev_install` | `boolean` | `AnalyticsService.ts` | Set via `$set_once` - true if installed from dev build |
 | `cpu_arch` | `string` | `AnalyticsService.ts` | `process.arch` value (`arm64`, `x64`, `ia32`, etc.) - set on each session start via `$set` |
 | `nimbalyst_mobile_version` | `string` | Mobile `main.tsx` | Mobile app version (iOS/Android) |
+| `has_used_teams` | `boolean` | Teams analytics adapter | Set once after a meaningful shared-document or shared-tracker action |
+| `has_created_team_organization` | `boolean` | Teams analytics adapter | Set once after successful organization creation |
+| `has_opened_shared_document` | `boolean` | Teams analytics adapter | Set once after an explicit shared-document open; restart restoration is excluded |
+| `has_edited_shared_document` | `boolean` | Teams analytics adapter | Set once after the first local edit in a shared-document open lifecycle |
+| `has_used_shared_tracker` | `boolean` | Teams analytics adapter | Set once after a successful shared tracker mutation |
 
 ## Surveys
 

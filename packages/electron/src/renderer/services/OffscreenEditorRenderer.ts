@@ -59,6 +59,7 @@ const CSS_VAR_MAP: Record<keyof ExtendedThemeColors, string> = {
   'toolbar-active': '--nim-toolbar-active',
   'highlight-bg': '--nim-highlight-bg',
   'highlight-border': '--nim-highlight-border',
+  'comment-mark': '--nim-comment-mark',
   'quote-text': '--nim-quote-text',
   'quote-border': '--nim-quote-border',
   'scrollbar-thumb': '--nim-scrollbar-thumb',
@@ -357,6 +358,9 @@ class OffscreenEditorRendererImpl {
       },
 
       setEditorContext(): void {
+        // No editor context for offscreen editors
+      },
+      setEditorContextItems(): void {
         // No editor context for offscreen editors
       },
 

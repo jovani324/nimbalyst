@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import { createIpcSubscriber } from './ipcSubscriptions.ts';
 import {ClaudeForWindowsInstallation} from "../main/services/CLIManager.ts";
 import type { GhCliStatus } from '../main/services/GhCliDetector.ts';
 import type {
@@ -12,6 +13,14 @@ import type {
   LocalReplicaStorageUsage,
   ReplaceLocalReplicaSnapshotInput,
 } from '@nimbalyst/runtime/sync';
+import type { ConversationSubscription } from '@nimbalyst/collab-protocol';
+import type { ConversationSetSubscriptionRequest } from '../shared/conversationDirectory.ts';
+import type { TutorialStartResult, TutorialStatusResult } from '../shared/tutorial.ts';
+
+type StytchAuthFlowOptions = {
+  intent: 'sign-in' | 'add-account' | 'reauth';
+  targetPersonalOrgId?: string;
+};
 
 // Nimbalyst is an IDE-like application with many concurrent IPC listeners:
 // - File watching, git status, AI sessions, terminals, extensions, etc.
@@ -19,6 +28,8 @@ import type {
 // our use case and prevents spurious "memory leak" warnings.
 // The real fix is also in place: using stable references in useEffect deps.
 ipcRenderer.setMaxListeners(100);
+
+const subscribeToIpcChannel = createIpcSubscriber(ipcRenderer);
 
 interface ArchiveTask {
   worktreeId: string;
@@ -259,6 +270,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   setTheme: (theme: string) => ipcRenderer.invoke('set-theme', theme),
+  setTitleBarOverlayColors: (colors: { color: string; symbolColor: string }) =>
+    ipcRenderer.send('window-chrome:set-overlay-colors', colors),
+
+  // In-window menu bar (Windows/Linux; macOS keeps its system menu bar)
+  getWindowMenuBar: () => ipcRenderer.invoke('window-menu:get'),
+  invokeWindowMenuItem: (id: string, revision: number) =>
+    ipcRenderer.invoke('window-menu:invoke', id, revision),
 
   // File operations
   openFile: () => ipcRenderer.invoke('open-file'),
@@ -315,6 +333,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Window operations
   setDocumentEdited: (edited: boolean) => ipcRenderer.send('set-document-edited', edited),
   setTitle: (title: string) => ipcRenderer.send('set-title', title),
+  openAccountSettings: () => ipcRenderer.invoke('app:open-account-settings'),
   /** Report user activity for sync presence awareness */
   reportUserActivity: () => ipcRenderer.send('user-activity'),
   /** Set the idle threshold for sync presence (in milliseconds). For testing, use 10000 (10 seconds). */
@@ -529,6 +548,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('settings:changed', handler);
     return () => ipcRenderer.removeListener('settings:changed', handler);
   },
+  // Generic app-settings store writes broadcast app-settings:changed to every
+  // OTHER window so cross-window state (e.g. navigation-gutter customization)
+  // stays in lockstep without a reload.
+  onAppSettingsChanged: (callback: (payload: { key: string; value: unknown }) => void) => {
+    const handler = (_event: any, payload: { key: string; value: unknown }) => callback(payload);
+    ipcRenderer.on('app-settings:changed', handler);
+    return () => ipcRenderer.removeListener('app-settings:changed', handler);
+  },
 
   getAISettings: () => ipcRenderer.invoke('ai:getSettings'),
   saveAISettings: (settings: any) => ipcRenderer.invoke('ai:saveSettings', settings),
@@ -543,6 +570,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   aiGetAllModels: () => ipcRenderer.invoke('ai:getAllModels'),
   aiClearModelCache: () => ipcRenderer.invoke('ai:clearModelCache'),
   aiRefreshSessionProvider: (sessionId: string) => ipcRenderer.invoke('ai:refreshSessionProvider', sessionId),
+
+  // Per-session MCP status (NIM-2272). Pull for first render, push for live
+  // transitions — the push listener only exists once a message has been sent.
+  aiGetMcpSessionStatus: (sessionId: string, provider: string) =>
+    ipcRenderer.invoke('ai:mcp-status:get', { sessionId, provider }),
+  onMcpSessionStatusChanged: (callback: (data: any) => void) => {
+    const handler = (_event: any, data: any) => callback(data);
+    ipcRenderer.on('ai:mcp-status:changed', handler);
+    return () => ipcRenderer.removeListener('ai:mcp-status:changed', handler);
+  },
 
   // CLI management
   cliCheckInstallation: (tool: string) => ipcRenderer.invoke('cli:checkInstallation', tool),
@@ -645,6 +682,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('mcp:readCollabDoc', handler);
   },
   sendMcpReadCollabDocResult: (resultChannel: string, result: { success: boolean; content?: string; error?: string }) => {
+    ipcRenderer.send(resultChannel, result);
+  },
+  onMcpReadCollabDocComments: (callback: (data: any) => void) => {
+    const handler = (_event: any, data: any) => callback(data);
+    ipcRenderer.on('mcp:readCollabDocComments', handler);
+    return () => ipcRenderer.removeListener('mcp:readCollabDocComments', handler);
+  },
+  onMcpReplyToCollabDocComment: (callback: (data: any) => void) => {
+    const handler = (_event: any, data: any) => callback(data);
+    ipcRenderer.on('mcp:replyToCollabDocComment', handler);
+    return () => ipcRenderer.removeListener('mcp:replyToCollabDocComment', handler);
+  },
+  onMcpCreateCollabDocComment: (callback: (data: any) => void) => {
+    const handler = (_event: any, data: any) => callback(data);
+    ipcRenderer.on('mcp:createCollabDocComment', handler);
+    return () => ipcRenderer.removeListener('mcp:createCollabDocComment', handler);
+  },
+  sendMcpCollabDocCommentResult: (
+    resultChannel: string,
+    result: { success: boolean; result?: unknown; code?: string; error?: string },
+  ) => {
     ipcRenderer.send(resultChannel, result);
   },
   // Shared-index (first-class shared folders + documents) MCP operations.
@@ -770,6 +828,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getOpenWorkspaces: () => ipcRenderer.invoke('workspace-manager:get-open-workspaces') as Promise<string[]>,
   },
 
+  tutorial: {
+    getStatus: () =>
+      ipcRenderer.invoke('tutorial:get-status') as Promise<TutorialStatusResult>,
+    start: () =>
+      ipcRenderer.invoke('tutorial:start') as Promise<TutorialStartResult>,
+  },
+
   // Project Migration (move/rename)
   projectMigration: {
     canMove: (oldPath: string) => ipcRenderer.invoke('project:can-move', oldPath) as Promise<{ canMove: boolean; reason?: string }>,
@@ -814,6 +879,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       itemId: string;
       shared: boolean;
     }) => ipcRenderer.invoke('document-service:set-tracker-item-shared', payload) as Promise<{ success: boolean; item?: any; error?: string }>,
+    migrateSharedFrontmatterIds: (payload?: { dryRun?: boolean }) =>
+      ipcRenderer.invoke('document-service:migrate-shared-frontmatter-ids', payload) as Promise<{
+        success: boolean;
+        dryRun?: boolean;
+        migrated?: Array<{ oldId: string; newId: string; issueKey?: string; bodySource: string }>;
+        skipped?: Array<{ id: string; reason: string }>;
+        error?: string;
+      }>,
     updateTrackerItemContent: (payload: {
       itemId: string;
       content: any;
@@ -857,9 +930,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     disconnect: () => ipcRenderer.invoke('tracker-sync:disconnect') as Promise<{ success: boolean }>,
     upsertItem: (item: any) => ipcRenderer.invoke('tracker-sync:upsert-item', { item }) as Promise<{ success: boolean; error?: string }>,
     deleteItem: (itemId: string) => ipcRenderer.invoke('tracker-sync:delete-item', { itemId }) as Promise<{ success: boolean; error?: string }>,
-    // Epic H2 admin action: migrate this workspace's team to server-managed key
-    // custody and re-upload local tracker data as plaintext.
-    migrateToServerManaged: (orgId: string, workspacePath?: string) => ipcRenderer.invoke('tracker-sync:migrate-to-server-managed', { orgId, workspacePath }) as Promise<{ success: boolean; orgId?: string; itemsMarked?: number; schemasMarked?: number; workspacesMarked?: string[]; error?: string }>,
     onStatusChanged: (callback: (status: string) => void) => {
       const handler = (_event: any, status: string) => callback(status);
       ipcRenderer.on('tracker-sync:status-changed', handler);
@@ -878,7 +948,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // Global semantic search (nimbalyst-memory engine). Returns empty / false when
-  // the memory extension is disabled so the Quick Open Search tab can hide.
+  // the memory extension is disabled so the Quick Open Memory tab can hide.
   semanticSearch: {
     isAvailable: (workspacePath: string) =>
       ipcRenderer.invoke('semantic-search:available', workspacePath) as Promise<boolean>,
@@ -940,13 +1010,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
           documentId: string;
           title: string;
           documentType?: string;
-          orgKeyBase64: string;
-          orgKeyFingerprint?: string;
           serverUrl: string;
           accountId: string;
           userId: string;
           userName?: string;
           userEmail?: string;
+          urlExtraQuery?: string;
           pendingUpdateBase64?: string;
         };
         error?: string;
@@ -1059,13 +1128,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
         documentType,
         content,
       }) as Promise<{ success: boolean; error?: string }>,
-    // Forward a serializable collab adapter descriptor so the main process can
-    // rebuild the adapter (dynamic main-process adapters for any extension).
-    registerCollabAdapterDescriptor: (descriptor: unknown) =>
-      ipcRenderer.invoke('collab-adapter:register-descriptor', descriptor) as Promise<{
-        success: boolean;
-        error?: string;
-      }>,
     getLocalOrigin: (workspacePath: string, documentId: string) =>
       ipcRenderer.invoke('document-sync:get-local-origin', {
         workspacePath,
@@ -1227,8 +1289,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
         success: boolean;
         config?: {
           orgId: string;
-          orgKeyBase64: string;
-          orgKeyFingerprint: string | null;
           serverUrl: string;
           userId: string;
         };
@@ -1311,6 +1371,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         uri?: string;
         queued?: boolean;
         error?: string;
+        /** Structured failure code, e.g. `http_413` for an oversize attachment. */
+        errorCode?: string;
       }>,
     migrateLocalAssets: (payload: {
       workspacePath: string;
@@ -1481,6 +1543,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getAll: () => ipcRenderer.invoke('feature-usage:get-all'),
   },
 
+  // Per-tool usage (tip targeting rollup + AI Usage Report Tools tab)
+  toolUsage: {
+    getRollup: () => ipcRenderer.invoke('tool-usage:get-rollup'),
+    getReport: (workspaceId?: string) => ipcRenderer.invoke('tool-usage:get-report', workspaceId),
+    backfill: () => ipcRenderer.invoke('tool-usage:backfill'),
+  },
+
   // Credentials (for sync and mobile pairing)
   credentials: {
     get: () => ipcRenderer.invoke('credentials:get'),
@@ -1572,12 +1641,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setSyncAccount: (personalOrgId: string) =>
       ipcRenderer.invoke('stytch:set-sync-account', personalOrgId),
     isAuthenticated: () => ipcRenderer.invoke('stytch:is-authenticated'),
-    signInWithGoogle: () => ipcRenderer.invoke('stytch:sign-in-google'),
-    sendMagicLink: (email: string) =>
-      ipcRenderer.invoke('stytch:send-magic-link', email),
+    signInWithGoogle: (options?: StytchAuthFlowOptions) =>
+      ipcRenderer.invoke('stytch:sign-in-google', options),
+    sendMagicLink: (email: string, options?: StytchAuthFlowOptions) =>
+      ipcRenderer.invoke('stytch:send-magic-link', email, options),
     signOut: (forceOfflinePurge = false) =>
       ipcRenderer.invoke('stytch:sign-out', forceOfflinePurge),
-    addAccount: () => ipcRenderer.invoke('stytch:add-account'),
     removeAccount: (personalOrgId: string, forceOfflinePurge = false) =>
       ipcRenderer.invoke('stytch:remove-account', personalOrgId, forceOfflinePurge),
     deleteAccount: (personalOrgId?: string) => ipcRenderer.invoke('stytch:delete-account', personalOrgId),
@@ -1596,9 +1665,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Team Management (all member ops take explicit orgId -- per-workspace, not global)
   team: {
-    list: () => ipcRenderer.invoke('team:list'),
+    list: (options?: { forceRefresh?: boolean }) => ipcRenderer.invoke('team:list', options),
     /** Open (or focus + retarget) the dedicated org-management window. */
-    openManagementWindow: (target?: { orgId?: string; workspacePath?: string }) =>
+    openManagementWindow: (target?: {
+      orgId?: string;
+      workspacePath?: string;
+      conversationId?: string;
+    }) =>
       ipcRenderer.invoke('team-window:open', target),
     findForWorkspace: (workspacePath: string) => ipcRenderer.invoke('team:find-for-workspace', workspacePath),
     get: (orgId: string) => ipcRenderer.invoke('team:get', orgId),
@@ -1608,6 +1681,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     addProject: (orgId: string, workspacePath?: string, name?: string) => ipcRenderer.invoke('team:add-project', orgId, workspacePath, name),
     // Epic H3 P0/A: enumerate every project in an org (member-gated).
     listProjects: (orgId: string) => ipcRenderer.invoke('team:list-projects', orgId),
+    resolveOrgProjectsLocalState: (orgId: string) =>
+      ipcRenderer.invoke('team:resolve-org-projects-local-state', orgId),
+    openProjectWorkspace: (workspacePath: string) =>
+      ipcRenderer.invoke('team:open-project-workspace', workspacePath),
     // Epic H3 P3: move-project wizard. Preview is read-only; move is destructive (admin on both orgs).
     moveProjectPreview: (srcOrgId: string, projectId: string, destOrgId: string) =>
       ipcRenderer.invoke('team:move-project-preview', srcOrgId, projectId, destOrgId),
@@ -1623,31 +1700,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     deleteTeam: (orgId: string) => ipcRenderer.invoke('team:delete', orgId),
     updateRole: (orgId: string, memberId: string, role: string) => ipcRenderer.invoke('team:update-role', orgId, memberId, role),
     getGitRemote: (workspacePath: string) => ipcRenderer.invoke('team:get-git-remote', workspacePath),
-    ensureOrgKey: (orgId: string) => ipcRenderer.invoke('team:ensure-org-key', orgId),
-    getOrgKeyStatus: (orgId: string) => ipcRenderer.invoke('team:get-org-key-status', orgId),
-    // Epic H2: current key-custody mode for the team (legacy-e2e | server-managed).
-    getKeyCustodyStatus: (orgId: string) => ipcRenderer.invoke('team:get-key-custody-status', orgId) as Promise<{ success: boolean; mode?: 'legacy-e2e' | 'server-managed'; dekFingerprint?: string | null; error?: string }>,
-    getEncryptionMigrationStatus: (orgId: string) => ipcRenderer.invoke('team:get-encryption-migration-status', orgId) as Promise<{
-      success: boolean;
-      migration?:
-        | { status: 'migrating'; startedAt: string }
-        | { status: 'complete'; finishedAt: string }
-        | { status: 'stuck'; failedAt: string; message: string }
-        | null;
-    }>,
-    listKeyEnvelopes: (orgId: string) => ipcRenderer.invoke('team:list-key-envelopes', orgId),
+    // Server-managed custody status. `unmigrated` means the organization was
+    // never converted and the server refuses its team content.
+    getKeyCustodyStatus: (orgId: string) => ipcRenderer.invoke('team:get-key-custody-status', orgId) as Promise<{ success: boolean; mode?: 'server-managed' | 'unmigrated'; dekFingerprint?: string | null; error?: string }>,
     setProjectIdentity: (orgId: string, workspacePath: string) => ipcRenderer.invoke('team:set-project-identity', orgId, workspacePath),
     clearProjectIdentity: (orgId: string) => ipcRenderer.invoke('team:clear-project-identity', orgId),
-    ensureWorkspaceKey: (workspacePath: string) => ipcRenderer.invoke('team:ensure-workspace-key', workspacePath),
-    getMemberFingerprint: (orgId: string, memberId: string) => ipcRenderer.invoke('team:get-member-fingerprint', orgId, memberId),
-    getMyFingerprint: (orgId: string) => ipcRenderer.invoke('team:get-my-fingerprint', orgId),
-    verifyMember: (orgId: string, memberId: string, fingerprint: string) => ipcRenderer.invoke('team:verify-member', orgId, memberId, fingerprint),
-    revokeMemberTrust: (orgId: string, memberId: string) => ipcRenderer.invoke('team:revoke-member-trust', orgId, memberId),
-    reshareKey: (orgId: string, memberId: string) => ipcRenderer.invoke('team:reshare-key', orgId, memberId),
-    refreshMyKey: (orgId: string) => ipcRenderer.invoke('team:refresh-my-key', orgId),
-    autoWrapNewMembers: (orgId: string) => ipcRenderer.invoke('team:auto-wrap-new-members', orgId),
-    // NIM-913: admin repair — force re-wrap the current org key for all members.
-    rewrapAllMemberKeys: (orgId: string) => ipcRenderer.invoke('team:rewrap-all-member-keys', orgId),
   },
 
   // Typed organization facade. The legacy `team` bridge remains as a
@@ -1655,8 +1712,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   organization: {
     list: () => ipcRenderer.invoke('team:list'),
     get: (orgId: string) => ipcRenderer.invoke('team:get', orgId),
+    rename: (orgId: string, name: string) =>
+      ipcRenderer.invoke('team:rename', orgId, name),
     create: (input: { name: string; workspacePath?: string; sourcePersonalOrgId?: string }) =>
       ipcRenderer.invoke('team:create', input.name, input.workspacePath, input.sourcePersonalOrgId),
+    findPendingInvitation: (email: string) =>
+      ipcRenderer.invoke('team:find-pending-invite-for-email', email),
     acceptInvitation: (orgId: string) => ipcRenderer.invoke('team:accept-invite', orgId),
     listMembers: (orgId: string) => ipcRenderer.invoke('team:list-members', orgId),
     inviteMember: (orgId: string, email: string) => ipcRenderer.invoke('team:invite', orgId, email),
@@ -1669,7 +1730,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('team:move-project', input.sourceOrgId, input.projectId, input.destinationOrgId, input.dropMemberEmails),
     deleteOrganization: (orgId: string) => ipcRenderer.invoke('team:delete', orgId),
     getEncryptionStatus: (orgId: string) => ipcRenderer.invoke('team:get-key-custody-status', orgId),
-    getEncryptionMigrationStatus: (orgId: string) => ipcRenderer.invoke('team:get-encryption-migration-status', orgId),
+  },
+
+  conversation: {
+    setSubscription: (request: ConversationSetSubscriptionRequest) =>
+      ipcRenderer.invoke(
+        'conversation:set-subscription',
+        request,
+      ) as Promise<ConversationSubscription>,
+    /**
+     * Authorize this window to upload and read the conversation's encrypted
+     * attachments. Paired with `unregisterAssets` on unmount; refcounted in
+     * main, so two views of one conversation are safe.
+     */
+    registerAssets: (request: { orgId: string; conversationId: string }) =>
+      ipcRenderer.invoke('conversation:register-assets', request) as Promise<{
+        success: boolean;
+        error?: string;
+      }>,
+    unregisterAssets: (request: { conversationId: string }) =>
+      ipcRenderer.invoke('conversation:unregister-assets', request) as Promise<{
+        success: boolean;
+        error?: string;
+      }>,
   },
 
   // Epic H1: org / project access model. `canAccess` is the single client-side
@@ -2031,36 +2114,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // Generic IPC methods for services that need them
+  captureHeapSnapshot: (): Promise<{ path: string; sizeBytes: number }> =>
+    ipcRenderer.invoke('heap-snapshot:capture'),
   invoke: (channel: string, ...args: any[]) => ipcRenderer.invoke(channel, ...args),
   send: (channel: string, ...args: any[]) => ipcRenderer.send(channel, ...args),
-  on: (channel: string, callback: (...args: any[]) => void) => {
-    const handler = (_event: any, ...args: any[]) => callback(...args);
-
-    // Increase max listeners for document service channels that may have multiple watchers
-    if (channel.startsWith('document-service:')) {
-      const currentMax = ipcRenderer.getMaxListeners();
-      if (currentMax !== 0 && currentMax < 50) {
-        ipcRenderer.setMaxListeners(50);
-      }
-    }
-
-    ipcRenderer.on(channel, handler);
-    // Store mapping from callback to handler for proper removal
-    if (!(window as any).__ipcHandlers) {
-      (window as any).__ipcHandlers = new WeakMap();
-    }
-    (window as any).__ipcHandlers.set(callback, { channel, handler });
-    return () => ipcRenderer.removeListener(channel, handler);
-  },
-  off: (channel: string, callback: (...args: any[]) => void) => {
-    // Look up the actual handler that was registered
-    const handlerInfo = (window as any).__ipcHandlers?.get(callback);
-    if (handlerInfo && handlerInfo.channel === channel) {
-      ipcRenderer.removeListener(channel, handlerInfo.handler);
-      (window as any).__ipcHandlers.delete(callback);
-    } else {
-      // Fallback: try to remove callback directly (won't work but maintains backward compat)
-      ipcRenderer.removeListener(channel, callback);
-    }
-  }
+  // Subscribe to an IPC channel. Call the returned closure to unsubscribe --
+  // there is deliberately no `off(channel, callback)` counterpart, because
+  // contextBridge re-proxies the callback on every crossing and identity-based
+  // removal can never match. See ipcSubscriptions.ts.
+  on: subscribeToIpcChannel
 });

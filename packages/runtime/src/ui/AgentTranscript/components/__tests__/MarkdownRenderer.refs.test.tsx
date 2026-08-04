@@ -19,7 +19,7 @@ const SESSION = '72989f55-3c63-48e3-9abc-0123456789ab';
 
 const trackerRecord: TrackerRecord = {
   id: 'bug_1',
-  issueKey: 'NIM-1',
+  issueKey: 'NIM-123',
   primaryType: 'bug',
   typeTags: ['bug'],
   source: 'native',
@@ -48,20 +48,92 @@ function renderWith(content: string) {
 }
 
 describe('MarkdownRenderer reference autolinking', () => {
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
 
   it('autolinks a bare tracker key into a live chip', () => {
-    const { container } = renderWith('This is fixed by NIM-1 today.');
+    const { container } = renderWith('This is fixed by NIM-123 today.');
     const chip = container.querySelector('.tracker-reference-chip');
     expect(chip).not.toBeNull();
-    expect(chip?.getAttribute('data-issue-key')).toBe('NIM-1');
+    expect(chip?.getAttribute('data-issue-key')).toBe('NIM-123');
     // Resolves the live title from the seeded record.
     expect(screen.getByText('Autolinked bug')).toBeDefined();
+  });
+
+  it('keeps a tracker card open through a transcript markdown rerender', () => {
+    const store = createStore();
+    store.set(
+      trackerItemsMapAtom,
+      new Map([[trackerRecord.id, trackerRecord]]),
+    );
+    const renderMessage = () => (
+      <Provider store={store}>
+        <div className="rich-transcript-message">
+          <MarkdownRenderer
+            content="See [NIM-123](nimbalyst://NIM-123)."
+            messageId="message-1"
+          />
+        </div>
+      </Provider>
+    );
+    const { container, rerender } = render(renderMessage());
+
+    fireEvent.click(
+      container.querySelector<HTMLElement>('.tracker-reference-chip')!,
+    );
+    expect(document.querySelector('.tracker-reference-preview')).not.toBeNull();
+
+    rerender(renderMessage());
+
+    expect(document.querySelector('.tracker-reference-preview')).not.toBeNull();
+    expect(
+      container
+        .querySelector('.tracker-reference-chip')
+        ?.getAttribute('aria-expanded'),
+    ).toBe('true');
   });
 
   it('does not autolink a token whose prefix is not a workspace tracker prefix', () => {
     const { container } = renderWith('Encoding is UTF-8 here.');
     expect(container.querySelector('.tracker-reference-chip')).toBeNull();
+  });
+
+  it('dispatches an app-action link instead of rendering a tracker chip', () => {
+    const send = vi.fn();
+    vi.stubGlobal('electronAPI', { send });
+
+    const { container } = renderWith(
+      '[Open projects](nimbalyst://action/open-project-manager)',
+    );
+
+    expect(container.querySelector('.tracker-reference-chip')).toBeNull();
+    const link = screen.getByRole('link', { name: 'Open projects' });
+    expect(link.getAttribute('target')).toBeNull();
+
+    fireEvent.click(link);
+
+    expect(send).toHaveBeenCalledWith(
+      'app-action:dispatch',
+      'nimbalyst://action/open-project-manager',
+    );
+  });
+
+  it('keeps an unknown app action inert instead of opening it externally', () => {
+    const send = vi.fn();
+    const open = vi.spyOn(window, 'open');
+    vi.stubGlobal('electronAPI', { send });
+    renderWith('[Unknown](nimbalyst://action/not-allowed)');
+
+    const link = screen.getByRole('link', { name: 'Unknown' });
+    expect(fireEvent.click(link)).toBe(false);
+    expect(send).toHaveBeenCalledWith(
+      'app-action:dispatch',
+      'nimbalyst://action/not-allowed',
+    );
+    expect(open).not.toHaveBeenCalled();
   });
 
   it('autolinks a bare known session UUID into a session chip that opens on click', () => {

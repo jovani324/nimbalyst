@@ -166,6 +166,26 @@ export function getMigrations(schemaDir: string): Migration[] {
       name: 'account_org_bindings',
       sqlFile: path.join(schemaDir, '0025_account_org_bindings.sql'),
     },
+    {
+      version: 26,
+      name: 'tool_usage_counters',
+      sqlFile: path.join(schemaDir, '0026_tool_usage_counters.sql'),
+    },
+    {
+      version: 27,
+      name: 'tool_usage_backfill_state',
+      sqlFile: path.join(schemaDir, '0027_tool_usage_backfill_state.sql'),
+    },
+    {
+      version: 28,
+      name: 'tracker_shared_saved_views',
+      sqlFile: path.join(schemaDir, '0028_tracker_shared_saved_views.sql'),
+    },
+    {
+      version: 29,
+      name: 'tracker_personal_snooze',
+      sqlFile: path.join(schemaDir, '0029_tracker_personal_snooze.sql'),
+    },
   ];
 }
 
@@ -195,6 +215,10 @@ export function runMigrations(db: SqliteDatabase, schemaDir: string): MigrationR
     seen.add(m.version);
   }
 
+  const findAppliedVersion = db.prepare(
+    'SELECT version FROM _migrations WHERE version = ?',
+  );
+
   for (const m of migrations) {
     if (applied.has(m.version)) {
       result.skipped.push(m.version);
@@ -207,7 +231,13 @@ export function runMigrations(db: SqliteDatabase, schemaDir: string): MigrationR
       );
     }
 
-    const tx = db.transaction(() => {
+    const tx = db.transaction((): boolean => {
+      // Another app process or worker may have initialized the same database
+      // after our applied-version snapshot. Re-check while holding the
+      // immediate write lock so only one connection can apply this version.
+      if (findAppliedVersion.get(m.version)) {
+        return false;
+      }
       if (m.sqlFile) {
         const sql = fs.readFileSync(m.sqlFile, 'utf-8');
         db.exec(sql);
@@ -220,9 +250,13 @@ export function runMigrations(db: SqliteDatabase, schemaDir: string): MigrationR
         m.version,
         m.name,
       );
+      return true;
     });
-    tx();
-    result.applied.push(m.version);
+    if (tx.immediate()) {
+      result.applied.push(m.version);
+    } else {
+      result.skipped.push(m.version);
+    }
   }
 
   return result;

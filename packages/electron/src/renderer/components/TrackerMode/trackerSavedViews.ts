@@ -12,19 +12,48 @@
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import type { TrackerIdentity } from '@nimbalyst/runtime';
 import {
+  applyFilterSet,
+  type TrackerFilterEvaluationContext,
+  type TrackerFilterSet,
+  type TrackerFieldFilter,
+} from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import {
+  getCellValue,
+  type SortColumn,
+  type SortDirection,
+  type TypeColumnConfig,
+} from '@nimbalyst/runtime/plugins/TrackerPlugin';
+import {
   getRecordPriority,
   getRecordStatus,
   getFieldByRole,
   isMyRecord,
   isSameIdentity,
+  resolveRoleFieldName,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
-import type { SortColumn, SortDirection } from '@nimbalyst/runtime/plugins/TrackerPlugin';
 import type { TrackerFilterChip } from '../../store/atoms/trackers';
 import type { ViewMode } from './TrackerMainView';
 import { getTrackerItemTags, filterTrackerItemsByTags } from './trackerTagFilterUtils';
 
 /** How items are grouped in a grouped view. `none` = a single flat group. */
 export type TrackerGroupBy = 'none' | 'status' | 'priority' | 'assignee' | 'type' | 'tag';
+
+export const STATUS_CHANGED_TO_FILTER_FIELD = 'statusChangedTo';
+export const STATUS_CHANGED_FROM_FILTER_FIELD = 'statusChangedFrom';
+
+export function normalizeTrackerGroupBy(value: unknown): TrackerGroupBy {
+  if (value === 'owner') return 'assignee';
+  if (
+    value === 'status'
+    || value === 'priority'
+    || value === 'assignee'
+    || value === 'type'
+    || value === 'tag'
+  ) {
+    return value;
+  }
+  return 'none';
+}
 
 export interface SavedViewDefinition {
   /** Selected type filter: `'all'` or a specific tracker type. */
@@ -43,12 +72,30 @@ export interface SavedViewDefinition {
   sortDirection: SortDirection;
   /** Genuine-open lookback in days; null means any time. */
   recentlyViewedDays: 7 | 30 | 90 | null;
+  /**
+   * Column layout captured with the view, so restoring a view reproduces the
+   * whole table state and not just its filters. `null` means "leave the
+   * current column config alone" -- views saved before this existed.
+   */
+  columnConfig: TypeColumnConfig | null;
+  /**
+   * Per-column filter set, in the shared `{field, op, value}` language. Applies
+   * on top of `activeFilters` (the coarse chips).
+   */
+  columnFilters: TrackerFilterSet | null;
+  /** Scope for the triage inbox view: all types, or the selected type only. */
+  inboxScope: 'global' | 'type' | null;
 }
 
 export interface SavedView {
   id: string;
   name: string;
   definition: SavedViewDefinition;
+  /**
+   * Whether this view is shared with the team (synced) rather than local-only.
+   * Absent on views saved before sharing existed, which are local.
+   */
+  shared?: boolean;
 }
 
 export function createDefaultViewDefinition(): SavedViewDefinition {
@@ -61,7 +108,48 @@ export function createDefaultViewDefinition(): SavedViewDefinition {
     sortBy: 'lastIndexed',
     sortDirection: 'desc',
     recentlyViewedDays: 30,
+    columnConfig: null,
+    columnFilters: null,
+    inboxScope: null,
   };
+}
+
+/** Whether the current unsaved state contains anything worth naming as a view. */
+export function hasSavableViewState(definition: SavedViewDefinition): boolean {
+  const defaults = createDefaultViewDefinition();
+  return definition.selectedType !== defaults.selectedType
+    || definition.activeFilters.length > 0
+    || definition.tagFilter.length > 0
+    || definition.viewMode !== defaults.viewMode
+    || definition.groupBy !== defaults.groupBy
+    || definition.sortBy !== defaults.sortBy
+    || definition.sortDirection !== defaults.sortDirection
+    || definition.recentlyViewedDays !== defaults.recentlyViewedDays
+    || definition.columnConfig !== null
+    || (definition.columnFilters?.clauses.length ?? 0) > 0
+    || definition.inboxScope === 'type';
+}
+
+/**
+ * Coerce a persisted `viewMode` to one this build still renders.
+ *
+ * `'grid'` was the RevoGrid table's own mode while it sat beside the
+ * hand-rolled table; RevoGrid is the table now, so it folds into `'table'`.
+ * Saved views also travel between users on different builds, so an unknown
+ * literal falls back rather than leaving the main view with no branch to take.
+ */
+export function normalizeViewMode(raw: unknown, fallback: ViewMode): ViewMode {
+  if (raw === 'grid') return 'table';
+  if (
+    raw === 'list'
+    || raw === 'table'
+    || raw === 'kanban'
+    || raw === 'tag-board'
+    || raw === 'inbox'
+  ) {
+    return raw;
+  }
+  return fallback;
 }
 
 /**
@@ -74,9 +162,9 @@ export function normalizeViewDefinition(raw: Partial<SavedViewDefinition> | unde
   return {
     selectedType: typeof raw.selectedType === 'string' ? raw.selectedType : base.selectedType,
     activeFilters: Array.isArray(raw.activeFilters) ? raw.activeFilters : base.activeFilters,
-    viewMode: (raw.viewMode as ViewMode) ?? base.viewMode,
+    viewMode: normalizeViewMode(raw.viewMode, base.viewMode),
     tagFilter: Array.isArray(raw.tagFilter) ? raw.tagFilter.filter((t): t is string => typeof t === 'string') : base.tagFilter,
-    groupBy: (raw.groupBy as TrackerGroupBy) ?? base.groupBy,
+    groupBy: normalizeTrackerGroupBy(raw.groupBy),
     sortBy: typeof raw.sortBy === 'string' ? raw.sortBy : base.sortBy,
     sortDirection: raw.sortDirection === 'asc' || raw.sortDirection === 'desc'
       ? raw.sortDirection
@@ -85,7 +173,91 @@ export function normalizeViewDefinition(raw: Partial<SavedViewDefinition> | unde
       || raw.recentlyViewedDays === 30 || raw.recentlyViewedDays === 90
       ? raw.recentlyViewedDays
       : base.recentlyViewedDays,
+    columnConfig: normalizeColumnConfig(raw.columnConfig),
+    columnFilters: normalizeColumnFilters(raw.columnFilters),
+    inboxScope: raw.inboxScope === 'global' || raw.inboxScope === 'type' ? raw.inboxScope : base.inboxScope,
   };
+}
+
+/**
+ * Accept a persisted column config only if it is structurally sound. A
+ * half-written config would otherwise hide every column on restore.
+ */
+function normalizeColumnConfig(raw: unknown): TypeColumnConfig | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const value = raw as Partial<TypeColumnConfig>;
+  if (!Array.isArray(value.visibleColumns) || value.visibleColumns.length === 0) return null;
+  return {
+    visibleColumns: value.visibleColumns.filter((c): c is string => typeof c === 'string'),
+    columnWidths: value.columnWidths && typeof value.columnWidths === 'object' ? value.columnWidths : {},
+    groupBy: typeof value.groupBy === 'string' ? value.groupBy : null,
+  };
+}
+
+function normalizeColumnFilters(raw: unknown): TrackerFilterSet | null {
+  // `null` is reserved for "this view predates column filters -- leave the
+  // current table filters alone on apply." A view saved WITH the feature always
+  // carries a set (its `clauses` array present), so an explicitly empty set is
+  // preserved and clears filters on apply rather than reading as legacy.
+  if (!raw || typeof raw !== 'object') return null;
+  const value = raw as Partial<TrackerFilterSet>;
+  if (!Array.isArray(value.clauses)) return null;
+  const clauses = value.clauses.filter(
+    (c): c is TrackerFieldFilter =>
+      Boolean(c) && typeof (c as TrackerFieldFilter).field === 'string'
+      && typeof (c as TrackerFieldFilter).op === 'string',
+  );
+  return { combinator: value.combinator === 'or' ? 'or' : 'and', clauses };
+}
+
+/**
+ * Serialize a view for the shared-view lane. Only the name and definition
+ * travel; `id` rides outside the payload as the row key, and `shared` is a
+ * property of *where* the view is stored, not of the view itself.
+ */
+export function serializeSharedSavedView(view: SavedView): string {
+  return JSON.stringify({ name: view.name, definition: view.definition });
+}
+
+/**
+ * Rebuild a `SavedView` from a shared-store row. Returns null for a payload we
+ * can't make sense of so one bad row from a peer (or a future version) can't
+ * take out the whole views list.
+ */
+export function parseSharedSavedView(
+  record: { viewId: string; payload: string },
+): SavedView | null {
+  if (!record?.viewId || typeof record.payload !== 'string') return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(record.payload);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const raw = parsed as { name?: unknown; definition?: unknown };
+  const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name : null;
+  if (!name) return null;
+  return {
+    id: record.viewId,
+    name,
+    definition: normalizeViewDefinition(raw.definition as Partial<SavedViewDefinition> | null),
+    shared: true,
+  };
+}
+
+/**
+ * The list the sidebar renders: local views plus the team's shared views. A
+ * view that exists in both (the machine that shared it keeps no local copy, but
+ * a rename race can transiently produce one) resolves to the shared row, since
+ * that is the copy the team sees.
+ */
+export function mergeSavedViews(local: SavedView[], shared: SavedView[]): SavedView[] {
+  const sharedIds = new Set(shared.map((view) => view.id));
+  const localOnly = local.filter((view) => !sharedIds.has(view.id)).map(
+    (view) => (view.shared ? { ...view, shared: false } : view),
+  );
+  return [...localOnly, ...shared];
 }
 
 export interface FilterContext {
@@ -104,12 +276,82 @@ export type TrackerItemFilterDefinition = Pick<SavedViewDefinition, 'activeFilte
   sourceFilter?: string[];
   /** Genuine-open lookback in days; null means any time. */
   recentlyViewedDays?: SavedViewDefinition['recentlyViewedDays'];
+  /** Inspectable field clauses used by the right-side filter builder. */
+  columnFilters?: TrackerFilterSet | null;
 };
 
 /** Provenance key for a record: the importer provider id, or `native`. */
 export function recordSourceKey(record: TrackerRecord): string {
   const origin = record.system.origin;
   return origin?.kind === 'external' ? origin.external.providerId : 'native';
+}
+
+/** Resolve ordinary, role-backed, and per-user structural fields uniformly. */
+export function getTrackerFilterValue(
+  record: TrackerRecord,
+  field: string,
+  context: FilterContext = {},
+): unknown {
+  switch (field) {
+    case 'owner':
+    case 'assignee':
+      return getFieldByRole(record, 'assignee');
+    case 'favorite':
+      return context.favoriteItemIds?.has(record.id) ?? false;
+    case 'viewed':
+      return context.viewedAtByItemId?.get(record.id);
+    case STATUS_CHANGED_TO_FILTER_FIELD:
+      return getStatusTransitionValues(record, 'to');
+    case STATUS_CHANGED_FROM_FILTER_FIELD:
+      return getStatusTransitionValues(record, 'from');
+    default:
+      return getCellValue(record, field);
+  }
+}
+
+/** Status values captured in the record's durable transition history. */
+export function getStatusTransitionValues(
+  record: TrackerRecord,
+  direction: 'to' | 'from',
+): string[] {
+  const statusField = resolveRoleFieldName(record.primaryType, 'workflowStatus');
+  const valueKey = direction === 'to' ? 'newValue' : 'oldValue';
+  return (record.system.activity ?? [])
+    .filter(entry => (
+      entry.action === 'status_changed'
+      || (entry.action === 'updated' && entry.field === statusField)
+    ))
+    .map(entry => entry[valueKey])
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+}
+
+/** Convert removed left-sidebar presets into equivalent inspectable clauses. */
+export function legacyFilterChipsToClauses(
+  filters: readonly TrackerFilterChip[],
+  recentlyViewedDays: SavedViewDefinition['recentlyViewedDays'] = 30,
+): TrackerFieldFilter[] {
+  return filters.flatMap((filter): TrackerFieldFilter[] => {
+    switch (filter) {
+      case 'mine':
+        return [{ field: 'owner', op: 'is-current-user' }];
+      case 'unassigned':
+        return [{ field: 'owner', op: 'is-empty' }];
+      case 'high-priority':
+        return [{ field: 'priority', op: 'in', value: ['critical', 'high'] }];
+      case 'favorites':
+        return [{ field: 'favorite', op: '=', value: true }];
+      case 'recently-viewed':
+        return recentlyViewedDays === null
+          ? [{ field: 'viewed', op: 'is-not-empty' }]
+          : [{ field: 'viewed', op: 'in-last', value: recentlyViewedDays }];
+      case 'recently-edited-by-others':
+        return [{ field: 'updatedBy', op: 'is-not-current-user' }];
+      case 'recently-updated':
+        return [{ field: 'updated', op: 'in-last', value: 30 }];
+      case 'archived':
+        return [{ field: 'archived', op: '=', value: true }];
+    }
+  });
 }
 
 /**
@@ -154,6 +396,17 @@ export function filterTrackerItems(
     const sources = new Set(def.sourceFilter);
     out = out.filter((record) => sources.has(recordSourceKey(record)));
   }
+
+  const filterEvaluationContext: TrackerFilterEvaluationContext = {
+    currentUser: ctx.identity,
+    nowMs: ctx.nowMs,
+  };
+  out = applyFilterSet(
+    out,
+    def.columnFilters,
+    (record, field) => getTrackerFilterValue(record, field, ctx),
+    filterEvaluationContext,
+  );
 
   const recordRecencyTime = (record: TrackerRecord): number => {
     const source = record.system.updatedAt || record.system.createdAt || record.system.lastIndexed;
@@ -226,8 +479,9 @@ export function countFilteredTrackerItemsByTypes(
 ): number {
   const wantedTypes = new Set(types);
   const showArchived = def.activeFilters.includes('archived');
+  const filtersArchived = (def.columnFilters?.clauses ?? []).some(clause => clause.field === 'archived');
   const scopedItems = items.filter((record) => (
-    record.archived === showArchived
+    (filtersArchived || record.archived === showArchived)
     && (wantedTypes.has(record.primaryType) || record.typeTags.some((type) => wantedTypes.has(type)))
   ));
 

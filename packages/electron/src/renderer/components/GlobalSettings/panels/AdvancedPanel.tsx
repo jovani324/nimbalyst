@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { SettingsToggle } from '../SettingsToggle';
 import { HelpTooltip } from '../../../help';
 import {
@@ -135,6 +135,7 @@ export function AdvancedPanel() {
     maxHeapSizeMB,
     customPathDirs,
     spellcheckEnabled,
+    showDirectChatProviders,
     historyMaxAgeDays,
     historyMaxSnapshots,
     preferredTerminalShell,
@@ -412,6 +413,13 @@ export function AdvancedPanel() {
           onChange={(checked) => updateSettings({ spellcheckEnabled: checked })}
           name="Spellcheck"
           description="Enable the system spellchecker in editors and text inputs."
+        />
+
+        <SettingsToggle
+          checked={showDirectChatProviders}
+          onChange={(checked) => updateSettings({ showDirectChatProviders: checked })}
+          name="Show Chat Providers"
+          description="Show Claude Chat, OpenAI, and LM Studio in provider settings and new-session model selection."
         />
 
         <SettingsToggle

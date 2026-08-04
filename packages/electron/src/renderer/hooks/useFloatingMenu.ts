@@ -4,6 +4,7 @@
  * Wraps @floating-ui/react with standard defaults:
  * - flip() to avoid viewport overflow
  * - shift() to keep menu within viewport bounds
+ * - windowControlsClearance() to stay out from under the OS window controls
  * - offset() for spacing from trigger
  * - useDismiss() for click-outside and Escape key handling
  * - FloatingPortal for escaping overflow:hidden ancestors
@@ -36,7 +37,9 @@ import {
   type ReferenceElement,
   type UseFloatingReturn,
   type Strategy,
+  type UseDismissProps,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
 
 export { FloatingPortal } from '@floating-ui/react';
 
@@ -57,6 +60,8 @@ export interface UseFloatingMenuOptions {
   open?: boolean;
   /** External open state setter. Required when `open` is provided. */
   onOpenChange?: (open: boolean) => void;
+  /** Optional dismissal behavior, including guards for related portaled surfaces. */
+  dismiss?: UseDismissProps;
 }
 
 export interface UseFloatingMenuReturn {
@@ -105,6 +110,7 @@ export function useFloatingMenu(options: UseFloatingMenuOptions = {}): UseFloati
     reference = null,
     open: controlledOpen,
     onOpenChange: controlledOnOpenChange,
+    dismiss: dismissOptions,
   } = options;
 
   const [internalOpen, setInternalOpen] = useState(false);
@@ -117,13 +123,17 @@ export function useFloatingMenu(options: UseFloatingMenuOptions = {}): UseFloati
       offset(offsetPx),
       flip({ padding: viewportPadding }),
       shift({ padding: viewportPadding }),
+      // After shift(), so it corrects the clamped position; before size(), so
+      // the height constraint can subtract the push.
+      windowControlsClearance(),
     ];
     if (constrainHeight) {
       mw.push(
         size({
           padding: viewportPadding,
-          apply({ availableHeight, elements }) {
-            elements.floating.style.maxHeight = `${availableHeight}px`;
+          apply({ availableHeight, elements, middlewareData }) {
+            const pushed = middlewareData.windowControlsClearance?.pushed ?? 0;
+            elements.floating.style.maxHeight = `${Math.max(0, availableHeight - pushed)}px`;
           },
         })
       );
@@ -146,7 +156,7 @@ export function useFloatingMenu(options: UseFloatingMenuOptions = {}): UseFloati
     }
   }, [reference, floating.refs]);
 
-  const dismiss = useDismiss(floating.context);
+  const dismiss = useDismiss(floating.context, dismissOptions);
   const role = useRole(floating.context, { role: 'menu' });
 
   const { getReferenceProps, getFloatingProps } = useInteractions([dismiss, role]);

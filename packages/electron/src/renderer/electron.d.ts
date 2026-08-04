@@ -11,6 +11,11 @@ interface ClaudeForWindowsInstallation {
   claudeCodeVersion?: string;
 }
 
+interface StytchAuthFlowOptions {
+  intent: 'sign-in' | 'add-account' | 'reauth';
+  targetPersonalOrgId?: string;
+}
+
 interface HistoryTag {
   id: string;
   filePath: string;
@@ -131,6 +136,12 @@ interface PullRequestListFilters {
   search?: string;
 }
 
+interface TeamManagementWindowTarget {
+  orgId?: string;
+  workspacePath?: string;
+  conversationId?: string;
+}
+
 interface SemanticSearchResult {
   refType: string;
   refId: string;
@@ -144,21 +155,37 @@ interface SemanticSearchResult {
 
 interface ElectronAPI {
   team: {
-    getKeyCustodyStatus: (orgId: string) => Promise<{ success: boolean; mode?: 'legacy-e2e' | 'server-managed'; error?: string }>;
-    getEncryptionMigrationStatus?: (orgId: string) => Promise<{
+    getKeyCustodyStatus: (orgId: string) => Promise<{ success: boolean; mode?: 'server-managed' | 'unmigrated'; error?: string }>;
+    openManagementWindow: (target?: TeamManagementWindowTarget) => Promise<{ success: boolean }>;
+    resolveOrgProjectsLocalState: (orgId: string) => Promise<{
       success: boolean;
-      migration?:
-        | { status: 'migrating'; startedAt: string }
-        | { status: 'complete'; finishedAt: string }
-        | { status: 'stuck'; failedAt: string; message: string }
-        | null;
+      projects?: Array<{
+        projectId: string;
+        teamProjectId: string;
+        name: string | null;
+        slug: string | null;
+        gitRemoteHash: string | null;
+        localStatus: 'open' | 'closed' | 'notLocal';
+        workspacePath: string | null;
+      }>;
+      error?: string;
     }>;
+    openProjectWorkspace: (workspacePath: string) => Promise<{ success: boolean; error?: string }>;
     [method: string]: any;
   };
   organization: {
     list: () => Promise<any>;
     get: (orgId: string) => Promise<any>;
+    rename: (
+      orgId: string,
+      name: string,
+    ) => Promise<{
+      success: boolean;
+      organization?: { orgId: string; name: string };
+      error?: string;
+    }>;
     create: (input: { name: string; workspacePath?: string; sourcePersonalOrgId?: string }) => Promise<any>;
+    findPendingInvitation: (email: string) => Promise<any>;
     acceptInvitation: (orgId: string) => Promise<any>;
     listMembers: (orgId: string) => Promise<any>;
     inviteMember: (orgId: string, email: string) => Promise<any>;
@@ -169,7 +196,19 @@ interface ElectronAPI {
     moveProject: (input: { sourceOrgId: string; projectId: string; destinationOrgId: string; dropMemberEmails?: string[] }) => Promise<any>;
     deleteOrganization: (orgId: string) => Promise<any>;
     getEncryptionStatus: (orgId: string) => Promise<any>;
-    getEncryptionMigrationStatus: (orgId: string) => Promise<any>;
+  };
+  conversation: {
+    setSubscription: (
+      request: import('../shared/conversationDirectory').ConversationSetSubscriptionRequest,
+    ) => Promise<import('@nimbalyst/collab-protocol').ConversationSubscription>;
+    registerAssets: (request: { orgId: string; conversationId: string }) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
+    unregisterAssets: (request: { conversationId: string }) => Promise<{
+      success: boolean;
+      error?: string;
+    }>;
   };
   // Global semantic search (nimbalyst-memory). Empty/false when memory is off.
   semanticSearch: {
@@ -213,6 +252,12 @@ interface ElectronAPI {
   onOpenKeyboardShortcuts: (callback: () => void) => () => void;
   onOpenFeedback: (callback: () => void) => () => void;
   onThemeChange: (callback: (theme: string) => void) => () => void;
+  setTitleBarOverlayColors: (colors: { color: string; symbolColor: string }) => void;
+  getWindowMenuBar: () => Promise<import('../shared/menuBar').SerializedMenuBar>;
+  invokeWindowMenuItem: (
+    id: string,
+    revision: number,
+  ) => Promise<{ invoked: boolean; staleRevision?: boolean }>;
   onMcpConfigChanged: (callback: (data: { scope: 'user' | 'workspace'; workspacePath?: string }) => void) => () => void;
 
   // Offscreen editor IPC
@@ -278,6 +323,7 @@ interface ElectronAPI {
 
   setDocumentEdited: (edited: boolean) => void;
   setTitle: (title: string) => void;
+  openAccountSettings: () => Promise<{ success: boolean; error?: string }>;
   sendToMainWindow?: (channel: string, data: unknown) => Promise<void>;
   reportUserActivity?: () => void;
 
@@ -398,6 +444,7 @@ interface ElectronAPI {
   settingsSet: (key: string, value: unknown) => Promise<{ ok: true }>;
   settingsDelete: (key: string) => Promise<{ ok: true }>;
   onSettingsChanged: (callback: (payload: { key: string; value: unknown }) => void) => () => void;
+  onAppSettingsChanged: (callback: (payload: { key: string; value: unknown }) => void) => () => void;
 
   getAISettings: () => Promise<any>;
   saveAISettings: (settings: any) => Promise<void>;
@@ -444,9 +491,33 @@ interface ElectronAPI {
   onMcpStreamContent: (callback: (data: { streamId: string, content: string, position: string, insertAfter?: string, mode?: string, targetFilePath?: string, resultChannel: string }) => void) => () => void;
   onMcpNavigateTo: (callback: (data: { line: number, column: number }) => void) => () => void;
   onMcpReadCollabDoc: (callback: (data: { targetFilePath: string, resultChannel: string }) => void) => () => void;
+  onMcpReadCollabDocComments: (callback: (data: {
+    targetFilePath: string;
+    input: any;
+    workspacePath?: string;
+    resultChannel: string;
+  }) => void) => () => void;
+  onMcpReplyToCollabDocComment: (callback: (data: {
+    targetFilePath: string;
+    input: any;
+    agent: { sessionId: string; sessionName: string };
+    workspacePath?: string;
+    resultChannel: string;
+  }) => void) => () => void;
+  onMcpCreateCollabDocComment: (callback: (data: {
+    targetFilePath: string;
+    input: any;
+    agent: { sessionId: string; sessionName: string };
+    workspacePath?: string;
+    resultChannel: string;
+  }) => void) => () => void;
   sendMcpApplyDiffResult: (resultChannel: string, result: any) => void;
   sendMcpStreamContentResult: (resultChannel: string, result: any) => void;
   sendMcpReadCollabDocResult: (resultChannel: string, result: { success: boolean; content?: string; error?: string }) => void;
+  sendMcpCollabDocCommentResult: (
+    resultChannel: string,
+    result: { success: boolean; result?: unknown; code?: string; error?: string },
+  ) => void;
   onMcpCreateSharedDoc: (callback: (data: { title: string, documentType?: string, parentFolderId?: string | null, folderPath?: string, initialContent?: string, resultChannel: string }) => void) => () => void;
   onMcpCreateSharedFolder: (callback: (data: { name: string, parentFolderId?: string | null, folderPath?: string, resultChannel: string }) => void) => () => void;
   onMcpMoveSharedItem: (callback: (data: { itemId: string, kind: 'doc' | 'folder', newParentFolderId?: string | null, folderPath?: string, resultChannel: string }) => void) => () => void;
@@ -503,6 +574,17 @@ interface ElectronAPI {
     getOpenWorkspaces: () => Promise<string[]>;
   };
 
+  tutorial: {
+    getStatus: () => Promise<
+      | { success: true; exists: boolean; workspacePath?: string }
+      | { success: false; exists: false; error: string }
+    >;
+    start: () => Promise<
+      | { success: true; workspacePath: string; reused: boolean }
+      | { success: false; error: string }
+    >;
+  };
+
   // Project Migration (move/rename)
   projectMigration: {
     canMove: (oldPath: string) => Promise<{ canMove: boolean; reason?: string }>;
@@ -545,6 +627,13 @@ interface ElectronAPI {
       itemId: string;
       shared: boolean;
     }) => Promise<{ success: boolean; item?: any; error?: string }>;
+    migrateSharedFrontmatterIds: (payload?: { dryRun?: boolean }) => Promise<{
+      success: boolean;
+      dryRun?: boolean;
+      migrated?: Array<{ oldId: string; newId: string; issueKey?: string; bodySource: string }>;
+      skipped?: Array<{ id: string; reason: string }>;
+      error?: string;
+    }>;
     updateTrackerItemContent: (payload: {
       itemId: string;
       content: any;
@@ -596,6 +685,19 @@ interface ElectronAPI {
     get: (feature: string) => Promise<{ count: number; firstUsed: string; lastUsed: string } | undefined>;
     getCount: (feature: string) => Promise<number>;
     getAll: () => Promise<Record<string, { count: number; firstUsed: string; lastUsed: string }>>;
+  };
+
+  // Per-tool usage (tip targeting rollup + AI Usage Report Tools tab)
+  toolUsage: {
+    getRollup: () => Promise<Record<string, { count: number; firstUsed: string; lastUsed: string }>>;
+    getReport: (workspaceId?: string) => Promise<{
+      topTools: Array<{ toolName: string; mcpServer: string | null; count: number; errorCount: number }>;
+      byKind: { builtin: number; mcp: number };
+      byProvider: Array<{ provider: string; count: number }>;
+      overTime: Array<{ day: string; count: number }>;
+      byProject: Array<{ projectPath: string; count: number }>;
+    }>;
+    backfill: () => Promise<{ sessionsProcessed: number; toolCallsCounted: number }>;
   };
 
   // Credentials (for E2E encryption key management)
@@ -685,8 +787,8 @@ interface ElectronAPI {
       sessionJwt: string | null;
     }>;
     isAuthenticated: () => Promise<boolean>;
-    signInWithGoogle: () => Promise<{ success: boolean; error?: string }>;
-    sendMagicLink: (email: string) => Promise<{ success: boolean; error?: string }>;
+    signInWithGoogle: (options?: StytchAuthFlowOptions) => Promise<{ success: boolean; error?: string }>;
+    sendMagicLink: (email: string, options?: StytchAuthFlowOptions) => Promise<{ success: boolean; error?: string }>;
     signOut: (forceOfflinePurge?: boolean) => Promise<{
       success: boolean;
       requiresOfflinePurgeConfirmation?: boolean;
@@ -715,7 +817,6 @@ interface ElectronAPI {
       sessionStatus: 'active' | 'expired';
     } | null>;
     setSyncAccount: (personalOrgId: string) => Promise<{ success: boolean }>;
-    addAccount: () => Promise<{ success: boolean; error?: string }>;
     removeAccount: (personalOrgId: string, forceOfflinePurge?: boolean) => Promise<{
       success: boolean;
       error?: string;
@@ -1032,18 +1133,12 @@ interface ElectronAPI {
         documentId: string;
         title: string;
         documentType?: string;
-        keyCustody?: 'legacy-e2e' | 'server-managed';
-        orgKeyBase64: string;
-        /** Legacy org key for reading pre-migration rows in server-managed mode (NIM-878). */
-        legacyOrgKeyBase64?: string;
-        /** All candidate legacy org-key epochs for pre-migration rows that may span rotations (NIM-959). */
-        legacyOrgKeysBase64?: string[];
-        orgKeyFingerprint?: string;
         serverUrl: string;
         accountId: string;
         userId: string;
         userName?: string;
         userEmail?: string;
+        urlExtraQuery?: string;
         pendingUpdateBase64?: string;
       };
       error?: string;
@@ -1148,10 +1243,6 @@ interface ElectronAPI {
       documentType: string,
       content: string
     ) => Promise<{
-      success: boolean;
-      error?: string;
-    }>;
-    registerCollabAdapterDescriptor: (descriptor: unknown) => Promise<{
       success: boolean;
       error?: string;
     }>;
@@ -1305,14 +1396,8 @@ interface ElectronAPI {
       config?: {
         orgId: string;
         teamProjectId?: string | null;
-        keyCustody?: 'legacy-e2e' | 'server-managed';
-        orgKeyBase64: string;
-        /** Legacy org-key epochs (current + archived) for reading/healing pre-migration ciphertext titles in server-managed mode (NIM-906/910). */
-        legacyOrgKeysBase64?: string[];
-        orgKeyFingerprint: string | null;
         serverUrl: string;
         userId: string;
-        personalOrgId?: string;
         userName?: string;
         userEmail?: string;
       };
@@ -1355,7 +1440,15 @@ interface ElectronAPI {
       fileBytes: ArrayBuffer;
       mimeType: string;
       fileName: string;
-    }) => Promise<{ success: boolean; assetId?: string; uri?: string; queued?: boolean; error?: string }>;
+    }) => Promise<{
+      success: boolean;
+      assetId?: string;
+      uri?: string;
+      queued?: boolean;
+      error?: string;
+      /** Structured failure code, e.g. `http_413` for an oversize attachment. */
+      errorCode?: string;
+    }>;
     migrateLocalAssets: (payload: {
       workspacePath: string;
       orgId: string;
@@ -1694,8 +1787,14 @@ interface ElectronAPI {
   // Generic IPC methods for services
   invoke: (channel: string, ...args: any[]) => Promise<any>;
   send: (channel: string, ...args: any[]) => void;
+  /**
+   * Subscribe to an IPC channel. Call the returned closure to unsubscribe.
+   *
+   * There is no `off(channel, callback)` counterpart on purpose: contextBridge
+   * re-proxies the callback on every crossing, so identity-based removal never
+   * matches and the listener leaks (issue #943 / NIM-2019).
+   */
   on: (channel: string, callback: (...args: any[]) => void) => () => void;
-  off: (channel: string, callback: (...args: any[]) => void) => void;
 }
 
 interface InstalledExtension {

@@ -14,6 +14,8 @@ import {
   appendActivity,
   buildComment,
   getCurrentIdentity,
+  humanOnlyStatusMessage,
+  isHumanOnlyStatus,
   newTrackerId,
 } from '../vendor/trackerWrite.js';
 import { resolveSqlitePath, resolveDefaultSqlitePath, resolveAppSettingsPath } from '../config/paths.js';
@@ -139,6 +141,17 @@ export class DirectGateway implements TrackerGateway {
   }
 
   async listTrackers(filters: ListFilters): Promise<TrackerRecord[]> {
+    if (filters.inbox) {
+      // "Untriaged" is defined against each type's initial status and default
+      // priority, and the CLI deliberately does not load tracker schemas (see
+      // src/vendor/trackerReleases.ts). Answering from SQL alone would give a
+      // queue that disagrees with the one the app shows, which is worse than
+      // not answering.
+      throw connectionError(
+        '--inbox needs the running Nimbalyst app: the triage predicate reads each type\'s schema. ' +
+          'Start Nimbalyst, or drop --inbox to list without it.',
+      );
+    }
     const where: string[] = ['workspace = @workspace', 'deleted_at IS NULL'];
     const params: Record<string, unknown> = { workspace: filters.workspace };
 
@@ -476,6 +489,20 @@ export class DirectGateway implements TrackerGateway {
     return typeof mapped === 'string' && mapped ? mapped : fallback;
   }
 
+  /**
+   * Refuse a write that promotes work past review offline, mirroring the app's
+   * MCP guard. Checks the workflow-status role field however the type names it,
+   * plus the conventional `status`, so approval can't slip through `--fields`.
+   */
+  private assertNotHumanOnlyStatus(
+    statusField: string,
+    input: { status?: unknown; fields?: Record<string, unknown> },
+  ): void {
+    const candidates = [input.status, input.fields?.[statusField], input.fields?.status];
+    const blocked = candidates.find(isHumanOnlyStatus);
+    if (blocked) this.refuseWrite(humanOnlyStatusMessage(String(blocked)));
+  }
+
   async createTracker(workspace: string, input: CreateInput): Promise<TrackerRecord> {
     const identity = getCurrentIdentity(workspace);
     const id = newTrackerId(input.type);
@@ -490,6 +517,7 @@ export class DirectGateway implements TrackerGateway {
     const titleField = rf('title', 'title');
     const statusField = rf('workflowStatus', 'status');
     const priorityField = rf('priority', 'priority');
+    this.assertNotHumanOnlyStatus(statusField, input);
 
     const data: Record<string, any> = {
       [titleField]: input.title,
@@ -588,6 +616,7 @@ export class DirectGateway implements TrackerGateway {
 
       const rf = (role: string, fallback: string): string =>
         this.roleField(workspace, row.type, role, fallback);
+      this.assertNotHumanOnlyStatus(rf('workflowStatus', 'status'), input);
 
       const changes: Record<string, { from: any; to: any }> = {};
       const setField = (field: string, value: unknown): void => {

@@ -6,8 +6,10 @@ import * as path from 'path';
 import {
   buildMcpRemoteArgs,
   checkMcpRemoteAuthStatus,
+  classifyMcpRemoteOAuthFailure,
   discoverMcpRemoteOAuthRequirement,
   extractMcpRemoteConfig,
+  getMcpRemoteOAuthTimeoutMs,
 } from '../MCPRemoteOAuth';
 
 describe('MCPRemoteOAuth', () => {
@@ -208,6 +210,107 @@ describe('MCPRemoteOAuth', () => {
       '--static-oauth-client-info',
       JSON.stringify({ client_id: 'client-123' }),
     ]);
+  });
+
+  // The settings panel writes a user-entered client id to `staticClientInfo`.
+  // Writing it to `clientId` instead would route the server to the CLI-owned
+  // native path and silently hide the Authorize button the user just used.
+  it('keeps a pre-registered client id on the mcp-remote path, not the native one', () => {
+    const staticClientInfo = extractMcpRemoteConfig({
+      type: 'http',
+      url: 'https://mcp.example/mcp',
+      oauth: { staticClientInfo: { client_id: 'abc' } },
+    });
+
+    expect(buildMcpRemoteArgs(staticClientInfo!)).toContain('--static-oauth-client-info');
+
+    expect(extractMcpRemoteConfig({
+      type: 'http',
+      url: 'https://mcp.example/mcp',
+      oauth: { clientId: 'abc' },
+    })).toBeNull();
+  });
+
+  it.each([
+    ['Error: access_denied', {}, { outcome: 'rejected', errorType: 'provider_rejected' }],
+    ['OAuth state mismatch', {}, { outcome: 'failed', errorType: 'callback_validation' }],
+    ['Token exchange failed: invalid_grant', {}, { outcome: 'failed', errorType: 'token_exchange' }],
+    ['connect ENOTFOUND provider.example', {}, { outcome: 'failed', errorType: 'network' }],
+    ['listen EADDRINUSE', {}, { outcome: 'failed', errorType: 'port_conflict' }],
+    ['', { processErrorCode: 'ENOENT' }, { outcome: 'failed', errorType: 'command_unavailable' }],
+    ['', { processErrorCode: 'EACCES' }, { outcome: 'failed', errorType: 'process_error' }],
+    ['', { exited: true }, { outcome: 'failed', errorType: 'process_exit' }],
+  ])('classifies observable OAuth failures without exposing diagnostics: %s', (
+    diagnostic,
+    context,
+    expected
+  ) => {
+    expect(classifyMcpRemoteOAuthFailure(diagnostic, context)).toEqual(expected);
+  });
+
+  // Real mcp-remote 0.1.37 stderr. Both providers reject RFC 7591 registration and
+  // kill the helper before a browser opens, which used to surface as `process_exit`
+  // with a cache-clearing remedy that could never work (GitHub #1124, #1105).
+  it.each([
+    [
+      'facebook',
+      'Fatal error: InvalidClientMetadataError: Dynamic registration is not available for this client.',
+    ],
+    [
+      'lovable',
+      'Fatal error: InvalidClientMetadataError: Dynamic client registration is restricted to approved partners. To integrate with Lovable, contact us at https://lovable.dev/support or use the client_id_metadata_document discovery flow instead.',
+    ],
+  ])('reports a provider without dynamic client registration distinctly (%s)', (_provider, diagnostic) => {
+    expect(classifyMcpRemoteOAuthFailure(diagnostic, { exited: true })).toEqual({
+      outcome: 'failed',
+      errorType: 'dynamic_registration_unsupported',
+    });
+  });
+
+  it('distinguishes an abandoned shared auth process from a generic timeout', () => {
+    expect(classifyMcpRemoteOAuthFailure(
+      'Another instance is handling authentication. Waiting for authentication from the server.',
+      { timedOut: true }
+    )).toEqual({
+      outcome: 'timed_out',
+      errorType: 'stale_pending_auth',
+    });
+  });
+
+  it('distinguishes browser launch failure from a generic timeout', () => {
+    expect(classifyMcpRemoteOAuthFailure(
+      'Could not open browser automatically. Please copy and paste the URL.',
+      { timedOut: true }
+    )).toEqual({
+      outcome: 'timed_out',
+      errorType: 'browser_launch',
+    });
+  });
+
+  it('classifies a timeout without an observable cause as timeout, not rejection', () => {
+    expect(classifyMcpRemoteOAuthFailure(
+      'Authentication required. Waiting for authorization...',
+      { timedOut: true }
+    )).toEqual({
+      outcome: 'timed_out',
+      errorType: 'timeout',
+    });
+  });
+
+  it('keeps an observable network failure distinct when the outer wait expires', () => {
+    expect(classifyMcpRemoteOAuthFailure(
+      'connect ENOTFOUND provider.example',
+      { timedOut: true }
+    )).toEqual({
+      outcome: 'failed',
+      errorType: 'network',
+    });
+  });
+
+  it('does not cut off a configured mcp-remote callback timeout', () => {
+    expect(getMcpRemoteOAuthTimeoutMs({ authTimeoutSeconds: undefined })).toBe(180_000);
+    expect(getMcpRemoteOAuthTimeoutMs({ authTimeoutSeconds: 120 })).toBe(180_000);
+    expect(getMcpRemoteOAuthTimeoutMs({ authTimeoutSeconds: 240 })).toBe(245_000);
   });
 
   it('matches mcp-remote token hashes using URL, resource, and headers', async () => {

@@ -2,20 +2,19 @@
  * CommentsPlugin
  *
  * Text-selection comments for collaborative Lexical documents. The floating
- * text toolbar contributes an "Add comment" action; selecting it opens a composer
- * with an `@`-mention picker (team members). Comments anchor to the text via
+ * text toolbar contributes an "Add comment" action; selecting it opens the
+ * comments panel with an `@`-mention composer. Comments anchor to the text via
  * `@lexical/mark` `MarkNode`s and persist in the document's shared Y.Doc
  * (top-level `comments` YArray) through the orphaned-upstream `CommentStore`.
  * A side panel lists threads, supports reply / resolve / delete, and clicking
  * a mark focuses its thread.
  *
  * When a comment `@`-mentions members, the host's `onMention` callback is
- * invoked (wired to `TeamSyncProvider.fanoutInboxEvent`) so each mentioned
- * member receives a polymorphic inbox event.
+ * invoked. It is currently unwired: the personal-index fanout lane was removed
+ * and the org-scoped TeamInboxRoom replacement is not shipped.
  *
- * Positioning uses `@floating-ui/react` (project rule — never manual
- * `position: fixed`). The MarkNode + `INSERT_INLINE_COMMENT_COMMAND` live in
- * `CommentsExtension`; this component owns the React UI and store wiring.
+ * The MarkNode + `INSERT_INLINE_COMMENT_COMMAND` live in `CommentsExtension`;
+ * this component owns the React UI and store wiring.
  */
 
 import type { JSX } from 'react';
@@ -28,14 +27,6 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 
-import {
-  autoUpdate,
-  flip,
-  FloatingPortal,
-  offset,
-  shift,
-  useFloating,
-} from '@floating-ui/react';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { LexicalComposer } from '@lexical/react/LexicalComposer';
 import { PlainTextPlugin } from '@lexical/react/LexicalPlainTextPlugin';
@@ -50,20 +41,24 @@ import {
   $isRangeSelection,
   $isTextNode,
   COMMAND_PRIORITY_HIGH,
-  getDOMSelection,
   KEY_ENTER_COMMAND,
   type NodeKey,
 } from 'lexical';
 
-import { getDOMRangeRect } from '../../utils/getDOMRangeRect';
 import {
   CommentStore,
   createComment,
   createThread,
+  normalizeCommentActor,
   useCommentStore,
   type Comment,
+  type CommentActor,
   type Thread,
 } from '../../commenting';
+import {
+  collabCommentControllerRegistry,
+  createCollabCommentController,
+} from '../../commenting/CollabCommentControllerRegistry';
 import { CommentCollabProvider } from '../../commenting/CommentCollabProvider';
 import type {
   CommentMember,
@@ -72,6 +67,7 @@ import type {
 } from '../../commenting/types';
 import { INSERT_INLINE_COMMENT_COMMAND } from '../../extensions/builtin/CommentsExtension';
 import { OPEN_COMMENT_COMPOSER_COMMAND } from './commands';
+import { scrollToCommentAnchor } from './scrollToCommentAnchor';
 import {
   TypeaheadMenuPlugin,
   type TypeaheadMenuOption,
@@ -95,6 +91,55 @@ function formatTimestamp(ts: number): string {
   } catch {
     return '';
   }
+}
+
+function createClientMutationId(): string {
+  return typeof globalThis.crypto?.randomUUID === 'function'
+    ? globalThis.crypto.randomUUID()
+    : `comment-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function getActorName(comment: Comment): string {
+  const actor = normalizeCommentActor(comment.actor, comment.author);
+  return actor.kind === 'agent' ? actor.sessionName : actor.displayName;
+}
+
+function getReplyTargetName(thread: Thread, comment: Comment): string {
+  const target = thread.comments.find(
+    (candidate) => candidate.id === comment.replyToCommentId,
+  );
+  return target ? getActorName(target) : 'an earlier comment';
+}
+
+function CommentActorLabel({ comment }: { comment: Comment }): JSX.Element {
+  const actor = normalizeCommentActor(comment.actor, comment.author);
+  if (actor.kind === 'user') {
+    return <span className="nim-comment-author">{actor.displayName}</span>;
+  }
+  return (
+    <button
+      type="button"
+      className="nim-comment-agent-author"
+      title={`Open agent session ${actor.sessionName}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        window.dispatchEvent(
+          new CustomEvent('open-ai-session', {
+            detail: { sessionId: actor.sessionId },
+          }),
+        );
+      }}
+    >
+      <span className="material-symbols-outlined">smart_toy</span>
+      <span>{actor.sessionName}</span>
+      <span className="nim-comment-agent-badge">Agent</span>
+      {actor.onBehalfOfDisplayName && (
+        <span className="nim-comment-agent-owner">
+          for {actor.onBehalfOfDisplayName}
+        </span>
+      )}
+    </button>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -417,9 +462,7 @@ function CommentsPanel({
                     {thread.comments.map((comment) => (
                       <div key={comment.id} className="nim-comment">
                         <div className="nim-comment-meta">
-                          <span className="nim-comment-author">
-                            {comment.author}
-                          </span>
+                          <CommentActorLabel comment={comment} />
                           <span className="nim-comment-time">
                             {formatTimestamp(comment.timeStamp)}
                           </span>
@@ -438,6 +481,11 @@ function CommentsPanel({
                             </span>
                           </button>
                         </div>
+                        {comment.replyToCommentId && (
+                          <div className="nim-comment-reply-target">
+                            Replying to {getReplyTargetName(thread, comment)}
+                          </div>
+                        )}
                         <div className="nim-comment-content">
                           {comment.content}
                         </div>
@@ -449,13 +497,26 @@ function CommentsPanel({
                     >
                       <CommentComposer
                         getMembers={getMembers}
-                        submitLabel="Reply"
-                        placeholder="Reply..."
-                        autoFocus={false}
+                        submitLabel={
+                          thread.comments.length === 0 ? 'Comment' : 'Reply'
+                        }
+                        placeholder={
+                          thread.comments.length === 0
+                            ? 'Add a comment... use @ to mention'
+                            : 'Reply...'
+                        }
+                        autoFocus={
+                          thread.comments.length === 0 &&
+                          thread.id === activeThreadId
+                        }
                         onSubmit={(text, mentioned) =>
                           onReply(thread, text, mentioned)
                         }
-                        onCancel={() => {}}
+                        onCancel={() => {
+                          if (thread.comments.length === 0) {
+                            onDeleteThread(thread);
+                          }
+                        }}
                       />
                       <button
                         type="button"
@@ -509,11 +570,11 @@ export default function CommentsPlugin({
   const commentStore = useMemo(() => new CommentStore(editor), [editor]);
   const comments = useCommentStore(commentStore);
   const markNodeMapRef = useRef<MarkNodeMap>(new Map());
+  const controllerInstanceIdRef = useRef(
+    `comments-${Math.random().toString(36).slice(2, 12)}`,
+  );
   const [markVersion, setMarkVersion] = useState(0);
 
-  const [composer, setComposer] = useState<{ thread: Thread; rect: DOMRect } | null>(
-    null,
-  );
   const [panelOpen, setPanelOpen] = useState(false);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
 
@@ -532,6 +593,67 @@ export default function CommentsPlugin({
       unregister();
     };
   }, [commentStore, config]);
+
+  // -- Expose the mounted collaborative comment surface to renderer IPC -----
+  useEffect(() => {
+    const controller = createCollabCommentController({
+      commentStore,
+      currentUser: config.currentUser,
+      documentTitle: config.documentTitle,
+      documentUri: config.documentUri,
+      editor,
+      getCapabilities: () =>
+        config.getCapabilities?.() ?? { read: true, comment: true },
+      getMembers: config.getMembers,
+      isHydrated: () => config.isHydrated?.() ?? config.getYDoc() !== null,
+      isVisible: () => {
+        const root = editor.getRootElement();
+        return Boolean(root?.isConnected && root.getClientRects().length > 0);
+      },
+      onCommitted: ({
+        actor,
+        comment,
+        mentionedUserIds,
+        replyRecipientUserIds,
+        thread,
+      }) => {
+        const actorName =
+          actor.kind === 'agent' ? actor.sessionName : actor.displayName;
+        const mentionRecipients = mentionedUserIds.filter(
+          (id) => id !== config.currentUser.id,
+        );
+        const payload: CommentMentionPayload = {
+          actorName,
+          sourceTitle: config.documentTitle,
+          snippet: comment.content.slice(0, 200),
+          commentId: comment.id,
+          threadId: thread.id,
+          markId: thread.id,
+          url: config.documentUri,
+        };
+        if (mentionRecipients.length > 0) {
+          config.onMention?.(mentionRecipients, payload);
+        }
+        const replyRecipients = replyRecipientUserIds.filter(
+          (id) =>
+            id !== config.currentUser.id && !mentionRecipients.includes(id),
+        );
+        if (replyRecipients.length > 0 && comment.clientMutationId) {
+          config.onReply?.(replyRecipients, {
+            ...payload,
+            commentId: comment.id,
+            clientMutationId: comment.clientMutationId,
+            replyToCommentId: comment.replyToCommentId,
+          });
+        }
+      },
+    });
+    return collabCommentControllerRegistry.register(
+      config.documentUri,
+      controllerInstanceIdRef.current,
+      controller,
+    );
+  }, [commentStore, config, editor]);
 
   // -- Track MarkNode keys per comment id ------------------------------------
   useEffect(() => {
@@ -639,30 +761,37 @@ export default function CommentsPlugin({
 
   const scrollToThread = useCallback(
     (id: string) => {
-      const keys = markNodeMapRef.current.get(id);
-      if (!keys) return;
-      for (const key of keys) {
-        const el = editor.getElementByKey(key);
-        if (el) {
-          el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-          break;
-        }
-      }
+      const thread = threads.find((candidate) => candidate.id === id);
+      if (!thread) return;
+      scrollToCommentAnchor(
+        editor,
+        markNodeMapRef.current,
+        thread.id,
+        thread.quote,
+      );
     },
-    [editor],
+    [editor, threads],
   );
 
   const fanoutMention = useCallback(
-    (mentionedUserIds: string[], snippet: string, threadId: string) => {
+    (
+      mentionedUserIds: string[],
+      snippet: string,
+      threadId: string,
+      commentId: string,
+      actor: CommentActor,
+    ) => {
       if (!config.onMention || mentionedUserIds.length === 0) return;
       const recipients = mentionedUserIds.filter(
         (id) => id !== config.currentUser.id,
       );
       if (recipients.length === 0) return;
       const payload: CommentMentionPayload = {
-        actorName: config.currentUser.name,
+        actorName:
+          actor.kind === 'agent' ? actor.sessionName : actor.displayName,
         sourceTitle: config.documentTitle,
         snippet: snippet.slice(0, 200),
+        commentId,
         threadId,
         markId: threadId,
         url: config.documentUri,
@@ -676,17 +805,11 @@ export default function CommentsPlugin({
   const handleAddComment = useCallback(() => {
     let quote = '';
     let isBackward = false;
-    let selectionRect = new DOMRect();
     editor.getEditorState().read(() => {
       const selection = $getSelection();
       if ($isRangeSelection(selection)) {
         quote = selection.getTextContent();
         isBackward = selection.isBackward();
-        const nativeSelection = getDOMSelection(editor._window);
-        const rootElement = editor.getRootElement();
-        if (nativeSelection && rootElement) {
-          selectionRect = getDOMRangeRect(nativeSelection, rootElement);
-        }
       }
     });
     if (!quote.trim()) return;
@@ -698,7 +821,7 @@ export default function CommentsPlugin({
       isBackward,
     });
 
-    setComposer({ thread, rect: selectionRect });
+    setPanelOpen(true);
     setActiveThreadId(thread.id);
   }, [editor, commentStore]);
 
@@ -715,40 +838,44 @@ export default function CommentsPlugin({
     [editor, handleAddComment],
   );
 
-  const handleComposerSubmit = useCallback(
-    (text: string, mentionedUserIds: string[]) => {
-      const current = composer;
-      if (!current) return;
-      const comment = createComment(text, config.currentUser.name);
-      commentStore.addComment(comment, current.thread);
-      fanoutMention(mentionedUserIds, text, current.thread.id);
-      setComposer(null);
-      setPanelOpen(true);
-      setActiveThreadId(current.thread.id);
-    },
-    [composer, commentStore, config.currentUser.name, fanoutMention],
-  );
-
-  const handleComposerCancel = useCallback(() => {
-    const current = composer;
-    if (!current) return;
-    // An empty new thread (the composer was opened but never submitted) is
-    // discarded along with its mark.
-    if (current.thread.comments.length === 0) {
-      commentStore.deleteCommentOrThread(current.thread);
-      removeMark(current.thread.id);
-    }
-    setComposer(null);
-  }, [composer, commentStore, removeMark]);
-
   const handleReply = useCallback(
     (thread: Thread, text: string, mentionedUserIds: string[]) => {
-      const comment = createComment(text, config.currentUser.name);
+      const actor: CommentActor = {
+        kind: 'user',
+        userId: config.currentUser.id,
+        displayName: config.currentUser.name,
+      };
+      const replyTarget = thread.comments.at(-1);
+      const clientMutationId = createClientMutationId();
+      const comment = createComment(text, config.currentUser.name, {
+        actor,
+        clientMutationId,
+        replyToCommentId: replyTarget?.id,
+      });
       commentStore.addComment(comment, thread);
-      fanoutMention(mentionedUserIds, text, thread.id);
+      fanoutMention(mentionedUserIds, text, thread.id, comment.id, actor);
+      const replyRecipient =
+        replyTarget?.actor?.kind === 'user' ? replyTarget.actor.userId : undefined;
+      if (
+        replyRecipient &&
+        replyRecipient !== config.currentUser.id &&
+        !mentionedUserIds.includes(replyRecipient)
+      ) {
+        config.onReply?.([replyRecipient], {
+          actorName: config.currentUser.name,
+          sourceTitle: config.documentTitle,
+          snippet: text.slice(0, 200),
+          threadId: thread.id,
+          markId: thread.id,
+          url: config.documentUri,
+          commentId: comment.id,
+          clientMutationId,
+          replyToCommentId: replyTarget?.id,
+        });
+      }
       setActiveThreadId(thread.id);
     },
-    [commentStore, config.currentUser.name, fanoutMention],
+    [commentStore, config, fanoutMention],
   );
 
   const handleSetThreadResolved = useCallback(
@@ -797,22 +924,6 @@ export default function CommentsPlugin({
 
   const getMembers = useCallback(() => config.getMembers(), [config]);
 
-  // -- Floating positioning --------------------------------------------------
-  const composerFloat = useFloating({
-    placement: 'bottom-start',
-    middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 })],
-    whileElementsMounted: autoUpdate,
-  });
-
-  const composerReference = useMemo(
-    () => ({ getBoundingClientRect: () => composer?.rect ?? new DOMRect() }),
-    [composer],
-  );
-
-  useEffect(() => {
-    composerFloat.refs.setReference(composerReference);
-  }, [composerFloat.refs, composerReference]);
-
   // Reserve room on the right of the editor pane while the panel is docked
   // open, so document text isn't hidden underneath it.
   useEffect(() => {
@@ -824,25 +935,6 @@ export default function CommentsPlugin({
 
   return (
     <>
-      {composer && (
-        <FloatingPortal>
-          <div
-            ref={composerFloat.refs.setFloating}
-            style={composerFloat.floatingStyles}
-            className="nim-comment-composer-popover"
-          >
-            <CommentComposer
-              getMembers={getMembers}
-              submitLabel="Comment"
-              placeholder="Add a comment... use @ to mention"
-              autoFocus
-              onSubmit={handleComposerSubmit}
-              onCancel={handleComposerCancel}
-            />
-          </div>
-        </FloatingPortal>
-      )}
-
       {/* Toggle + panel dock into the editor pane (not <body>) so they stay
           scoped to this tab. */}
       {!panelOpen &&

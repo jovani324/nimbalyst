@@ -3,11 +3,13 @@ import './UnifiedOnboarding.css';
 
 export interface UnifiedOnboardingProps {
   isOpen: boolean;
-  onComplete: (data: OnboardingData) => void;
+  onComplete: (data: OnboardingData, intent: OnboardingIntent) => void | Promise<void>;
   onSkip: () => void;
   /** Force showing as new user ('new') or existing user ('existing') for testing */
   forcedMode?: 'new' | 'existing' | null;
 }
+
+export type OnboardingIntent = 'get-started' | 'tutorial';
 
 export interface OnboardingData {
   role: string | null;
@@ -39,6 +41,11 @@ const REFERRAL_OPTIONS = [
   { value: 'friend', label: 'Friend' },
   { value: 'ai', label: 'AI' },
   { value: 'ad', label: 'Ad' },
+  { value: 'youtube', label: 'YouTube' },
+  { value: 'github', label: 'GitHub' },
+  { value: 'course_training', label: 'Course/Training' },
+  { value: 'podcast', label: 'Podcast' },
+  { value: 'newsletter_article', label: 'Newsletter/Article' },
   { value: 'other', label: 'Other' },
 ];
 
@@ -73,6 +80,7 @@ export const UnifiedOnboarding: React.FC<UnifiedOnboardingProps> = ({
   const [referralSource, setReferralSource] = useState<string>('');
   const [customReferral, setCustomReferral] = useState<string>('');
   const [aiDetail, setAiDetail] = useState<string>('');
+  const [searchDetail, setSearchDetail] = useState<string>('');
   const [socialMediaPlatform, setSocialMediaPlatform] = useState<string>('');
   const [email, setEmail] = useState<string>('');
   const [emailError, setEmailError] = useState<string>('');
@@ -131,6 +139,7 @@ export const UnifiedOnboarding: React.FC<UnifiedOnboardingProps> = ({
       setReferralSource('');
       setCustomReferral('');
       setAiDetail('');
+      setSearchDetail('');
       setSocialMediaPlatform('');
       setEmail('');
       setEmailError('');
@@ -172,14 +181,15 @@ export const UnifiedOnboarding: React.FC<UnifiedOnboardingProps> = ({
     }
   };
 
-  const handleComplete = () => {
-    // Build referral source string: if social, append platform (e.g., "social:LinkedIn")
-    // If other, append custom text (e.g., "other:Podcast")
+  const handleComplete = (intent: OnboardingIntent) => {
+    // Append optional detail to referral sources that collect a follow-up answer.
     let finalReferralSource = referralSource || null;
     if (referralSource === 'social' && socialMediaPlatform) {
       finalReferralSource = `social:${socialMediaPlatform}`;
     } else if (referralSource === 'ai' && aiDetail.trim()) {
       finalReferralSource = `ai:${aiDetail.trim()}`;
+    } else if (referralSource === 'search' && searchDetail.trim()) {
+      finalReferralSource = `search:${searchDetail.trim()}`;
     } else if (referralSource === 'other' && customReferral.trim()) {
       finalReferralSource = `other:${customReferral.trim()}`;
     }
@@ -191,7 +201,7 @@ export const UnifiedOnboarding: React.FC<UnifiedOnboardingProps> = ({
       email: email.trim() || null,
       developerMode: developerMode ?? false,
     };
-    onComplete(data);
+    void onComplete(data, intent);
   };
 
   if (!isOpen) return null;
@@ -337,6 +347,9 @@ export const UnifiedOnboarding: React.FC<UnifiedOnboardingProps> = ({
                     if (e.target.value !== 'ai') {
                       setAiDetail('');
                     }
+                    if (e.target.value !== 'search') {
+                      setSearchDetail('');
+                    }
                   }}
                   className="unified-onboarding-select"
                   disabled={!isModeSelected}
@@ -371,6 +384,22 @@ export const UnifiedOnboarding: React.FC<UnifiedOnboardingProps> = ({
                       placeholder="What model and prompt did you use?"
                       value={aiDetail}
                       onChange={(e) => setAiDetail(e.target.value)}
+                      className="unified-onboarding-input"
+                      disabled={!isModeSelected}
+                      autoFocus
+                    />
+                  </div>
+                )}
+
+                {referralSource === 'search' && (
+                  <div className="custom-role-input">
+                    <input
+                      id="search-detail-input"
+                      type="text"
+                      aria-label="What did you search for?"
+                      placeholder="What did you search for?"
+                      value={searchDetail}
+                      onChange={(e) => setSearchDetail(e.target.value)}
                       className="unified-onboarding-input"
                       disabled={!isModeSelected}
                       autoFocus
@@ -432,13 +461,24 @@ export const UnifiedOnboarding: React.FC<UnifiedOnboardingProps> = ({
         </div>
 
         <div className="unified-onboarding-footer unified-onboarding-footer-single">
-          <button
-            className="unified-onboarding-submit"
-            onClick={handleComplete}
-            disabled={!isModeSelected || (showDataCollection && !isEmailValid)}
-          >
-            Get Started
-          </button>
+          <div className="unified-onboarding-footer-buttons">
+            <button
+              type="button"
+              className="unified-onboarding-secondary-button"
+              onClick={() => handleComplete('get-started')}
+              disabled={!isModeSelected || (showDataCollection && !isEmailValid)}
+            >
+              Get started…
+            </button>
+            <button
+              type="button"
+              className="unified-onboarding-submit"
+              onClick={() => handleComplete('tutorial')}
+              disabled={!isModeSelected || (showDataCollection && !isEmailValid)}
+            >
+              Start tutorial
+            </button>
+          </div>
           <p className="unified-onboarding-legal-links">
             By continuing, you agree to our{' '}
             <a

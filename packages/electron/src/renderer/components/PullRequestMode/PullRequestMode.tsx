@@ -7,10 +7,17 @@
  */
 
 import type { JSX } from 'react';
-import { useCallback, useEffect } from 'react';
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+} from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { ResizablePanel } from '../AgenticCoding/ResizablePanel';
+import { ChatSidebar, type ChatSidebarRef } from '../ChatSidebar';
 import {
   prRemoteAtom,
   prModeLayoutAtom,
@@ -21,26 +28,39 @@ import {
   type PrFilterChip,
 } from '../../store/atoms/pullRequests';
 import { getPullRequestService } from '../../services/RendererPullRequestService';
-import { dispatchOpenWorktreeSession } from '../../store/actions/sessionHistoryActions';
+import {
+  dispatchCreateNewSession,
+  dispatchOpenWorktreeSession,
+} from '../../store/actions/sessionHistoryActions';
 import { setWindowModeAtom } from '../../store/atoms/windowMode';
 import { GhOnboardingBanner } from './GhOnboardingBanner';
 import { PullRequestSidebar } from './PullRequestSidebar';
 import { PullRequestListView } from './PullRequestListView';
 import { PullRequestDetail } from './PullRequestDetail';
-import { usePrTrackerReferences } from './usePrTrackerContext';
+import { buildReviewContributionDraft } from './prFormat';
+import { usePrAiContext } from './usePrAiContext';
+import { usePrTrackerContext, usePrTrackerReferences } from './usePrTrackerContext';
 
 interface PullRequestModeProps {
   workspacePath: string;
   workspaceName: string;
   isActive: boolean;
-  onSwitchToFilesMode?: () => void;
+  onFileOpen?: (filePath: string) => Promise<void> | void;
+  onPanelStateChange?: (state: { chatCollapsed: boolean }) => void;
 }
 
-export function PullRequestMode({
+export interface PullRequestModeRef {
+  toggleChatCollapsed: () => void;
+  createNewChatSession: () => Promise<void>;
+}
+
+export const PullRequestMode = forwardRef<PullRequestModeRef, PullRequestModeProps>(function PullRequestMode({
   workspacePath,
   workspaceName,
   isActive,
-}: PullRequestModeProps): JSX.Element {
+  onFileOpen,
+  onPanelStateChange,
+}, ref): JSX.Element {
   const remote = useAtomValue(prRemoteAtom);
   const layout = useAtomValue(prModeLayoutAtom);
   const setLayout = useSetAtom(setPrModeLayoutAtom);
@@ -52,6 +72,7 @@ export function PullRequestMode({
   const remoteForWorkspace =
     remote && remote.workspacePath === workspacePath ? remote.remote : null;
   const trackerReferences = usePrTrackerReferences(remoteForWorkspace);
+  const chatSidebarRef = useRef<ChatSidebarRef>(null);
 
   // Load persisted layout when the workspace becomes known / changes.
   useEffect(() => {
@@ -127,10 +148,112 @@ export function PullRequestMode({
     [setLayout],
   );
 
+  const handleChatWidthChange = useCallback(
+    (width: number) => setLayout({ chatWidth: width }),
+    [setLayout],
+  );
+
+  const toggleChatCollapsed = useCallback(() => {
+    setLayout({ chatCollapsed: !layout.chatCollapsed });
+  }, [layout.chatCollapsed, setLayout]);
+
   const selectedPr =
     layout.selectedItemId != null
       ? prList.find((pr) => pr.id === layout.selectedItemId) ?? null
       : null;
+  const { documentContext, getDocumentContext } = usePrAiContext(
+    remoteForWorkspace,
+    selectedPr,
+    isActive,
+  );
+
+  // Tracker/session context for the selected PR, resolved once here and handed
+  // to the detail header — the chat pane and the header chips must agree on
+  // which sessions belong to this PR.
+  const prTrackerContext = usePrTrackerContext(
+    workspacePath,
+    remoteForWorkspace,
+    selectedPr?.number ?? 0,
+  );
+
+  useEffect(() => {
+    onPanelStateChange?.({ chatCollapsed: layout.chatCollapsed });
+  }, [layout.chatCollapsed, onPanelStateChange]);
+
+  useImperativeHandle(ref, () => ({
+    toggleChatCollapsed,
+    createNewChatSession: async () => {
+      if (layout.chatCollapsed) {
+        setLayout({ chatCollapsed: false });
+      }
+      await chatSidebarRef.current?.createNewSession();
+    },
+  }), [layout.chatCollapsed, setLayout, toggleChatCollapsed]);
+
+  const linkSessionToPrTrackers = useCallback((sessionId: string, prNumber: number) => {
+    const referencingItems = trackerReferences.get(prNumber) ?? [];
+    for (const item of referencingItems) {
+      void window.electronAPI
+        .invoke('tracker:link-session', { trackerId: item.id, sessionId })
+        .catch((err: unknown) =>
+          console.error('[PullRequestMode] Failed to link session to tracker item', err),
+        );
+    }
+  }, [trackerReferences]);
+
+  /**
+   * Load an already-linked session into this pane's chat sidebar. Reviewing a
+   * PR stays in PR mode — jumping to Agent mode would lose the diff the session
+   * is about.
+   */
+  const handleOpenSessionInChat = useCallback((sessionId: string) => {
+    if (layout.chatCollapsed) {
+      setLayout({ chatCollapsed: false });
+    }
+    chatSidebarRef.current?.loadSession(sessionId);
+  }, [layout.chatCollapsed, setLayout]);
+
+  /**
+   * Selecting a PR points the chat pane at that PR's most recent linked
+   * session, so the review conversation follows the selection. Kept per PR id
+   * so a manual session switch within one PR isn't undone by a re-render, and
+   * skipped when the PR has no linked session — the pane keeps what it had.
+   * A collapsed pane stays collapsed; selecting a PR isn't a request to open
+   * the chat.
+   */
+  const autoOpenedPrIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectedPr) {
+      autoOpenedPrIdRef.current = null;
+      return;
+    }
+    if (autoOpenedPrIdRef.current === selectedPr.id) return;
+    // Sessions resolve asynchronously (tracker items, worktree lookup); until
+    // one shows up this effect re-runs and stays a no-op.
+    const [mostRecent] = prTrackerContext.sessions;
+    if (!mostRecent) return;
+    autoOpenedPrIdRef.current = selectedPr.id;
+    chatSidebarRef.current?.loadSession(mostRecent.id);
+  }, [selectedPr, prTrackerContext.sessions]);
+
+  const handleStartReviewSession = useCallback(async () => {
+    if (!selectedPr || !remoteForWorkspace) return;
+    const sessionId = await dispatchCreateNewSession(
+      buildReviewContributionDraft(remoteForWorkspace, selectedPr.number),
+    );
+    if (!sessionId) return;
+    linkSessionToPrTrackers(sessionId, selectedPr.number);
+    if (layout.chatCollapsed) {
+      setLayout({ chatCollapsed: false });
+    }
+    chatSidebarRef.current?.loadSession(sessionId);
+  }, [
+    selectedPr,
+    remoteForWorkspace,
+    linkSessionToPrTrackers,
+    layout.chatCollapsed,
+    setLayout,
+  ]);
 
   // Create (or reuse) a worktree on the PR's head branch (the branch being
   // merged), then jump to Agent mode with that worktree selected so the dev
@@ -154,20 +277,13 @@ export function PullRequestMode({
       // referencing this PR (no auto-create — item creation belongs to the
       // user or their triage workflows).
       if (sessionId) {
-        const referencingItems = trackerReferences.get(selectedPr.number) ?? [];
-        for (const item of referencingItems) {
-          void window.electronAPI
-            .invoke('tracker:link-session', { trackerId: item.id, sessionId })
-            .catch((err: unknown) =>
-              console.error('[PullRequestMode] Failed to link session to tracker item', err),
-            );
-        }
+        linkSessionToPrTrackers(sessionId, selectedPr.number);
       }
       setWindowMode('agent');
     } catch (err) {
       console.error('[PullRequestMode] Failed to open PR worktree', err);
     }
-  }, [selectedPr, remoteForWorkspace, workspacePath, setWindowMode, trackerReferences]);
+  }, [selectedPr, remoteForWorkspace, workspacePath, setWindowMode, linkSessionToPrTrackers]);
 
   if (!remoteForWorkspace) {
     return (
@@ -208,7 +324,10 @@ export function PullRequestMode({
             workspaceId={workspacePath}
             remote={remoteForWorkspace}
             pr={selectedPr}
+            trackerContext={prTrackerContext}
             onClose={() => setLayout({ selectedItemId: null })}
+            onStartReviewSession={handleStartReviewSession}
+            onOpenSession={handleOpenSessionInChat}
             onOpenInWorktree={handleOpenInWorktree}
           />
         ) : (
@@ -230,14 +349,30 @@ export function PullRequestMode({
 
   return (
     <div className="pr-review-mode flex-1 flex flex-row overflow-hidden min-h-0">
-      <ResizablePanel
-        leftPanel={sidebarContent}
-        rightPanel={mainContent}
-        leftWidth={layout.sidebarWidth}
-        minWidth={160}
-        maxWidth={550}
-        onWidthChange={handleSidebarWidthChange}
+      <div className="pr-review-content flex-1 min-w-0 overflow-hidden">
+        <ResizablePanel
+          leftPanel={sidebarContent}
+          rightPanel={mainContent}
+          leftWidth={layout.sidebarWidth}
+          minWidth={160}
+          maxWidth={550}
+          onWidthChange={handleSidebarWidthChange}
+        />
+      </div>
+      <ChatSidebar
+        ref={chatSidebarRef}
+        workspacePath={workspacePath}
+        isActive={isActive}
+        isCollapsed={layout.chatCollapsed}
+        onToggleCollapse={toggleChatCollapsed}
+        width={layout.chatWidth}
+        onWidthChange={handleChatWidthChange}
+        documentContext={documentContext}
+        getDocumentContext={getDocumentContext}
+        onFileOpen={onFileOpen}
       />
     </div>
   );
-}
+});
+
+PullRequestMode.displayName = 'PullRequestMode';

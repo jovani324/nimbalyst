@@ -25,7 +25,6 @@ function createProvider(documentKey: CryptoKey): DocumentSyncProvider {
     serverUrl: 'ws://example.test',
     getJwt: async () => 'token',
     orgId: 'org-1',
-    documentKey,
     userId: 'user-1',
     documentId: 'doc-1',
     reviewGateEnabled: false,
@@ -108,6 +107,37 @@ describe('DocumentSync force-replace recovery', () => {
     primeForForceReplace(provider, fakeWs);
 
     expect(await provider.forceReplaceServerState(30)).toBe(false);
+    provider.destroy();
+  });
+
+  it('finalizes a fully decoded empty document without using the recovery override', async () => {
+    const provider = createProvider(await createDocumentKey());
+    const fakeWs = createFakeWebSocket();
+    primeForForceReplace(provider, fakeWs);
+
+    const promise = provider.finalizeServerManagedState(1000);
+    const compact = await waitFor(() => fakeWs.sent.find((m) => m.type === 'docCompact'));
+    expect(compact.replacesUpTo).toBe(500);
+
+    (provider as any).handleCompactionAck({
+      type: 'docCompactAck',
+      clientCompactId: compact.clientCompactId,
+      accepted: true,
+      replacesUpTo: compact.replacesUpTo,
+    });
+
+    expect(await promise).toBe(true);
+    provider.destroy();
+  });
+
+  it('refuses to finalize when any server content was undecodable', async () => {
+    const provider = createProvider(await createDocumentKey());
+    const fakeWs = createFakeWebSocket();
+    primeForForceReplace(provider, fakeWs);
+    (provider as any).skippedUndecodablePayload = true;
+
+    await expect(provider.finalizeServerManagedState(1000)).rejects.toThrow(/decrypt/i);
+    expect(fakeWs.sent.some((m) => m.type === 'docCompact')).toBe(false);
     provider.destroy();
   });
 });

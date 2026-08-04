@@ -19,6 +19,7 @@ import type {
   ChatSession,
   AgentMessage
 } from '@nimbalyst/runtime';
+import { filterSessionsForPersonalSync } from '@nimbalyst/runtime/sync';
 
 type PGliteLike = {
   query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }>;
@@ -158,7 +159,7 @@ export async function getAllSessionsForSync(includeMessages = false): Promise<Ar
     return true;
   });
 
-  const sessions = validRows.map((row: any) => {
+  const sessions = filterSessionsForPersonalSync(validRows.map((row: any) => {
     return {
       id: row.id,
       title: row.title || 'Untitled',
@@ -188,7 +189,7 @@ export async function getAllSessionsForSync(includeMessages = false): Promise<Ar
       metadata: normalizeJsonObject(row.metadata),
       messages: undefined as SyncedMessage[] | undefined,
     };
-  });
+  }));
 
   // Optionally fetch messages for each session (include hidden - mobile filters client-side)
   if (includeMessages) {
@@ -521,6 +522,19 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
         `UPDATE ai_sessions SET ${setClause} WHERE id=$1`,
         values
       );
+
+      // GitHub #925 / NIM-1831: a workstream is archived (or restored) as a unit.
+      // Cascade the is_archived flag to direct children (linked by
+      // parent_session_id) so archiving a workstream parent doesn't leave its
+      // child sessions active — invisible orphans that keep counting toward the
+      // active total. buildSessionArchiveFilter only checks a row's own
+      // is_archived, so the children must carry the flag themselves.
+      if (metadata.isArchived !== undefined) {
+        await db.query(
+          `UPDATE ai_sessions SET is_archived=$2 WHERE parent_session_id=$1`,
+          [sessionId, metadata.isArchived]
+        );
+      }
     },
 
     async get(sessionId: string): Promise<ChatSession | null> {

@@ -2806,6 +2806,12 @@ class PGLiteWorker {
         CREATE INDEX IF NOT EXISTS idx_tracker_personal_state_scope
           ON tracker_personal_state (user_email, scope);
       `);
+      // Personal triage snooze (schema version 29). Mirror of SQLite
+      // 0029_tracker_personal_snooze.sql. Added separately so databases created
+      // before the inbox existed pick the column up on the next launch.
+      await this.db.exec(`
+        ALTER TABLE tracker_personal_state ADD COLUMN IF NOT EXISTS snoozed_until BIGINT;
+      `);
       console.log('[PGLite Worker] tracker_personal_state table created successfully');
     } catch (error) {
       console.error('[PGLite Worker] Failed to create tracker_personal_state table:', error);
@@ -2836,6 +2842,33 @@ class PGLiteWorker {
       console.log('[PGLite Worker] tracker_type_navigation table created successfully');
     } catch (error) {
       console.error('[PGLite Worker] Failed to create tracker_type_navigation table:', error);
+      throw error;
+    }
+
+    // Migration: team-shared tracker saved views (schema version 28).
+    // Mirror of SQLite migration 0028_tracker_shared_saved_views.sql.
+    // Payload is stored as TEXT (not JSONB) so the row round-trips byte-for-byte
+    // through the sync lane; see DATABASE.md on the JSONB sub-extraction divergence.
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS tracker_shared_saved_views (
+          workspace   TEXT NOT NULL,
+          view_id     TEXT NOT NULL,
+          payload     TEXT NOT NULL,
+          updated     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          deleted_at  TIMESTAMPTZ,
+          sync_id     BIGINT,
+          sync_status TEXT NOT NULL DEFAULT 'local',
+          PRIMARY KEY (workspace, view_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_tracker_shared_saved_views_sync
+          ON tracker_shared_saved_views (workspace, sync_status);
+        CREATE INDEX IF NOT EXISTS idx_tracker_shared_saved_views_cursor
+          ON tracker_shared_saved_views (workspace, sync_id);
+      `);
+      console.log('[PGLite Worker] tracker_shared_saved_views table created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create tracker_shared_saved_views table:', error);
       throw error;
     }
 
@@ -2955,6 +2988,55 @@ class PGLiteWorker {
       console.log('[PGLite Worker] collab document replica tables created successfully');
     } catch (error) {
       console.error('[PGLite Worker] Failed to create collab document replica tables:', error);
+      throw error;
+    }
+
+    // Migration: per-tool usage counters (schema version 26).
+    // Mirror of SQLite 0026_tool_usage_counters.sql.
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS tool_usage_counters (
+          tool_name    TEXT NOT NULL,
+          mcp_server   TEXT,
+          mcp_tool     TEXT,
+          provider     TEXT NOT NULL DEFAULT '',
+          project_path TEXT NOT NULL DEFAULT '',
+          day          TEXT NOT NULL,
+          count        INTEGER NOT NULL DEFAULT 0,
+          error_count  INTEGER NOT NULL DEFAULT 0,
+          first_used   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          last_used    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (tool_name, provider, project_path, day)
+        );
+        CREATE INDEX IF NOT EXISTS idx_tool_usage_day ON tool_usage_counters (day);
+        CREATE INDEX IF NOT EXISTS idx_tool_usage_server ON tool_usage_counters (mcp_server);
+      `);
+      console.log('[PGLite Worker] tool_usage_counters table created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create tool_usage_counters table:', error);
+      throw error;
+    }
+
+    // Migration: retry-safe historical tool-usage backfill state (schema version 27).
+    // Mirror of SQLite 0027_tool_usage_backfill_state.sql.
+    try {
+      await this.db.exec(`
+        CREATE TABLE IF NOT EXISTS tool_usage_backfill_meta (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+          cutoff_at TIMESTAMPTZ NOT NULL
+        );
+        INSERT INTO tool_usage_backfill_meta (singleton, cutoff_at)
+        VALUES (1, NOW())
+        ON CONFLICT (singleton) DO NOTHING;
+
+        CREATE TABLE IF NOT EXISTS tool_usage_backfill_sessions (
+          session_id TEXT PRIMARY KEY,
+          backfilled_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+      `);
+      console.log('[PGLite Worker] tool usage backfill state created successfully');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to create tool usage backfill state:', error);
       throw error;
     }
   }

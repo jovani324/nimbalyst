@@ -5,7 +5,7 @@ import { useTabsActions, useTabNavigationShortcuts, type TabData } from '../../c
 import { store, editorDirtyAtom, makeEditorKey } from '@nimbalyst/runtime/store';
 import { fileDeletedAtomFamily } from '../../store/atoms/fileWatch';
 import { pushNavigationEntryAtom, isRestoringNavigationAtom, historyDialogFileAtom } from '../../store';
-import { newBrowserTabRequestAtom, newMockupRequestAtom, toggleAIChatPanelRequestAtom } from '../../store/atoms/appCommands';
+import { newBrowserTabRequestAtom, newMockupRequestAtom } from '../../store/atoms/appCommands';
 import { useTabNavigation } from '../../hooks/useTabNavigation';
 import { useEditorMaximize } from '../../hooks/useEditorMaximize';
 import { useResizeDragShield } from '../../hooks/useResizeDragShield';
@@ -19,7 +19,7 @@ import { editorRegistry } from '@nimbalyst/runtime/ai/EditorRegistry';
 import { getExtensionLoader } from '@nimbalyst/runtime';
 import { customEditorRegistry } from '../CustomEditors';
 import { WorkspaceSidebar } from '../WorkspaceSidebar';
-import { WorkspaceWelcome } from '../WorkspaceWelcome';
+import { WorkspaceWelcome, type WelcomeFileQuickPick } from '../WorkspaceWelcome';
 import { TabManager } from '../TabManager/TabManager';
 import { TabContent } from '../TabContent/TabContent';
 import { ChatSidebar, type ChatSidebarRef } from '../ChatSidebar';
@@ -28,6 +28,7 @@ import type { NewFileType, ExtensionFileType } from '../NewFileMenu';
 import { contributionToExtensionFileType } from '../NewFileMenu';
 import { WorkspaceHistoryDialog } from '../WorkspaceHistoryDialog';
 import { getTextSelection } from '../UnifiedAI/TextSelectionIndicator';
+import { getActiveEditorContextItems } from '../../stores/editorContextStore';
 import {
   collabConnectionStatusAtom,
   hasCollabUnsyncedChanges,
@@ -39,6 +40,7 @@ import {
   aiChatWidthAtomFamily,
   aiChatCollapsedAtomFamily,
 } from '../../store/atoms/workspaceLayout';
+import { refreshFileTree } from '../../store/listeners/fileTreeListeners';
 
 export interface EditorModeRef {
   closeActiveTab: () => void;
@@ -48,6 +50,8 @@ export interface EditorModeRef {
   selectFile: (filePath: string) => Promise<void>;
   openHistoryDialog: () => void;
   toggleSidebarCollapsed: () => void;
+  toggleAIChatCollapsed: () => void;
+  createNewChatSession: () => Promise<void>;
   tabs: {
     addTab: (filePath: string, content?: string) => string | undefined;
     removeTab: (tabId: string) => void;
@@ -101,6 +105,7 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
   // Dialog states
   const [isNewFileDialogOpen, setIsNewFileDialogOpen] = useState(false);
   const [newFileDirectory, setNewFileDirectory] = useState<string | null>(null);
+  const [newFileInitialType, setNewFileInitialType] = useState<NewFileType>('markdown');
   const [isWorkspaceHistoryDialogOpen, setIsWorkspaceHistoryDialogOpen] = useState(false);
   const [workspaceHistoryPath, setWorkspaceHistoryPath] = useState<string | null>(null);
 
@@ -419,13 +424,17 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
         console.error('[openCollabDoc] No workspace path');
         return;
       }
-      const { openCollabDocumentViaIPC } = await import('../../utils/collabDocumentOpener');
-      const tabId = await openCollabDocumentViaIPC({
+      const { openCollabDocumentViaIPCForDesktop } = await import('../../utils/collabDocumentOpener');
+      const tabId = await openCollabDocumentViaIPCForDesktop({
         workspacePath,
         documentId,
         title,
         initialContent,
         documentType,
+        // Dev/Playwright console helper: opening a document by id with no UI
+        // involved is shaped like a deep link. Dev traffic is separated in
+        // PostHog by `is_dev_user`.
+        analyticsSource: 'deep_link',
         addTab: tabsActions.addTab,
       });
       console.log('[openCollabDoc] Opened tab:', tabId);
@@ -446,7 +455,6 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
       serverUrl: string;
       orgId: string;
       userId: string;
-      encryptionKeyBase64: string;
       /** Optional query-string suffix appended to the WS URL (no leading ?). */
       urlExtraQuery?: string;
     }) => {
@@ -461,7 +469,6 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
           userId: params.userId,
           documentId: params.documentId,
           title: params.title ?? params.documentId,
-          encryptionKeyBase64: params.encryptionKeyBase64,
         },
       );
       if (!testResult?.success || !testResult.config) {
@@ -470,18 +477,6 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
         );
       }
       const cfg = testResult.config;
-      // Reconstruct CryptoKey from base64.
-      const binary = atob(cfg.orgKeyBase64);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const documentKey = await crypto.subtle.importKey(
-        'raw',
-        bytes,
-        { name: 'AES-GCM', length: 256 },
-        false,
-        ['encrypt', 'decrypt'],
-      );
-
       const { openCollabDocument, createProxiedWebSocket } = await import(
         '../../utils/collabDocumentOpener'
       );
@@ -496,12 +491,15 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
         : undefined;
 
       const tabId = openCollabDocument({
-        workspacePath,
+        scope: {
+          scopeKey: workspacePath,
+          orgId: cfg.orgId,
+          indexConfig: { serverUrl: cfg.serverUrl, userId: cfg.userId },
+        },
         orgId: cfg.orgId,
         documentId: cfg.documentId,
         title: cfg.title,
         documentType: params.documentType,
-        documentKey,
         serverUrl: cfg.serverUrl,
         accountId: cfg.accountId ?? cfg.userId,
         userId: cfg.userId,
@@ -528,7 +526,6 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
       serverUrl: string;
       orgId: string;
       userId: string;
-      encryptionKeyBase64: string;
       urlExtraQuery?: string;
     }) => {
       if (!workspacePath) {
@@ -542,7 +539,6 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
           userId: params.userId,
           documentId: params.documentId,
           title: params.title ?? params.documentId,
-          encryptionKeyBase64: params.encryptionKeyBase64,
         },
       );
       if (!testResult?.success || !testResult.config) {
@@ -551,16 +547,6 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
         );
       }
       const cfg = testResult.config;
-      const binary = atob(cfg.orgKeyBase64);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const documentKey = await crypto.subtle.importKey(
-        'raw',
-        bytes,
-        { name: 'AES-GCM', length: 256 },
-        false,
-        ['encrypt', 'decrypt'],
-      );
       const { registerCollabConfig, createProxiedWebSocket } = await import(
         '../../utils/collabDocumentOpener'
       );
@@ -574,12 +560,15 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
           }
         : undefined;
       return registerCollabConfig({
-        workspacePath,
+        scope: {
+          scopeKey: workspacePath,
+          orgId: cfg.orgId,
+          indexConfig: { serverUrl: cfg.serverUrl, userId: cfg.userId },
+        },
         orgId: cfg.orgId,
         documentId: cfg.documentId,
         title: cfg.title,
         documentType: params.documentType,
-        documentKey,
         serverUrl: cfg.serverUrl,
         accountId: cfg.accountId ?? cfg.userId,
         userId: cfg.userId,
@@ -799,7 +788,8 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
       mockupDrawing: fileType === 'mockup' ? (window as any).__mockupDrawing : undefined,
       mockupAnnotationTimestamp: fileType === 'mockup' ? (window as any).__mockupAnnotationTimestamp : undefined,
       textSelection,
-      textSelectionTimestamp: textSelection?.timestamp
+      textSelectionTimestamp: textSelection?.timestamp,
+      editorContextItems: getActiveEditorContextItems(filePath),
     };
   }, []);
 
@@ -925,6 +915,30 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
     }
   }, [isAIChatCollapsed]);
 
+  const handleWelcomeNewFile = useCallback((quickPick?: WelcomeFileQuickPick) => {
+    let fileType: NewFileType = 'markdown';
+    if (quickPick === 'mockup') {
+      fileType = 'mockup';
+    } else if (quickPick === 'diagram') {
+      const diagramType = extensionFileTypes.find((type) => type.extension === '.excalidraw');
+      fileType = diagramType ? `ext:${diagramType.extension}` : 'any';
+    }
+
+    setNewFileDirectory(selectedFolderPath);
+    setNewFileInitialType(fileType);
+    setIsNewFileDialogOpen(true);
+  }, [extensionFileTypes, selectedFolderPath]);
+
+  const handleWelcomeFocusAgent = useCallback(() => {
+    setIsAIChatCollapsed(false);
+    chatSidebarRef.current?.focusInput();
+  }, [setIsAIChatCollapsed]);
+
+  const handleWelcomeInsertPrompt = useCallback((prompt: string) => {
+    setIsAIChatCollapsed(false);
+    chatSidebarRef.current?.insertPrompt(prompt);
+  }, [setIsAIChatCollapsed]);
+
   // Toggle sidebar collapsed state
   const toggleSidebarCollapsed = useCallback(() => {
     if (sidebarCollapsed) {
@@ -937,6 +951,10 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
       setSidebarCollapsed(true);
     }
   }, [sidebarCollapsed, sidebarWidth, preCollapseWidth]);
+
+  const toggleAIChatCollapsed = useCallback(() => {
+    setIsAIChatCollapsed((collapsed) => !collapsed);
+  }, [setIsAIChatCollapsed]);
 
   // Double-click a tab to maximize the editor (collapse file tree + AI chat).
   // Second double-click restores the exact prior collapse state.
@@ -995,6 +1013,13 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
       }
     },
     toggleSidebarCollapsed,
+    toggleAIChatCollapsed,
+    createNewChatSession: async () => {
+      if (isAIChatCollapsed) {
+        setIsAIChatCollapsed(false);
+      }
+      await chatSidebarRef.current?.createNewSession();
+    },
     tabs: {
       addTab: (filePath: string, content?: string) => {
         const currentTabs = tabsRef.current;
@@ -1049,7 +1074,16 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
       },
       get activeTabId() { return tabsRef.current?.getSnapshot()?.activeTabId ?? null; },
     }
-  }), [handleOpen, handleSaveAs, handleWorkspaceFileSelect, handleTabClose, toggleSidebarCollapsed]);
+  }), [
+    handleOpen,
+    handleSaveAs,
+    handleWorkspaceFileSelect,
+    handleTabClose,
+    toggleSidebarCollapsed,
+    toggleAIChatCollapsed,
+    isAIChatCollapsed,
+    setIsAIChatCollapsed,
+  ]);
 
   // Keep pointer input in the host document while dragging across iframe-backed editors.
   const startSidebarResize = useResizeDragShield({
@@ -1112,6 +1146,7 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
       if (selectedFolderPath) {
         setNewFileDirectory(selectedFolderPath);
       }
+      setNewFileInitialType('markdown');
       setIsNewFileDialogOpen(true);
     });
 
@@ -1216,25 +1251,6 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
     void handleWorkspaceFileSelect(`${browserTabType.virtualScheme}${id}?title=${title}`);
   }, [newBrowserTabVersion, extensionFileTypes, handleWorkspaceFileSelect]);
 
-  // React to "toggle AI chat panel" (Cmd+Shift+A) from the menu. The IPC
-  // subscription lives in store/listeners/appCommandListeners.ts.
-  // Use a ref to debounce rapid calls (can happen with menu accelerators).
-  const toggleAIChatPanelVersion = useAtomValue(toggleAIChatPanelRequestAtom);
-  const toggleAIChatInitialVersionRef = useRef(toggleAIChatPanelVersion);
-  const toggleAIChatInProgressRef = useRef(false);
-  useEffect(() => {
-    if (toggleAIChatPanelVersion === toggleAIChatInitialVersionRef.current) return;
-    if (toggleAIChatInProgressRef.current) {
-      console.log('[EditorMode] handleToggleAIChatPanel: ignoring duplicate call');
-      return;
-    }
-    toggleAIChatInProgressRef.current = true;
-    setTimeout(() => { toggleAIChatInProgressRef.current = false; }, 100);
-
-    console.log('[EditorMode] handleToggleAIChatPanel IPC received');
-    setIsAIChatCollapsed(prev => !prev);
-  }, [toggleAIChatPanelVersion]);
-
   // Handle new file creation with file type support
   const handleNewFile = useCallback(async (fileName: string, fileType: NewFileType) => {
     if (!workspacePath || !window.electronAPI) return;
@@ -1273,13 +1289,19 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
       }
 
       const filePath = `${directory}/${fullFileName}`;
-      await window.electronAPI.createFile(filePath, content);
+      const result = await window.electronAPI.createFile(filePath, content);
+      if (!result?.success) {
+        throw new Error(result?.error || 'Failed to create file');
+      }
+
+      await refreshFileTree(workspacePath);
 
       // Open the new file
-      await handleWorkspaceFileSelect(filePath);
+      await handleWorkspaceFileSelect(result.filePath || filePath);
 
       setIsNewFileDialogOpen(false);
       setNewFileDirectory(null);
+      setNewFileInitialType('markdown');
     } catch (error) {
       console.error('Error creating new file:', error);
     }
@@ -1336,10 +1358,13 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
           >
             <TabManager
               onTabClose={handleTabClose}
-              onNewTab={() => setIsNewFileDialogOpen(true)}
+              onNewTab={() => {
+                setNewFileInitialType('markdown');
+                setIsNewFileDialogOpen(true);
+              }}
               hideTabBar={false}
               isActive={isActive}
-              onToggleAIChat={() => setIsAIChatCollapsed(prev => !prev)}
+              onToggleAIChat={toggleAIChatCollapsed}
               isAIChatCollapsed={isAIChatCollapsed}
               onTabDoubleClick={toggleEditorMaximized}
             >
@@ -1386,7 +1411,14 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
             ref={welcomeContainerRef}
             style={{ display: 'flex', flex: 1 }}
           >
-            <WorkspaceWelcome workspaceName={workspaceName || 'Open a file to get started'} />
+            <WorkspaceWelcome
+              workspaceName={workspaceName || 'Open a file to get started'}
+              workspacePath={workspacePath}
+              hasWorkspace={true}
+              onNewFile={handleWelcomeNewFile}
+              onFocusAgent={handleWelcomeFocusAgent}
+              onInsertAgentPrompt={handleWelcomeInsertPrompt}
+            />
           </div>
         </div>
 
@@ -1397,9 +1429,10 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
             workspacePath={workspacePath}
             isActive={isActive}
             isCollapsed={isAIChatCollapsed}
-            onToggleCollapse={() => setIsAIChatCollapsed(prev => !prev)}
+            onToggleCollapse={toggleAIChatCollapsed}
             width={aiChatWidth}
             onWidthChange={setAIChatWidth}
+            documentContext={{ filePath: currentFilePath || '' }}
             getDocumentContext={getDocumentContext}
             onFileOpen={handleWorkspaceFileSelect}
             onSwitchToAgentMode={onSwitchToAgentMode ? (sid?: string) => onSwitchToAgentMode(undefined, sid) : undefined}
@@ -1414,12 +1447,14 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
           onClose={() => {
             setIsNewFileDialogOpen(false);
             setNewFileDirectory(null);
+            setNewFileInitialType('markdown');
           }}
           currentDirectory={newFileDirectory || workspacePath}
           workspacePath={workspacePath}
           onCreateFile={handleNewFile}
           extensionFileTypes={extensionFileTypes}
           onDirectoryChange={setNewFileDirectory}
+          initialFileType={newFileInitialType}
         />
       )}
 

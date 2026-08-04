@@ -65,11 +65,8 @@ vi.mock('@nimbalyst/runtime', () => ({
 vi.mock('../../database/initialize', () => ({}));
 vi.mock('../OrgProjectionService', () => ({}));
 vi.mock('../OrgAccessResolver', () => ({}));
-vi.mock('../OrgKeyService', () => ({}));
-vi.mock('../KeyRotationService', () => ({}));
 vi.mock('../TrackerSyncManager', () => ({}));
 vi.mock('../CollabBackupService', () => ({}));
-vi.mock('../SilentTeamEncryptionMigration', () => ({}));
 // createTeamAuthBootstrap is invoked at TeamService module scope (assigned to
 // runAuthenticatedTeamBootstrap), so the mock must return a callable factory
 // even though this test never triggers that bootstrap.
@@ -200,6 +197,24 @@ describe('listTeams TTL cache + invalidation (RC4)', () => {
     invalidateListTeamsCache();
     await findTeamForWorkspace('/workspace/one');
 
+    expect(apiTeamsFetchCallCount()).toBe(2);
+  });
+
+  it('does not cache a failed account lookup as an authoritative empty team list', async () => {
+    fetchMock
+      .mockRejectedValueOnce(new Error('Team API timeout after 15000ms'))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          teams: [{ orgId: 'org-1', name: 'Widgets Team', gitRemoteHash: REMOTE_HASH, createdAt: new Date().toISOString(), role: 'admin' }],
+        }),
+      });
+
+    await expect(findTeamForWorkspace('/workspace/one')).resolves.toBeNull();
+    await expect(findTeamForWorkspace('/workspace/one')).resolves.toEqual(
+      expect.objectContaining({ orgId: 'org-1' }),
+    );
     expect(apiTeamsFetchCallCount()).toBe(2);
   });
 

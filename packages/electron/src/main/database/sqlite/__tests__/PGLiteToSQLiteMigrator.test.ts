@@ -17,7 +17,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { SQLiteDatabase } from '../SQLiteDatabase';
-import { PGLiteToSQLiteMigrator, type MigrationProgress } from '../PGLiteToSQLiteMigrator';
+import {
+  PGLiteToSQLiteMigrator,
+  __TEST_HOOKS,
+  type MigrationProgress,
+} from '../PGLiteToSQLiteMigrator';
 
 // Resolve to the shipping schema file.
 const SCHEMA_DIR = path.resolve(__dirname, '..', 'schemas');
@@ -52,6 +56,47 @@ describe('PGLiteToSQLiteMigrator', () => {
     await sqlite.close();
     await pglite.close();
     fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('includes tool usage counters and backfill state in the cutover whitelist', () => {
+    expect(__TEST_HOOKS.COPY_TABLES).toEqual(
+      expect.arrayContaining([
+        'tool_usage_counters',
+        'tool_usage_backfill_meta',
+        'tool_usage_backfill_sessions',
+      ]),
+    );
+  });
+
+  it('replaces the SQLite bootstrap backfill cutoff with the PGLite source cutoff', async () => {
+    await pglite.exec(`
+      CREATE TABLE tool_usage_backfill_meta (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        cutoff_at TIMESTAMPTZ NOT NULL
+      );
+    `);
+    const sourceCutoff = new Date('2026-06-15T12:34:56.789Z');
+    await pglite.query(
+      `INSERT INTO tool_usage_backfill_meta (singleton, cutoff_at) VALUES ($1, $2)`,
+      [1, sourceCutoff],
+    );
+
+    const targetBefore = sqlite.getRawHandle()!
+      .prepare('SELECT cutoff_at FROM tool_usage_backfill_meta WHERE singleton = 1')
+      .get() as { cutoff_at: string };
+    expect(targetBefore.cutoff_at).not.toBe(sourceCutoff.toISOString());
+
+    const migrator = new PGLiteToSQLiteMigrator();
+    await migrator.migrate({
+      pglite: pglite as unknown as Parameters<PGLiteToSQLiteMigrator['migrate']>[0]['pglite'],
+      sqlite,
+      spotCheckPerTable: 1,
+    });
+
+    const targetAfter = sqlite.getRawHandle()!
+      .prepare('SELECT cutoff_at FROM tool_usage_backfill_meta WHERE singleton = 1')
+      .get() as { cutoff_at: string };
+    expect(new Date(targetAfter.cutoff_at).toISOString()).toBe(sourceCutoff.toISOString());
   });
 
   async function seedPgliteSchema(): Promise<void> {

@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Phase 2b: offline guarded direct writes. Exercised against an on-disk SQLite
  * fixture built with the real tracker_items DDL so create/update/comment/archive
@@ -287,6 +288,38 @@ describe('DirectGateway offline writes', () => {
     const data = JSON.parse(rawRow(rec.id).data);
     expect(data.title).toBe('Plain');
     expect(data.status).toBe('to-do');
+  });
+
+  it('refuses to create or update an item straight into an approved status (exit 5)', async () => {
+    seed({ id: 'r1', issueKey: 'NIM-1', issueNumber: 1, type: 'bug', data: { title: 'B', status: 'in-review' } });
+    const gw = new DirectGateway(dbPath);
+
+    // Direct status arg.
+    await expect(gw.updateTracker(WORKSPACE, 'NIM-1', { status: 'approved' }))
+      .rejects.toMatchObject({ code: 5 });
+    // Smuggled through the generic fields bag (case-insensitive).
+    await expect(gw.updateTracker(WORKSPACE, 'NIM-1', { fields: { status: 'Approved' } }))
+      .rejects.toMatchObject({ code: 5 });
+    // Create that starts an item already approved.
+    await expect(gw.createTracker(WORKSPACE, { type: 'bug', title: 'x', status: 'approved' }))
+      .rejects.toMatchObject({ code: 5 });
+
+    // Moving into review is allowed (an agent may propose).
+    const ok = await gw.updateTracker(WORKSPACE, 'NIM-1', { status: 'in-review' });
+    expect(ok.fields.status).toBe('in-review');
+    gw.close();
+  });
+
+  it('refuses approval through a custom workflow-status role field (exit 5)', async () => {
+    seedTypeDef('review', {
+      type: 'review',
+      roles: { title: 'title', workflowStatus: 'phase' },
+    });
+    seed({ id: 'rg1', issueKey: 'NIM-1', issueNumber: 1, type: 'review', data: { title: 'R', phase: 'in-review' } });
+    const gw = new DirectGateway(dbPath);
+    await expect(gw.updateTracker(WORKSPACE, 'NIM-1', { fields: { phase: 'approved' } }))
+      .rejects.toMatchObject({ code: 5 });
+    gw.close();
   });
 
   it('refuses offline writes when a live app owns the default DB (exit 5)', async () => {

@@ -11,7 +11,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { MaterialSymbol } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import {
   gitStatusAtom,
@@ -178,6 +178,7 @@ export const GitOperationsPanel: React.FC<GitOperationsPanelProps> = React.memo(
     const [untrackedFilesConflict, setUntrackedFilesConflict] = useState<string[] | null>(null);
     const [badGitStateError, setBadGitStateError] = useState<{ message: string; conflictedFiles?: string[] } | null>(null);
     const [worktreeName, setWorktreeName] = useState<string>('');
+    const [worktreeBranchName, setWorktreeBranchName] = useState<string>('');
     const [showArchiveDialog, setShowArchiveDialog] = useState(false);
     const [showArchiveBlitzDialog, setShowArchiveBlitzDialog] = useState(false);
     const [blitzId, setBlitzId] = useState<string | null>(null);
@@ -421,7 +422,7 @@ export const GitOperationsPanel: React.FC<GitOperationsPanelProps> = React.memo(
           error?: string;
         };
 
-        let message = 'Use the developer_git_commit_proposal tool to create a commit.';
+        let message = 'Use the developer_git_commit_proposal tool to create a commit. If its schema is not loaded, use ToolSearch to load it first.';
 
         if (commitContext.success && commitContext.files.length > 0) {
           const fileList = commitContext.files
@@ -625,6 +626,7 @@ export const GitOperationsPanel: React.FC<GitOperationsPanelProps> = React.memo(
         const result = await window.electronAPI.worktreeGetByPath(worktreePath);
         if (result?.success && result.worktree) {
           setWorktreeName(result.worktree.displayName || result.worktree.name);
+          setWorktreeBranchName(result.worktree.name);
         }
       } catch (err) {
         console.error('[GitOperationsPanel] Failed to load worktree name:', err);
@@ -1351,7 +1353,7 @@ Please proceed with this strategy.`;
             <MaterialSymbol icon={isExpanded ? 'expand_more' : 'chevron_right'} size={16} />
             <MaterialSymbol icon="account_tree" size={14} />
             <span className="git-operations-panel__branch font-semibold text-[var(--nim-text)]">
-              {worktreeId && worktreeName ? `worktree/${worktreeName}` : gitStatus.branch}
+              {worktreeId && worktreeBranchName ? `worktree/${worktreeBranchName}` : gitStatus.branch}
             </span>
             {!worktreeId && (gitStatus.ahead > 0 || gitStatus.behind > 0) && (
               <span className="git-operations-panel__sync-status text-[11px] text-[var(--nim-text-faint)] font-[var(--nim-font-mono)]">

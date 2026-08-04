@@ -200,7 +200,13 @@ export class ClaudeProvider extends BaseAIProvider {
     // Log the input message
     // CRITICAL: Must await to ensure user message is persisted before proceeding
     if (sessionId) {
-      await this.logAgentMessage(sessionId, 'claude', 'input', message);
+      await this.logAgentMessage(
+        sessionId,
+        'claude',
+        'input',
+        message,
+        this.withPromptProvenanceMetadata(documentContext),
+      );
     }
 
     // Check if current message has attachments
@@ -1003,6 +1009,16 @@ export class ClaudeProvider extends BaseAIProvider {
     if (opusMinor) {
       const minor = parseInt(opusMinor[1], 10);
       return minor < 7;
+    }
+
+    // Opus 5+ (dateless `claude-opus-5`) inherits the Opus 4.7+ deprecation --
+    // adaptive thinking, effort parameter, no sampling parameters -- so
+    // `temperature` returns HTTP 400. The `4-` branch above already handled
+    // major 4; anything matching `claude-opus-<major>` with major >= 5 rejects.
+    const opusMajor = id.match(/^claude-opus-(\d{1,2})(?:-|$)/);
+    if (opusMajor) {
+      const major = parseInt(opusMajor[1], 10);
+      return major < 5;
     }
 
     // Sonnet 5+ adopted the same deprecation as Opus 4.7+ (adaptive thinking,

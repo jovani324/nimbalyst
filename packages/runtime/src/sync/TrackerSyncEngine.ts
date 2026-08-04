@@ -54,21 +54,20 @@ import type {
   TrackerNavigationSyncResponseMessage,
   TrackerNavigationDeltaMessage,
   TrackerNavigationMutationAckMessage,
+  EncryptedTrackerSavedViewEnvelope,
+  TrackerSavedViewSyncResponseMessage,
+  TrackerSavedViewDeltaMessage,
+  TrackerSavedViewMutationAckMessage,
   TrackerRoomMovedMessage,
 } from './trackerProtocol';
 import { SYNC_ID_INITIAL, buildTrackerRoomId } from './trackerProtocol';
 import { appendSyncClientParams } from './syncClientInfo';
 import {
-  encryptTrackerPayload,
-  decryptTrackerEnvelope,
-  encryptTrackerSchemaPayload,
-  decryptTrackerSchemaEnvelope,
   encodeTrackerPayloadPlaintext,
   decodeTrackerEnvelopePlaintext,
   decodeTrackerSchemaEnvelopePlaintext,
-  encryptTrackerNavigationPayload,
-  decryptTrackerNavigationEnvelope,
   decodeTrackerNavigationEnvelopePlaintext,
+  decodeTrackerSavedViewEnvelopePlaintext,
 } from './TrackerEnvelopeCrypto';
 import type { TrackerPersistence, TrackerRowSnapshot } from './trackerPersistence';
 
@@ -140,24 +139,22 @@ export interface TrackerNavigationSyncHooks {
   applyRemote: (def: { entryId: string; payload: string | null; syncId: SyncId }) => Promise<unknown>;
 }
 
-/**
- * Outcome of a key-refresh callback. Returning `null` indicates the host
- * could not produce a fresh key (e.g. admin hasn't re-shared yet); the
- * engine surfaces the rejection back to the UI.
- */
-export interface TrackerKeyMaterial {
-  encryptionKey: CryptoKey;
-  orgKeyFingerprint: string;
+export interface TrackerSavedViewLocalChange {
+  viewId: string;
+  payload: string | null;
+  deleted: boolean;
 }
 
 /**
- * Epic H2 key custody. `legacy-e2e` (default): the client encrypts/decrypts
- * team data with the org key (zero-knowledge; the server is a dumb relay).
- * `server-managed`: the server holds the per-team DEK and encrypts at rest, so
- * the client sends/receives PLAINTEXT (no iv, `orgKeyFingerprint` null) and the
- * `encryptionKey` is unused.
+ * Team-shared saved views. Its own lane (and its own syncId cursor) rather
+ * than riding the navigation channel, so "a shared view" stays a first-class
+ * concept on the wire instead of an overloaded navigation entry.
  */
-export type TrackerKeyCustodyMode = 'legacy-e2e' | 'server-managed';
+export interface TrackerSavedViewSyncHooks {
+  getMaxSyncId: () => Promise<SyncId>;
+  listUnsynced: () => Promise<TrackerSavedViewLocalChange[]>;
+  applyRemote: (def: { viewId: string; payload: string | null; syncId: SyncId }) => Promise<unknown>;
+}
 
 export interface TrackerSyncEngineConfig {
   /** WebSocket server URL, e.g. `wss://sync.nimbalyst.com`. */
@@ -177,28 +174,6 @@ export interface TrackerSyncEngineConfig {
   /** The current user's ID (informational; not used in auth). */
   userId: string;
 
-  /**
-   * Epic H2 key custody mode. Defaults to `legacy-e2e` when omitted (the
-   * historical zero-knowledge path). In `server-managed` the engine runs the
-   * encrypt/decrypt hooks as identity pass-throughs and `encryptionKey` /
-   * `orgKeyFingerprint` are ignored.
-   */
-  keyCustody?: TrackerKeyCustodyMode;
-
-  /**
-   * Current org AES-256-GCM encryption key. Required in `legacy-e2e` mode;
-   * unused (and optional) in `server-managed` mode.
-   */
-  encryptionKey?: CryptoKey;
-
-  /**
-   * Fingerprint of the encryption key, carried as `orgKeyFingerprint` on
-   * every outgoing mutation so the server can enforce epoch alignment.
-   * May be `null` while the host adapter is bootstrapping; the engine
-   * declines to upload until a non-null value is set via `setKey()`.
-   */
-  orgKeyFingerprint: string | null;
-
   /** PGLite (or in-memory test) storage seam. */
   persistence: TrackerPersistence;
 
@@ -207,6 +182,8 @@ export interface TrackerSyncEngineConfig {
 
   /** Optional shared tracker-sidebar navigation sync seam. */
   navigationSync?: TrackerNavigationSyncHooks;
+  /** Optional team-shared saved-view sync seam. */
+  savedViewSync?: TrackerSavedViewSyncHooks;
 
   /**
    * Prefix to install when the first bootstrap proves the tracker room is
@@ -221,18 +198,6 @@ export interface TrackerSyncEngineConfig {
    * disconnections.
    */
   getJwt: () => Promise<string>;
-
-  /**
-   * Called when the server rejects a mutation with `staleKeyEpoch`. If the
-   * host can fetch the fresh key envelope (typical: trigger
-   * `OrgKeyService.fetchAndUnwrapOrgKey` then return its result), the
-   * engine swaps the key in and re-sends the same `clientMutationId`.
-   *
-   * If the host returns `null`, the rejection surfaces to the UI via
-   * `onRejection` and the row stays in the queue with `lastRejection`
-   * populated.
-   */
-  refreshKey?: () => Promise<TrackerKeyMaterial | null>;
 
   // --- Observers (all optional) -------------------------------------------
 
@@ -308,14 +273,6 @@ export class TrackerSyncEngine {
   private connecting = false;
   private suppressReconnect = false;
 
-  /** Current encryption material; mutated on key rotation. Null in
-   * server-managed mode (the server holds the DEK). */
-  private encryptionKey: CryptoKey | null;
-  private orgKeyFingerprint: string | null;
-
-  /** Epic H2 key custody mode (default legacy-e2e). */
-  private readonly keyCustody: TrackerKeyCustodyMode;
-
   /** Reconnect bookkeeping. */
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -338,16 +295,6 @@ export class TrackerSyncEngine {
   constructor(config: TrackerSyncEngineConfig) {
     this.config = config;
     this.persistence = config.persistence;
-    this.keyCustody = config.keyCustody ?? 'legacy-e2e';
-    this.encryptionKey = config.encryptionKey ?? null;
-    // In server-managed mode the server owns the key epoch; force the
-    // fingerprint null so the engine never asserts a client epoch on the wire.
-    this.orgKeyFingerprint = this.keyCustody === 'server-managed' ? null : config.orgKeyFingerprint;
-  }
-
-  /** Epic H2: true when the server holds the team DEK (no client crypto). */
-  private get serverManaged(): boolean {
-    return this.keyCustody === 'server-managed';
   }
 
   // --------------------------------------------------------------------------
@@ -445,20 +392,14 @@ export class TrackerSyncEngine {
     return this.status;
   }
 
+  /** Flush locally-pending shared saved views while connected. */
+  async flushSavedViews(): Promise<void> {
+    await this.pushPendingSavedViews();
+  }
+
   /** Flush locally-pending tracker navigation entries while connected. */
   async flushNavigation(): Promise<void> {
     await this.pushPendingNavigation();
-  }
-
-  /**
-   * Swap in a new encryption key + fingerprint. The host adapter calls
-   * this after handling an `orgKeyRotated` event. In-flight mutations
-   * (already sent, awaiting ack) will be re-encrypted under the new key
-   * if the server rejects them with `staleKeyEpoch`.
-   */
-  setKey(material: TrackerKeyMaterial): void {
-    this.encryptionKey = material.encryptionKey;
-    this.orgKeyFingerprint = material.orgKeyFingerprint;
   }
 
   // --------------------------------------------------------------------------
@@ -517,27 +458,10 @@ export class TrackerSyncEngine {
       const isInitialBootstrap = isFirstBatch;
       let receivedItems = false;
       let initialConfig: TrackerRoomConfig | undefined;
-      let staleKeyRefreshTried = false;
       // eslint-disable-next-line no-constant-condition
       while (true) {
         const response = await this.requestSync(cursor);
         receivedItems ||= response.items.length > 0;
-
-        // Stale-key-on-connect detection: if the server is shipping us
-        // envelopes encrypted under a key whose fingerprint differs from
-        // ours, our cached key is stale (the org rotated while we were
-        // offline). Trigger a refresh ONCE per bootstrap and re-apply.
-        // Without this hook the bootstrap silently skips every envelope
-        // and the user sees an empty board until the next reconnect.
-        if (!staleKeyRefreshTried && this.shouldRefreshForStaleKey(response.items)) {
-          staleKeyRefreshTried = true;
-          if (this.config.refreshKey) {
-            const fresh = await this.config.refreshKey();
-            if (fresh) {
-              this.setKey(fresh);
-            }
-          }
-        }
 
         await this.applyBootstrapBatch(response);
         if (isFirstBatch && response.config) {
@@ -564,6 +488,7 @@ export class TrackerSyncEngine {
 
       await this.runSchemaBootstrap();
       await this.runNavigationBootstrap();
+      await this.runSavedViewBootstrap();
 
       this.synced = true;
       this.setStatus('connected');
@@ -572,6 +497,7 @@ export class TrackerSyncEngine {
       await this.replayPending();
       await this.pushPendingSchemas();
       await this.pushPendingNavigation();
+      await this.pushPendingSavedViews();
     } catch (err) {
       // Bootstrap failures (e.g. socket drop mid-loop) fall through to the
       // disconnect path, which triggers a reconnect. Don't tear down here.
@@ -580,23 +506,6 @@ export class TrackerSyncEngine {
       // symptom an operator can see.
       this.config.onBootstrapError?.(err);
     }
-  }
-
-  /**
-   * True when the batch contains at least one non-tombstone envelope whose
-   * `orgKeyFingerprint` does not match our cached one. We compare against
-   * a known-non-null fingerprint -- if the server omits the fingerprint we
-   * cannot tell (older server) and fall back to per-envelope decrypt
-   * tolerance.
-   */
-  private shouldRefreshForStaleKey(items: EncryptedTrackerItemEnvelope[]): boolean {
-    if (!this.orgKeyFingerprint) return false;
-    for (const env of items) {
-      if (env.encryptedPayload === null) continue;
-      if (env.orgKeyFingerprint === null) continue;
-      if (env.orgKeyFingerprint !== this.orgKeyFingerprint) return true;
-    }
-    return false;
   }
 
   private requestSync(sinceSyncId: SyncId): Promise<TrackerSyncResponseMessage> {
@@ -621,7 +530,6 @@ export class TrackerSyncEngine {
     if (!hooks) return;
 
     let cursor: SyncId = await hooks.getMaxSyncId();
-    let staleKeyRefreshTried = false;
     console.info(`[TrackerSchemaSync] bootstrap start since sync_id=${cursor}`);
 
     // eslint-disable-next-line no-constant-condition
@@ -631,31 +539,11 @@ export class TrackerSyncEngine {
         `[TrackerSchemaSync] bootstrap batch: ${response.schemas.length} schema(s), cursor=${response.cursorSyncId}, hasMore=${response.hasMore}`,
       );
 
-      if (!staleKeyRefreshTried && this.shouldRefreshForStaleSchemaKey(response.schemas)) {
-        staleKeyRefreshTried = true;
-        if (this.config.refreshKey) {
-          const fresh = await this.config.refreshKey();
-          if (fresh) {
-            this.setKey(fresh);
-          }
-        }
-      }
-
       await this.applySchemaBootstrapBatch(response);
       cursor = response.cursorSyncId;
       if (!response.hasMore) break;
     }
     console.info(`[TrackerSchemaSync] bootstrap complete at sync_id=${cursor}`);
-  }
-
-  private shouldRefreshForStaleSchemaKey(schemas: EncryptedTrackerSchemaEnvelope[]): boolean {
-    if (!this.orgKeyFingerprint) return false;
-    for (const env of schemas) {
-      if (env.encryptedPayload === null) continue;
-      if (env.orgKeyFingerprint === null) continue;
-      if (env.orgKeyFingerprint !== this.orgKeyFingerprint) return true;
-    }
-    return false;
   }
 
   private requestSchemaSync(sinceSyncId: SyncId): Promise<TrackerSchemaSyncResponseMessage> {
@@ -689,14 +577,8 @@ export class TrackerSyncEngine {
     const hooks = this.config.navigationSync;
     if (!hooks) return;
     let cursor = await hooks.getMaxSyncId();
-    let staleKeyRefreshTried = false;
     while (true) {
       const response = await this.requestNavigationSync(cursor);
-      if (!staleKeyRefreshTried && this.shouldRefreshForStaleNavigationKey(response.entries)) {
-        staleKeyRefreshTried = true;
-        const fresh = await this.config.refreshKey?.();
-        if (fresh) this.setKey(fresh);
-      }
       for (const envelope of response.entries) {
         try {
           await this.applyNavigationEnvelope(envelope);
@@ -709,13 +591,40 @@ export class TrackerSyncEngine {
     }
   }
 
-  private shouldRefreshForStaleNavigationKey(entries: EncryptedTrackerNavigationEnvelope[]): boolean {
-    if (!this.orgKeyFingerprint) return false;
-    return entries.some((entry) =>
-      entry.encryptedPayload !== null &&
-      entry.orgKeyFingerprint !== null &&
-      entry.orgKeyFingerprint !== this.orgKeyFingerprint,
-    );
+  private async runSavedViewBootstrap(): Promise<void> {
+    const hooks = this.config.savedViewSync;
+    if (!hooks) return;
+    let cursor = await hooks.getMaxSyncId();
+    while (true) {
+      const response = await this.requestSavedViewSync(cursor);
+      for (const envelope of response.views) {
+        try {
+          await this.applySavedViewEnvelope(envelope);
+        } catch (err) {
+          // One undecryptable view must not abort the whole bootstrap.
+          this.config.onBootstrapError?.(err);
+        }
+      }
+      cursor = response.cursorSyncId;
+      if (!response.hasMore) break;
+    }
+  }
+
+  private requestSavedViewSync(sinceSyncId: SyncId): Promise<TrackerSavedViewSyncResponseMessage> {
+    return new Promise((resolve, reject) => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        reject(new Error('WebSocket not open'));
+        return;
+      }
+      const handler = (event: MessageEvent) => {
+        const msg = parseServerMessage(event.data);
+        if (!msg || msg.type !== 'trackerSavedViewSyncResponse') return;
+        this.ws?.removeEventListener('message', handler);
+        resolve(msg);
+      };
+      this.ws.addEventListener('message', handler);
+      this.send({ type: 'trackerSavedViewSync', sinceSyncId });
+    });
   }
 
   private requestNavigationSync(sinceSyncId: SyncId): Promise<TrackerNavigationSyncResponseMessage> {
@@ -737,10 +646,9 @@ export class TrackerSyncEngine {
 
   private async applyBootstrapBatch(batch: TrackerSyncResponseMessage): Promise<void> {
     for (const envelope of batch.items) {
-      // Return value (applied true/false) is informational only here; the
-      // bootstrap loop has already done a proactive `refreshKey` pass if a
-      // staleness mismatch was detected. A still-undecryptable envelope is
-      // left out of the projection and will be re-tried on the next bootstrap.
+      // Return value (applied true/false) is informational only here: a
+      // still-unreadable envelope is left out of the projection and will be
+      // re-tried on the next bootstrap.
       //
       // Defense in depth: one bad envelope must not kill the whole batch.
       // A unique-constraint violation on `issue_number` collisions, a
@@ -803,6 +711,12 @@ export class TrackerSyncEngine {
       case 'trackerSchemaMutationAck':
         await this.handleSchemaAck(msg);
         break;
+      case 'trackerSavedViewDelta':
+        await this.handleSavedViewDelta(msg);
+        break;
+      case 'trackerSavedViewMutationAck':
+        await this.handleSavedViewAck(msg);
+        break;
       case 'trackerNavigationDelta':
         await this.handleNavigationDelta(msg);
         break;
@@ -830,6 +744,9 @@ export class TrackerSyncEngine {
       case 'trackerSchemaSyncResponse':
         // The schema bootstrap loop owns these via `requestSchemaSync`.
         break;
+      case 'trackerSavedViewSyncResponse':
+        // The saved-view bootstrap loop owns these via `requestSavedViewSync`.
+        break;
       case 'trackerNavigationSyncResponse':
         // The navigation bootstrap loop owns these via `requestNavigationSync`.
         break;
@@ -848,21 +765,7 @@ export class TrackerSyncEngine {
   }
 
   private async handleDelta(msg: TrackerDeltaMessage): Promise<void> {
-    const applied = await this.applyEnvelope(msg.item);
-    // Live delta tagged with a fingerprint we don't have: opportunistically
-    // refresh and re-apply. Bootstrap-loop staleness has its own check, but
-    // a delta that arrives AFTER bootstrap completes still needs this
-    // signal so a rotation that lands while we're idle doesn't silently
-    // drop deltas until the user issues a mutation.
-    if (!applied && msg.item.orgKeyFingerprint && this.orgKeyFingerprint &&
-        msg.item.orgKeyFingerprint !== this.orgKeyFingerprint &&
-        this.config.refreshKey) {
-      const fresh = await this.config.refreshKey();
-      if (fresh) {
-        this.setKey(fresh);
-        await this.applyEnvelope(msg.item);
-      }
-    }
+    await this.applyEnvelope(msg.item);
   }
 
   private async handleAck(msg: TrackerMutationAckMessage): Promise<void> {
@@ -884,26 +787,6 @@ export class TrackerSyncEngine {
 
     if (!accepted && msg.error) {
       const snapshot = this.rollbackSnapshots.get(clientMutationId);
-
-      // `staleKeyEpoch` triggers a refresh + re-send under the new key.
-      if (msg.error.code === 'staleKeyEpoch' && this.config.refreshKey) {
-        const fresh = await this.config.refreshKey();
-        if (fresh) {
-          this.setKey(fresh);
-          if (snapshot) {
-            // Reload the transaction row from persistence to find its
-            // payload + kind, then re-send.
-            const pending = await this.persistence.loadPendingTransactions();
-            const row = pending.find(r => r.clientMutationId === clientMutationId);
-            if (row) {
-              await this.persistence.markTransactionState(clientMutationId, 'queued');
-              await this.driveTransaction(row);
-              return;
-            }
-          }
-        }
-        // Fall through to a normal rejection if we can't refresh.
-      }
 
       const rejection = {
         code: msg.error.code,
@@ -927,16 +810,7 @@ export class TrackerSyncEngine {
     console.info(
       `[TrackerSchemaSync] delta type=${msg.schema.schemaType} sync_id=${msg.schema.syncId} tombstone=${msg.schema.encryptedPayload === null}`,
     );
-    const applied = await this.applySchemaEnvelope(msg.schema);
-    if (!applied && msg.schema.orgKeyFingerprint && this.orgKeyFingerprint &&
-        msg.schema.orgKeyFingerprint !== this.orgKeyFingerprint &&
-        this.config.refreshKey) {
-      const fresh = await this.config.refreshKey();
-      if (fresh) {
-        this.setKey(fresh);
-        await this.applySchemaEnvelope(msg.schema);
-      }
-    }
+    await this.applySchemaEnvelope(msg.schema);
   }
 
   private async handleSchemaAck(msg: TrackerSchemaMutationAckMessage): Promise<void> {
@@ -950,38 +824,27 @@ export class TrackerSyncEngine {
       return;
     }
 
-    if (!msg.accepted && msg.error?.code === 'staleKeyEpoch' && this.config.refreshKey) {
-      const fresh = await this.config.refreshKey();
-      if (fresh) {
-        this.setKey(fresh);
-        await this.pushPendingSchemas();
-      }
+  }
+
+  private async handleSavedViewDelta(msg: TrackerSavedViewDeltaMessage): Promise<void> {
+    await this.applySavedViewEnvelope(msg.view);
+  }
+
+  private async handleSavedViewAck(msg: TrackerSavedViewMutationAckMessage): Promise<void> {
+    if (msg.accepted && msg.view) {
+      await this.applySavedViewEnvelope(msg.view);
+      return;
     }
   }
 
   private async handleNavigationDelta(msg: TrackerNavigationDeltaMessage): Promise<void> {
-    const applied = await this.applyNavigationEnvelope(msg.entry);
-    if (!applied && msg.entry.orgKeyFingerprint && this.orgKeyFingerprint &&
-        msg.entry.orgKeyFingerprint !== this.orgKeyFingerprint && this.config.refreshKey) {
-      const fresh = await this.config.refreshKey();
-      if (fresh) {
-        this.setKey(fresh);
-        await this.applyNavigationEnvelope(msg.entry);
-      }
-    }
+    await this.applyNavigationEnvelope(msg.entry);
   }
 
   private async handleNavigationAck(msg: TrackerNavigationMutationAckMessage): Promise<void> {
     if (msg.accepted && msg.entry) {
       await this.applyNavigationEnvelope(msg.entry);
       return;
-    }
-    if (!msg.accepted && msg.error?.code === 'staleKeyEpoch' && this.config.refreshKey) {
-      const fresh = await this.config.refreshKey();
-      if (fresh) {
-        this.setKey(fresh);
-        await this.pushPendingNavigation();
-      }
     }
   }
 
@@ -1007,49 +870,11 @@ export class TrackerSyncEngine {
     const isTombstone = envelope.encryptedPayload === null;
     let payload: TrackerItemPayload | null = null;
     if (!isTombstone) {
-      // Server-managed: the payload is plaintext JSON (the server decrypted it).
-      if (this.serverManaged) {
-        try {
-          payload = decodeTrackerEnvelopePlaintext(envelope);
-        } catch (err) {
-          console.warn('[TrackerSync] failed to parse server-managed item payload; skipping', err);
-          return false;
-        }
-        await this.persistence.applyRemoteItem(envelope, payload);
-        this.config.onItemApplied?.({
-          itemId: envelope.itemId,
-          syncId: envelope.syncId,
-          payload,
-          isTombstone,
-          issueNumber: envelope.issueNumber,
-          issueKey: envelope.issueKey,
-        });
-        return true;
-      }
       try {
-        payload = await decryptTrackerEnvelope(envelope, this.encryptionKey!);
+        payload = decodeTrackerEnvelopePlaintext(envelope);
       } catch (err) {
-        // OperationError = AES-GCM auth failure. Two causes look the same
-        // at this layer:
-        //   1. Wrong key (rotation: client holds stale key vs. envelope
-        //      written by another client with the new key).
-        //   2. Identifier splice -- server rewrote `itemId` /
-        //      `issueNumber` / `issueKey` on the envelope without holding
-        //      the key, so the AAD bound at encrypt time no longer matches.
-        // Per DocumentSync precedent, skip the row and move on -- the
-        // bootstrap loop / delta stream keeps progressing. The caller
-        // uses the `false` return to trigger a key refresh.
-        //
-        // We check `err.name === 'OperationError'` instead of `err
-        // instanceof DOMException`. Runtime environments expose
-        // DOMException from different realms (vitest workers, Cloudflare
-        // Workers, V8 isolates), and instanceof can return false even when
-        // the constructor name matches. Name-based identification matches
-        // the WebCrypto spec contract and is realm-safe.
-        if (err !== null && typeof err === 'object' && (err as { name?: string }).name === 'OperationError') {
-          return false;
-        }
-        throw err;
+        console.warn('[TrackerSync] failed to parse item payload; skipping', err);
+        return false;
       }
     }
 
@@ -1072,22 +897,11 @@ export class TrackerSyncEngine {
     const isTombstone = envelope.encryptedPayload === null;
     let model: string | null = null;
     if (!isTombstone) {
-      if (this.serverManaged) {
-        try {
-          model = decodeTrackerSchemaEnvelopePlaintext(envelope);
-        } catch (err) {
-          console.warn('[TrackerSchemaSync] failed to parse server-managed schema payload; skipping', err);
-          return false;
-        }
-      } else {
-        try {
-          model = await decryptTrackerSchemaEnvelope(envelope, this.encryptionKey!);
-        } catch (err) {
-          if (err !== null && typeof err === 'object' && (err as { name?: string }).name === 'OperationError') {
-            return false;
-          }
-          throw err;
-        }
+      try {
+        model = decodeTrackerSchemaEnvelopePlaintext(envelope);
+      } catch (err) {
+        console.warn('[TrackerSchemaSync] failed to parse schema payload; skipping', err);
+        return false;
       }
     }
 
@@ -1105,29 +919,36 @@ export class TrackerSyncEngine {
     return true;
   }
 
+  private async applySavedViewEnvelope(envelope: EncryptedTrackerSavedViewEnvelope): Promise<boolean> {
+    const hooks = this.config.savedViewSync;
+    if (!hooks) return true;
+    const isTombstone = envelope.encryptedPayload === null;
+    let payload: string | null = null;
+    if (!isTombstone) {
+      try {
+        payload = decodeTrackerSavedViewEnvelopePlaintext(envelope);
+      } catch {
+        return false;
+      }
+    }
+
+    await hooks.applyRemote({ viewId: envelope.viewId, payload, syncId: envelope.syncId });
+    return true;
+  }
+
   private async applyNavigationEnvelope(envelope: EncryptedTrackerNavigationEnvelope): Promise<boolean> {
     const hooks = this.config.navigationSync;
     if (!hooks) return true;
     const isTombstone = envelope.encryptedPayload === null;
     let payload: string | null = null;
     if (!isTombstone) {
-      if (this.serverManaged) {
-        try {
-          payload = decodeTrackerNavigationEnvelopePlaintext(envelope);
-        } catch {
-          return false;
-        }
-      } else {
-        try {
-          payload = await decryptTrackerNavigationEnvelope(envelope, this.encryptionKey!);
-        } catch (err) {
-          if (err !== null && typeof err === 'object' && (err as { name?: string }).name === 'OperationError') {
-            return false;
-          }
-          throw err;
-        }
+      try {
+        payload = decodeTrackerNavigationEnvelopePlaintext(envelope);
+      } catch {
+        return false;
       }
     }
+
     await hooks.applyRemote({ entryId: envelope.entryId, payload, syncId: envelope.syncId });
     return true;
   }
@@ -1184,9 +1005,6 @@ export class TrackerSyncEngine {
    */
   private async driveTransaction(row: TrackerTransactionRow): Promise<void> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    // Legacy mode declines to upload until a key epoch is known. Server-managed
-    // mode has no client epoch, so it is always ready to send.
-    if (!this.serverManaged && !this.orgKeyFingerprint) return;
 
     const startedAt = Date.now();
     await this.persistence.markTransactionState(row.clientMutationId, 'executing', startedAt);
@@ -1199,34 +1017,17 @@ export class TrackerSyncEngine {
         clientMutationId: row.clientMutationId,
         itemId: row.itemId,
         encryptedPayload: null,
-        orgKeyFingerprint: this.orgKeyFingerprint,
       });
       return;
     }
 
-    // Server-managed: send PLAINTEXT (no iv, null fingerprint); the server
-    // encrypts at rest with the team DEK.
-    if (this.serverManaged) {
-      this.send({
-        type: 'trackerMutation',
-        clientMutationId: row.clientMutationId,
-        itemId: row.itemId,
-        encryptedPayload: encodeTrackerPayloadPlaintext(row.payload!),
-        orgKeyFingerprint: null,
-        ...(row.payload?.issueNumber !== undefined ? { issueNumber: row.payload.issueNumber } : {}),
-        ...(row.payload?.issueKey !== undefined ? { issueKey: row.payload.issueKey } : {}),
-      });
-      return;
-    }
-
-    const enc = await encryptTrackerPayload(row.payload!, this.encryptionKey!, row.itemId);
+    // The payload travels as PLAINTEXT; the server encrypts it at rest with
+    // the team DEK.
     this.send({
       type: 'trackerMutation',
       clientMutationId: row.clientMutationId,
       itemId: row.itemId,
-      encryptedPayload: enc.encryptedPayload,
-      iv: enc.iv,
-      orgKeyFingerprint: this.orgKeyFingerprint,
+      encryptedPayload: encodeTrackerPayloadPlaintext(row.payload!),
       ...(row.payload?.issueNumber !== undefined ? { issueNumber: row.payload.issueNumber } : {}),
       ...(row.payload?.issueKey !== undefined ? { issueKey: row.payload.issueKey } : {}),
     });
@@ -1236,7 +1037,6 @@ export class TrackerSyncEngine {
     const hooks = this.config.schemaSync;
     if (!hooks) return;
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    if (!this.serverManaged && !this.orgKeyFingerprint) return;
 
     const pending = await hooks.listUnsynced();
     if (pending.length > 0) {
@@ -1251,34 +1051,42 @@ export class TrackerSyncEngine {
           clientMutationId,
           schemaType: def.type,
           encryptedPayload: null,
-          orgKeyFingerprint: this.orgKeyFingerprint,
         });
         continue;
       }
 
-      // Server-managed: the model JSON travels as plaintext; the server
-      // encrypts it at rest with the team DEK.
-      if (this.serverManaged) {
-        console.info(`[TrackerSchemaSync] -> mutation (upsert, plaintext) type=${def.type} cmid=${clientMutationId}`);
-        this.send({
-          type: 'trackerSchemaMutation',
-          clientMutationId,
-          schemaType: def.type,
-          encryptedPayload: def.model,
-          orgKeyFingerprint: null,
-        });
-        continue;
-      }
-
-      const enc = await encryptTrackerSchemaPayload(def.model, this.encryptionKey!, def.type);
+      // The model JSON travels as plaintext; the server encrypts it at rest
+      // with the team DEK.
       console.info(`[TrackerSchemaSync] -> mutation (upsert) type=${def.type} cmid=${clientMutationId}`);
       this.send({
         type: 'trackerSchemaMutation',
         clientMutationId,
         schemaType: def.type,
-        encryptedPayload: enc.encryptedPayload,
-        iv: enc.iv,
-        orgKeyFingerprint: this.orgKeyFingerprint,
+        encryptedPayload: def.model,
+      });
+    }
+  }
+
+  private async pushPendingSavedViews(): Promise<void> {
+    const hooks = this.config.savedViewSync;
+    if (!hooks || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    const pending = await hooks.listUnsynced();
+    for (const view of pending) {
+      const clientMutationId = generateClientMutationId();
+      if (view.deleted || view.payload === null) {
+        this.send({
+          type: 'trackerSavedViewMutation',
+          clientMutationId,
+          viewId: view.viewId,
+          encryptedPayload: null,
+        });
+        continue;
+      }
+      this.send({
+        type: 'trackerSavedViewMutation',
+        clientMutationId,
+        viewId: view.viewId,
+        encryptedPayload: view.payload,
       });
     }
   }
@@ -1286,7 +1094,6 @@ export class TrackerSyncEngine {
   private async pushPendingNavigation(): Promise<void> {
     const hooks = this.config.navigationSync;
     if (!hooks || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    if (!this.serverManaged && !this.orgKeyFingerprint) return;
     const pending = await hooks.listUnsynced();
     for (const entry of pending) {
       const clientMutationId = generateClientMutationId();
@@ -1296,32 +1103,14 @@ export class TrackerSyncEngine {
           clientMutationId,
           entryId: entry.entryId,
           encryptedPayload: null,
-          orgKeyFingerprint: this.orgKeyFingerprint,
         });
         continue;
       }
-      if (this.serverManaged) {
-        this.send({
-          type: 'trackerNavigationMutation',
-          clientMutationId,
-          entryId: entry.entryId,
-          encryptedPayload: entry.payload,
-          orgKeyFingerprint: null,
-        });
-        continue;
-      }
-      const encrypted = await encryptTrackerNavigationPayload(
-        entry.payload,
-        this.encryptionKey!,
-        entry.entryId,
-      );
       this.send({
         type: 'trackerNavigationMutation',
         clientMutationId,
         entryId: entry.entryId,
-        encryptedPayload: encrypted.encryptedPayload,
-        iv: encrypted.iv,
-        orgKeyFingerprint: this.orgKeyFingerprint,
+        encryptedPayload: entry.payload,
       });
     }
   }

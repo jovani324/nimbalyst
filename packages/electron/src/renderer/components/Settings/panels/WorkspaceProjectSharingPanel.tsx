@@ -1,23 +1,36 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { MaterialSymbol } from '@nimbalyst/runtime';
-import { useDialogState } from '../../../contexts/DialogContext';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import { dialogRef, useDialogState } from '../../../contexts/DialogContext';
 import { DIALOG_IDS } from '../../../dialogs/registry';
-import type { CreateTeamData } from '../../../dialogs/teamDialogs';
-import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../../common/AlphaBadge';
-import { SecurityEncryptionSection } from './H2EncryptionMigration';
+import type { OrgCreationWizardData } from '../../../dialogs/teamDialogs';
+import type { AccountLoginData } from '../../../dialogs/accountDialogs';
+import { AlphaBadge } from '../../common/AlphaBadge';
+import { TEAM_ALPHA_TOOLTIP, TeamAlphaNotice } from '../../common/TeamAlphaNotice';
 import { MoveProjectWizard } from './MoveProjectWizard';
 import { MergeOrgWizard } from './MergeOrgWizard';
 import { ProjectAccessEditor } from './ProjectAccessEditor';
+import { selectProjectSharingEntry } from './projectSharingEntry';
+import {
+  bucketMemberCount,
+  bucketProjectCount,
+  categorizeTeamAnalyticsError,
+  normalizeTeamAnalyticsCallerRole,
+} from '../../../../shared/analytics/teamAnalytics';
+import { trackTeamAnalyticsEvent } from '../../../utils/teamAnalytics';
+import { organizationCreationEnabled } from '../../../store/atoms/settingsDomains';
 
 // ============================================================================
 // Types
 // ============================================================================
 
+type TeamMemberRole = 'owner' | 'admin' | 'member' | 'viewer' | 'guest' | 'unknown';
+type EditableTeamMemberRole = 'admin' | 'member' | 'viewer';
+
 interface TeamMember {
   id: string;
   name: string;
   email: string;
-  role: 'admin' | 'member';
+  role: TeamMemberRole;
   status: 'pending' | 'active';
   avatarColor: string;
   isYou?: boolean;
@@ -36,6 +49,11 @@ interface TeamData {
   membershipType?: string;
   boundPersonalOrgId?: string;
   boundAccountEmail?: string | null;
+  /**
+   * How many personal accounts are stored. The bound account only needs naming
+   * when there is more than one it could have been.
+   */
+  storedAccountCount?: number;
 }
 
 interface PendingInvite {
@@ -61,6 +79,30 @@ const AVATAR_COLORS = ['#60a5fa', '#a78bfa', '#4ade80', '#fbbf24', '#f472b6', '#
 
 function getAvatarColor(index: number): string {
   return AVATAR_COLORS[index % AVATAR_COLORS.length];
+}
+
+function normalizeTeamMemberRole(role: unknown): TeamMemberRole {
+  switch (role) {
+    case 'owner':
+    case 'admin':
+    case 'member':
+    case 'viewer':
+    case 'guest':
+      return role;
+    default:
+      return 'unknown';
+  }
+}
+
+function teamMemberRoleLabel(role: TeamMemberRole): string {
+  switch (role) {
+    case 'owner': return 'Owner';
+    case 'admin': return 'Admin';
+    case 'member': return 'Member';
+    case 'viewer': return 'Viewer';
+    case 'guest': return 'Guest';
+    case 'unknown': return 'Unknown';
+  }
 }
 
 // ============================================================================
@@ -92,27 +134,28 @@ function MemberAvatar({ name, email, color, isPending }: {
   );
 }
 
-function RoleBadge({ role, editable, onChange }: { role: 'admin' | 'member'; editable?: boolean; onChange?: (newRole: 'admin' | 'member') => void }) {
+function RoleBadge({ role, editable, onChange }: { role: TeamMemberRole; editable?: boolean; onChange?: (newRole: EditableTeamMemberRole) => void }) {
   const colorClass = role === 'admin'
     ? 'bg-[rgba(96,165,250,0.15)] text-[var(--nim-primary)]'
     : 'bg-[rgba(180,180,180,0.1)] text-[var(--nim-text-faint)]';
 
-  if (editable && onChange) {
+  if (editable && onChange && (role === 'admin' || role === 'member' || role === 'viewer')) {
     return (
       <select
         value={role}
-        onChange={(e) => onChange(e.target.value as 'admin' | 'member')}
+        onChange={(e) => onChange(e.target.value as EditableTeamMemberRole)}
         className={`${colorClass} px-[5px] py-[2px] rounded-[10px] text-[10px] font-semibold border-none cursor-pointer outline-none hover:ring-1 hover:ring-[var(--nim-primary)]`}
       >
         <option value="admin">Admin</option>
         <option value="member">Member</option>
+        <option value="viewer">Viewer</option>
       </select>
     );
   }
 
   return (
     <span className={`${colorClass} px-[7px] py-[2px] rounded-[10px] text-[10px] font-semibold`}>
-      {role === 'admin' ? 'Admin' : 'Member'}
+      {teamMemberRoleLabel(role)}
     </span>
   );
 }
@@ -126,17 +169,6 @@ function PendingBadge() {
   );
 }
 
-function TeamPricingNotice() {
-  return (
-    <div className="mt-2.5 flex items-start gap-1.5 text-[12px] leading-relaxed text-[var(--nim-text-faint)]">
-      <MaterialSymbol icon="info" size={13} className="mt-[2px] shrink-0" />
-      <span>
-        Nimbalyst Teams is <span className="text-[var(--nim-text-muted)]">free during alpha</span>. We plan to introduce a paid subscription tier for teams in the future; existing teams will get advance notice before any pricing change.
-      </span>
-    </div>
-  );
-}
-
 function EncryptionCard() {
   return (
     <div className="p-3.5 bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded-lg">
@@ -147,15 +179,15 @@ function EncryptionCard() {
         </span>
       </div>
       <p className="m-0 mb-2 text-[12px] text-[var(--nim-text-muted)] leading-relaxed">
-        Team data (trackers and documents) is encrypted in transit and at rest and
-        isolated per team. Depending on your team&apos;s setup, encryption keys are
+        Organization data (trackers and documents) is encrypted in transit and at rest and
+        isolated per organization. Depending on your organization&apos;s setup, encryption keys are
         either held only by members&apos; devices, or managed by Nimbalyst so the
-        team is reachable from the web, CLI, and cloud agents.
+        organization is reachable from the web, CLI, and cloud agents.
       </p>
       <ul className="m-0 pl-5 text-[12px] text-[var(--nim-text)] leading-7">
-        <li>Only authorized team members can access shared data</li>
+        <li>Only authorized organization members can access shared data</li>
         <li>Your personal device sync (sessions, drafts, settings) stays zero-knowledge — keys never leave your devices</li>
-        <li>Need true zero-knowledge for team data? Self-hosting is the answer</li>
+        <li>Need true zero-knowledge for organization data? Self-hosting is the answer</li>
       </ul>
     </div>
   );
@@ -177,112 +209,220 @@ function ErrorBanner({ error, onDismiss }: { error: string; onDismiss: () => voi
 }
 
 // ============================================================================
-// No Team State
+// Unshared Project State — decision-first, two steps
 // ============================================================================
 
-function NoTeamState({ gitRemote, onCreateTeam, loading, adminOrgs, onAddToOrg, addingProject, hasGitRemote }: {
-  gitRemote: string;
-  onCreateTeam: () => void;
-  loading?: boolean;
-  adminOrgs: { orgId: string; name: string }[];
-  onAddToOrg: (orgId: string) => void;
-  addingProject?: boolean;
-  hasGitRemote?: boolean;
-}) {
-  const [selectedOrgId, setSelectedOrgId] = useState<string>('');
+function GitRemoteNotice({ gitRemote }: { gitRemote: string }) {
+  if (gitRemote) {
+    return (
+      <div className="project-sharing-git-remote flex items-center gap-2 px-3 py-2.5 bg-[var(--nim-bg-secondary)] rounded-md" data-testid="project-sharing-git-remote">
+        <MaterialSymbol icon="commit" size={16} className="text-[var(--nim-text-faint)]" />
+        <span className="text-[12px] font-mono select-text text-[var(--nim-text-muted)]">{gitRemote}</span>
+      </div>
+    );
+  }
 
   return (
-    <>
-      {/* CTA Card */}
-      <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
-        <div className="p-6 bg-[var(--nim-bg-secondary)] rounded-lg text-center">
-          <div className="w-12 h-12 mx-auto mb-3 bg-[rgba(96,165,250,0.15)] rounded-xl flex items-center justify-center">
-            <MaterialSymbol icon="group" size={24} className="text-[var(--nim-primary)]" />
-          </div>
-          <p className="text-[13px] text-[var(--nim-text-muted)] mb-4 leading-relaxed">
-            This project is personal. Create a team to share tracker items, documents, and collaborate in real time.
-          </p>
-          <button
-            onClick={onCreateTeam}
-            disabled={loading}
-            className={`inline-flex items-center gap-1.5 px-5 py-2 bg-[var(--nim-primary)] border-none rounded-md text-white text-[13px] font-medium ${
-              loading ? 'cursor-wait opacity-70' : 'cursor-pointer'
-            }`}
-          >
-            <MaterialSymbol icon="add" size={14} />
-            {loading ? 'Creating...' : 'Create Team'}
-          </button>
-        </div>
-      </div>
+    <div className="project-sharing-no-remote flex items-start gap-2 px-3 py-2.5 bg-[var(--nim-bg-secondary)] rounded-md" data-testid="project-sharing-no-remote">
+      <MaterialSymbol icon="link_off" size={16} className="mt-0.5 shrink-0 text-[var(--nim-warning)]" />
+      <span className="text-[12px] leading-relaxed text-[var(--nim-text-muted)]">
+        This workspace has no git remote. A shared project is matched to teammates by its git remote, so
+        without one nobody else will connect to it automatically. Add a remote
+        (<span className="font-mono">git remote add origin …</span>), then come back here.
+      </span>
+    </div>
+  );
+}
 
-      {/* Epic H3 P0/A: Add this workspace to an EXISTING org as a new project. */}
-      {adminOrgs.length > 0 && (
-        <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
-          <h4 className="provider-panel-section-title text-[15px] font-semibold mb-2 text-[var(--nim-text)]">
-            Add to an existing organization
-          </h4>
-          <p className="text-[12px] text-[var(--nim-text-muted)] mb-3 leading-relaxed">
-            Already have an organization? Add this repo as a new project under it instead of
-            creating a separate team. It joins as its own tracker space, sharing the org&apos;s members and encryption.
-          </p>
-          {!hasGitRemote ? (
-            <div className="flex items-center gap-2 px-3 py-2.5 bg-[var(--nim-bg-secondary)] rounded-md">
-              <MaterialSymbol icon="link_off" size={14} className="text-[var(--nim-text-faint)] shrink-0" />
-              <span className="text-[12px] text-[var(--nim-text-faint)]">
-                This workspace has no git remote, so it can&apos;t be added as a project.
-              </span>
+/**
+ * Step 1 asks one question — join an organization you already administer, or
+ * start a new one — and step 2 states in plain words what the chosen action
+ * will do. Exported for testing.
+ */
+export function UnsharedProjectSharingState({
+  workspacePath,
+  gitRemote,
+  adminOrgs,
+  onCreateOrganization,
+  onAddToOrg,
+  loading,
+  addingProject,
+}: {
+  workspacePath: string;
+  gitRemote: string;
+  adminOrgs: { orgId: string; name: string }[];
+  onCreateOrganization: () => void;
+  onAddToOrg: (orgId: string) => void;
+  loading?: boolean;
+  addingProject?: boolean;
+}) {
+  const [choice, setChoice] = useState<'existing' | 'new' | null>(null);
+  const [selectedOrgId, setSelectedOrgId] = useState<string>('');
+
+  const projectName = workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? workspacePath;
+  const selectedOrg = adminOrgs.find((organization) => organization.orgId === selectedOrgId);
+  const entry = selectProjectSharingEntry({ gitRemote, adminOrgs });
+  const canChooseExisting = entry.state === 'choose-existing-or-new';
+
+  const confirming = choice === 'new' || (choice === 'existing' && !!selectedOrg);
+  // Adding to an existing org keys the project by its git remote hash. With no
+  // remote the server would mint a nameless, unreachable project and the panel
+  // would silently fall back to these choices — so the confirm action is
+  // blocked (and says why) rather than letting each retry orphan another one.
+  const blockedByMissingRemote = choice === 'existing' && !gitRemote;
+
+  return (
+    <div className="unshared-project-sharing-state" data-testid="unshared-project-sharing-state">
+      <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)]">
+        <h4 className="provider-panel-section-title text-[15px] font-semibold mb-1 text-[var(--nim-text)]">
+          Connect this project to an organization
+        </h4>
+        <p className="m-0 mb-3 text-[13px] leading-relaxed text-[var(--nim-text-muted)]">
+          Sharing puts <span className="text-[var(--nim-text)]">{projectName}</span> in an organization, so its tracker
+          items and documents sync to the people you give access.
+        </p>
+
+        {!confirming ? (
+          <div className="project-sharing-choices flex flex-col gap-2" data-testid="project-sharing-choices">
+            {canChooseExisting && (
+              <div className="project-sharing-choice rounded-lg border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-3">
+                <div className="text-[13px] font-medium text-[var(--nim-text)]">Add to an existing organization</div>
+                <p className="m-0 mt-0.5 mb-2 text-[12px] leading-relaxed text-[var(--nim-text-muted)]">
+                  It joins as its own project, sharing the organization&apos;s members and encryption.
+                </p>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={selectedOrgId}
+                    onChange={(event) => setSelectedOrgId(event.target.value)}
+                    className="flex-1 px-3 py-2 text-[12px] bg-[var(--nim-bg)] border border-[var(--nim-border)] rounded-md text-[var(--nim-text)] cursor-pointer"
+                    data-testid="project-sharing-org-picker"
+                    aria-label="Organization"
+                  >
+                    <option value="">Select an organization…</option>
+                    {adminOrgs.map((organization) => (
+                      <option key={organization.orgId} value={organization.orgId}>{organization.name}</option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => setChoice('existing')}
+                    disabled={!selectedOrgId}
+                    className={`shrink-0 rounded-md px-4 py-2 text-[12px] font-medium ${
+                      selectedOrgId
+                        ? 'bg-[var(--nim-primary)] text-white cursor-pointer'
+                        : 'bg-[var(--nim-bg-tertiary)] text-[var(--nim-text-faint)] cursor-not-allowed'
+                    }`}
+                    data-testid="project-sharing-choose-existing"
+                  >
+                    Continue
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {organizationCreationEnabled && (
+              <div className="project-sharing-choice rounded-lg border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-3">
+                <div className="text-[13px] font-medium text-[var(--nim-text)]">Create a new organization</div>
+                <p className="m-0 mt-0.5 mb-2 text-[12px] leading-relaxed text-[var(--nim-text-muted)]">
+                  {canChooseExisting
+                    ? 'Start a separate organization with its own members and billing.'
+                    : 'You are not in an organization yet. Create one to start sharing this project.'}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setChoice('new')}
+                  className="rounded-md border border-[var(--nim-border)] px-4 py-2 text-[12px] font-medium text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
+                  data-testid="project-sharing-choose-new"
+                >
+                  Continue
+                </button>
+              </div>
+            )}
+            {!organizationCreationEnabled && !canChooseExisting && (
+              <p
+                className="project-sharing-creation-unavailable m-0 text-[12px] leading-relaxed text-[var(--nim-text-muted)]"
+                data-testid="project-sharing-creation-unavailable"
+              >
+                Creating an organization is temporarily unavailable while this is being finished.
+                Once you are an admin of one, you can add this project to it here.
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="project-sharing-confirm rounded-lg border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-4" data-testid="project-sharing-confirm">
+            <div className="text-[13px] font-medium text-[var(--nim-text)]">
+              {choice === 'existing'
+                ? `Add ${projectName} to ${selectedOrg?.name}`
+                : `Create a new organization for ${projectName}`}
             </div>
-          ) : (
+            <ul className="m-0 mt-2 mb-3 pl-5 text-[12px] leading-7 text-[var(--nim-text-muted)]">
+              <li>
+                {choice === 'existing'
+                  ? `Everyone you grant access in ${selectedOrg?.name} can open this project's shared tracker items and documents.`
+                  : 'You will be the owner, and nobody else has access until you invite them.'}
+              </li>
+              <li>
+                {gitRemote
+                  ? <>Teammates who clone <span className="font-mono select-text">{gitRemote}</span> connect to it automatically.</>
+                  : 'Without a git remote, teammates will not connect to this project automatically.'}
+              </li>
+              <li>Nothing on your disk moves or changes.</li>
+            </ul>
+            {blockedByMissingRemote && (
+              <div
+                className="project-sharing-blocked flex items-start gap-2 mb-3 rounded-md bg-[var(--nim-bg)] px-3 py-2.5"
+                data-testid="project-sharing-blocked"
+              >
+                <MaterialSymbol icon="link_off" size={16} className="mt-0.5 shrink-0 text-[var(--nim-warning)]" />
+                <span className="text-[12px] leading-relaxed text-[var(--nim-text-muted)]">
+                  This project needs a git remote before it can be added. An organization finds a project by its
+                  remote, so adding it now would create an empty project nobody could open. Run
+                  <span className="font-mono"> git remote add origin …</span>, push once, then come back here.
+                </span>
+              </div>
+            )}
             <div className="flex items-center gap-2">
-              <select
-                value={selectedOrgId}
-                onChange={(e) => setSelectedOrgId(e.target.value)}
-                disabled={addingProject}
-                className="flex-1 px-3 py-2 text-[12px] bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded-md text-[var(--nim-text)] cursor-pointer"
-              >
-                <option value="">Select an organization…</option>
-                {adminOrgs.map((o) => (
-                  <option key={o.orgId} value={o.orgId}>{o.name}</option>
-                ))}
-              </select>
               <button
-                onClick={() => selectedOrgId && onAddToOrg(selectedOrgId)}
-                disabled={!selectedOrgId || addingProject}
-                className={`inline-flex items-center gap-1.5 px-4 py-2 border-none rounded-md text-white text-[12px] font-medium shrink-0 ${
-                  !selectedOrgId || addingProject
+                type="button"
+                onClick={() => (choice === 'existing' ? onAddToOrg(selectedOrgId) : onCreateOrganization())}
+                disabled={loading || addingProject || blockedByMissingRemote}
+                className={`rounded-md border-none px-4 py-2 text-[12px] font-medium ${
+                  blockedByMissingRemote
                     ? 'bg-[var(--nim-bg-tertiary)] text-[var(--nim-text-faint)] cursor-not-allowed'
-                    : 'bg-[var(--nim-primary)] cursor-pointer'
+                    : `bg-[var(--nim-primary)] text-white ${loading || addingProject ? 'cursor-wait opacity-70' : 'cursor-pointer'}`
                 }`}
+                data-testid="project-sharing-confirm-action"
               >
-                <MaterialSymbol icon="add" size={14} />
-                {addingProject ? 'Adding…' : 'Add Project'}
+                {choice === 'existing'
+                  ? (addingProject ? 'Adding…' : 'Add project')
+                  : (loading ? 'Creating…' : 'Create organization')}
+              </button>
+              <button
+                type="button"
+                onClick={() => setChoice(null)}
+                className="rounded-md border border-[var(--nim-border)] px-4 py-2 text-[12px] text-[var(--nim-text-muted)] hover:bg-[var(--nim-bg-hover)]"
+                data-testid="project-sharing-back"
+              >
+                Back
               </button>
             </div>
-          )}
-        </div>
-      )}
+          </div>
+        )}
+      </div>
 
       {/* Project Identity */}
-      <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
+      <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)]">
         <h4 className="provider-panel-section-title text-[15px] font-semibold mb-2 text-[var(--nim-text)]">
           Project Identity
         </h4>
-        <p className="text-[13px] leading-relaxed text-[var(--nim-text-muted)] mb-3">
-          Teams are linked to a git remote, so any member who opens a clone of the same repo is automatically connected.
-        </p>
-        <div className="flex items-center gap-2 px-3 py-2.5 bg-[var(--nim-bg-secondary)] rounded-md">
-          <MaterialSymbol icon="commit" size={16} className="text-[var(--nim-text-faint)]" />
-          <span className="text-[12px] font-mono text-[var(--nim-text-muted)]">
-            {gitRemote || 'No git remote detected'}
-          </span>
-        </div>
+        <GitRemoteNotice gitRemote={gitRemote} />
       </div>
 
       {/* Encryption Footer */}
       <div className="provider-panel-section py-4">
         <EncryptionCard />
       </div>
-    </>
+    </div>
   );
 }
 
@@ -317,24 +457,32 @@ export function ProjectScopedTeamExistsState({
     : undefined;
   const isAdmin = team.callerRole === 'admin' || team.callerRole === 'owner';
   const destinationOrganizations = adminOrgs.filter((organization) => organization.orgId !== team.orgId);
-  // Org administration opens in its own window (2026-07-17 decision-log correction).
+  // Administration opens in this window as a dialog (NIM-2322), on Projects:
+  // every entry point here is about this project's place in the organization.
   const openTeamSurface = () => {
-    void (window as any).electronAPI?.team?.openManagementWindow({ orgId: team.orgId, workspacePath });
+    dialogRef.current?.open(DIALOG_IDS.ORG_MANAGEMENT, { orgId: team.orgId, initialTab: 'projects' });
   };
 
   return (
     <div className="attached-project-sharing-state" data-testid="attached-project-sharing-state">
       <div className="project-identity-card rounded-lg border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-4" data-testid="project-identity-card">
-        <div className="flex items-center gap-3"><MaterialSymbol icon="folder_shared" size={22} /><div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold">{currentProject?.name || currentProject?.slug || team.name}</div><div className="truncate text-xs text-[var(--nim-text-muted)]">{team.name} · {team.callerRole || 'member'}</div></div></div>
+        <div className="flex items-center gap-3"><MaterialSymbol icon="folder_shared" size={22} /><div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold">{currentProject?.name || currentProject?.slug || team.name}</div><div className="truncate text-xs text-[var(--nim-text-muted)]">{team.name} · {teamMemberRoleLabel(normalizeTeamMemberRole(team.callerRole))}</div></div></div>
         <div className="mt-3 flex items-center gap-2 rounded bg-[var(--nim-bg)] px-3 py-2"><MaterialSymbol icon={team.gitRemoteHash ? 'link' : 'link_off'} size={15} /><span className="min-w-0 flex-1 truncate select-text font-mono text-xs text-[var(--nim-text-muted)]">{localGitRemote || 'No git remote linked'}</span>{isAdmin && (team.gitRemoteHash ? <button type="button" className="text-xs text-[var(--nim-text-muted)]" onClick={onUnlinkProject}>Unlink</button> : localGitRemote ? <button type="button" className="text-xs text-[var(--nim-link)]" onClick={onLinkProject}>Relink</button> : null)}</div>
       </div>
 
       <div className="workspace-organization-account-chain mt-3 select-text rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg)] px-3 py-2 text-xs text-[var(--nim-text-muted)]" data-testid="workspace-organization-account-chain">
-        {workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? workspacePath} → {team.name} → {team.boundAccountEmail ?? team.boundPersonalOrgId ?? 'bound account'}
+        {workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? workspacePath} → {team.name}
+        {/* The owning login is only worth spelling out once a second account
+            exists; with one it is the only answer there could be. */}
+        {(team.storedAccountCount ?? 0) > 1 && (
+          <span data-testid="workspace-organization-account-tail">
+            {' → '}{team.boundAccountEmail ?? team.boundPersonalOrgId ?? 'bound account'}
+          </span>
+        )}
       </div>
 
       <div className="project-organization-links my-4 flex flex-wrap gap-2" data-testid="project-organization-links">
-        <button type="button" className="rounded border border-[var(--nim-border)] px-3 py-1.5 text-xs hover:bg-[var(--nim-bg-hover)]" onClick={openTeamSurface}>Open Team</button>
+        <button type="button" className="rounded border border-[var(--nim-border)] px-3 py-1.5 text-xs hover:bg-[var(--nim-bg-hover)]" onClick={openTeamSurface}>Open organization</button>
       </div>
 
       {!currentProject ? (
@@ -375,7 +523,7 @@ function InvitePendingState({ invite, onAccept, loading, gitRemote }: {
             {invite.name}
           </div>
           <p className="text-[13px] text-[var(--nim-text-muted)] mb-4 leading-relaxed">
-            You have been invited to join this team. Accept to collaborate on shared, encrypted tracker items and documents.
+            You have been invited to join this organization. Accept to collaborate on shared, encrypted tracker items and documents.
           </p>
           <button
             onClick={onAccept}
@@ -385,7 +533,7 @@ function InvitePendingState({ invite, onAccept, loading, gitRemote }: {
             }`}
           >
             <MaterialSymbol icon="group_add" size={14} />
-            {loading ? 'Joining...' : 'Join Team'}
+            {loading ? 'Joining…' : 'Join organization'}
           </button>
         </div>
       </div>
@@ -396,7 +544,7 @@ function InvitePendingState({ invite, onAccept, loading, gitRemote }: {
           Project Identity
         </h4>
         <p className="text-[13px] leading-relaxed text-[var(--nim-text-muted)] mb-3">
-          Teams are linked to a git remote, so any member who opens a clone of the same repo is automatically connected.
+          Organizations link a project to its git remote, so any member who opens a clone of the same repo is automatically connected.
         </p>
         <div className="flex items-center gap-2 px-3 py-2.5 bg-[var(--nim-bg-secondary)] rounded-md">
           <MaterialSymbol icon="commit" size={16} className="text-[var(--nim-text-faint)]" />
@@ -430,12 +578,41 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
   const [projects, setProjects] = useState<OrgProjectSummary[]>([]);
   const [adminOrgs, setAdminOrgs] = useState<{ orgId: string; name: string }[]>([]);
   const [addingProject, setAddingProject] = useState(false);
+  const surfaceOpenedRef = useRef(false);
   const [stytchAuth, setStytchAuth] = useState<{
     isAuthenticated: boolean;
     user: { user_id: string; emails: Array<{ email: string }>; name?: { first_name?: string; last_name?: string } } | null;
   }>({ isAuthenticated: false, user: null });
 
-  const createTeamDialog = useDialogState<CreateTeamData>(DIALOG_IDS.CREATE_TEAM);
+  const orgWizardDialog = useDialogState<OrgCreationWizardData>(DIALOG_IDS.ORG_CREATION_WIZARD);
+  const accountLoginDialog = useDialogState<AccountLoginData>(DIALOG_IDS.ACCOUNT_LOGIN);
+  const analyticsCallerRole = normalizeTeamAnalyticsCallerRole(team?.callerRole);
+  const trackFailure = useCallback((
+    operation: 'create_organization' | 'send_invitation' | 'accept_invitation' | 'change_member_role' | 'remove_member' | 'add_project' | 'link_project' | 'unlink_project' | 'delete_organization',
+    reason: unknown,
+    area: 'organization' | 'project' = 'organization',
+  ) => {
+    trackTeamAnalyticsEvent('team_operation_failed', {
+      surface: 'desktop',
+      operation,
+      entryPoint: 'project_sharing',
+      callerRole: analyticsCallerRole,
+      errorCategory: area === 'project'
+        ? categorizeTeamAnalyticsError('project', reason)
+        : categorizeTeamAnalyticsError('organization', reason),
+    });
+  }, [analyticsCallerRole]);
+
+  useEffect(() => {
+    if (initialLoading || surfaceOpenedRef.current) return;
+    surfaceOpenedRef.current = true;
+    trackTeamAnalyticsEvent('team_surface_opened', {
+      surface: 'desktop',
+      entryPoint: 'project_sharing',
+      hasActiveOrganization: !!team,
+      callerRole: analyticsCallerRole,
+    });
+  }, [analyticsCallerRole, initialLoading, team]);
 
   // Load Stytch auth state on mount
   useEffect(() => {
@@ -504,7 +681,7 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
       id: m.memberId,
       name: m.name || '',
       email: m.email,
-      role: m.role as 'admin' | 'member',
+      role: normalizeTeamMemberRole(m.role),
       status: m.status === 'pending' ? 'pending' as const : 'active' as const,
       avatarColor: getAvatarColor(i),
       isYou: m.memberId === currentUserId,
@@ -519,9 +696,10 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
       gitRemoteHash: teamGitRemoteHash,
       teamProjectId: teamProjectId ?? null,
       members,
-      callerRole: membersResult.callerRole || 'member',
+      callerRole: normalizeTeamMemberRole(membersResult.callerRole),
       boundPersonalOrgId,
       boundAccountEmail: accounts.find((account) => account.personalOrgId === boundPersonalOrgId)?.email ?? null,
+      storedAccountCount: accounts.length,
     });
 
     // Epic H3 P0/A: list every project in this org (fire-and-forget).
@@ -599,36 +777,47 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     loadTeamData();
   }, [loadTeamData]);
 
-  const handleCreateTeam = async () => {
-    // Load accounts to show picker if multiple are signed in
-    let accounts: Array<{ personalOrgId: string; email: string | null; isSyncAccount: boolean }> = [];
-    try {
-      accounts = await (window as any).electronAPI.stytch.getAccounts() || [];
-    } catch {
-      // Fall back to empty -- dialog will work without account picker
-    }
-
-    createTeamDialog.open({
-      gitRemote: gitRemote || 'No git remote detected',
+  /**
+   * One organization-creation surface for the whole app: the wizard handles
+   * sign-in, naming, invites and rooms, and adopts this project on create. It
+   * reports `team_organization_created` itself, so this only records the
+   * project side of the same act.
+   */
+  const handleCreateTeam = () => {
+    orgWizardDialog.open({
+      workspacePath: workspacePath || undefined,
       suggestedName: workspacePath?.split('/').pop() || 'my-project',
-      accounts,
-      onCreateTeam: async (name: string, accountOrgId?: string) => {
-        setLoading(true);
-        setError(null);
-        try {
-          const result = await (window as any).electronAPI.team.create(name, workspacePath, accountOrgId);
-          if (result.success) {
-            await loadTeamData();
-          } else {
-            setError(result.error || 'Failed to create team');
-          }
-        } catch (err) {
-          setError(err instanceof Error ? err.message : 'Failed to create team');
-        } finally {
-          setLoading(false);
-        }
+      entryPoint: 'project_sharing',
+      onOrganizationCreated: () => {
+        trackTeamAnalyticsEvent('team_project_added', {
+          surface: 'desktop',
+          entryPoint: 'project_sharing',
+          callerRole: 'owner',
+          organizationWasNew: true,
+          hasGitRemote: !!gitRemote,
+          projectCountBucket: bucketProjectCount(1),
+        });
+        void loadTeamData();
       },
     });
+  };
+
+  /**
+   * The signed-out arm's one button.
+   *
+   * Signing in is worth doing on its own — an invitation may already be waiting,
+   * and the signed-in panel can add this project to an existing organization.
+   * But while creation is switched off, the wizard's only destination past
+   * sign-in is a create step that cannot run, so this routes to the plain
+   * account sign-in instead of walking the user into that dead end. The
+   * signed-in card gates the create choice the same way.
+   */
+  const handleSignedOutSignIn = () => {
+    if (!organizationCreationEnabled) {
+      accountLoginDialog.open({ mode: 'first-sign-in' });
+      return;
+    }
+    handleCreateTeam();
   };
 
   // Epic H3 P0/A: attach the current workspace to an EXISTING org as a new
@@ -642,13 +831,23 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     try {
       const result = await (window as any).electronAPI.team.addProject(orgId, workspacePath);
       if (result.success) {
+        trackTeamAnalyticsEvent('team_project_added', {
+          surface: 'desktop',
+          entryPoint: 'project_sharing',
+          callerRole: 'admin',
+          organizationWasNew: false,
+          hasGitRemote: !!gitRemote,
+          projectCountBucket: bucketProjectCount(projects.length + 1),
+        });
         await loadTeamData();
         await loadAdminOrgs();
       } else {
         setError(result.error || 'Failed to add project to organization');
+        trackFailure('add_project', result.error, 'project');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add project to organization');
+      trackFailure('add_project', err, 'project');
     } finally {
       setAddingProject(false);
     }
@@ -660,6 +859,12 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     try {
       const result = await (window as any).electronAPI.team.invite(team.orgId, email);
       if (result.success) {
+        trackTeamAnalyticsEvent('team_invitation_sent', {
+          surface: 'desktop',
+          entryPoint: 'project_sharing',
+          callerRole: analyticsCallerRole,
+          memberCountBucket: bucketMemberCount(team.members.length + 1),
+        });
         // Optimistic update -- add pending member
         setTeam({
           ...team,
@@ -680,9 +885,11 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
         setTimeout(() => loadTeamData(), 2000);
       } else {
         setError(result.error || 'Failed to send invite');
+        trackFailure('send_invitation', result.error);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send invite');
+      trackFailure('send_invitation', err);
     }
   };
 
@@ -694,13 +901,18 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     const confirmed = window.confirm(
       isPending
         ? `Revoke the pending invite for ${label}?`
-        : `Remove ${label} from "${team.name}"? They will lose access to this team's shared trackers and documents. This cannot be undone (you'd need to re-invite them).`
+        : `Remove ${label} from "${team.name}"? They will lose access to this organization's shared trackers and documents. This cannot be undone (you'd need to re-invite them).`
     );
     if (!confirmed) return;
     setError(null);
     try {
       const result = await (window as any).electronAPI.team.removeMember(team.orgId, memberId);
       if (result.success) {
+        trackTeamAnalyticsEvent('team_member_removed', {
+          surface: 'desktop',
+          callerRole: analyticsCallerRole,
+          memberState: isPending ? 'pending' : 'active',
+        });
         // Optimistic update
         setTeam({
           ...team,
@@ -708,9 +920,11 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
         });
       } else {
         setError(result.error || 'Failed to remove member');
+        trackFailure('remove_member', result.error);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to remove member');
+      trackFailure('remove_member', err);
     }
   };
 
@@ -721,13 +935,20 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     try {
       const result = await (window as any).electronAPI.team.acceptInvite(pendingInvite.orgId);
       if (result.success) {
+        trackTeamAnalyticsEvent('team_invitation_accepted', {
+          surface: 'desktop',
+          entryPoint: 'project_sharing',
+          projectMatched: true,
+        });
         setPendingInvite(null);
         await loadTeamData();
       } else {
-        setError(result.error || 'Failed to join team');
+        setError(result.error || 'Failed to join organization');
+        trackFailure('accept_invitation', result.error);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to join team');
+      setError(err instanceof Error ? err.message : 'Failed to join organization');
+      trackFailure('accept_invitation', err);
     } finally {
       setLoading(false);
     }
@@ -739,12 +960,20 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     try {
       const result = await (window as any).electronAPI.team.setProjectIdentity(team.orgId, workspacePath);
       if (result.success) {
+        trackTeamAnalyticsEvent('team_project_identity_changed', {
+          surface: 'desktop',
+          action: 'linked',
+          callerRole: analyticsCallerRole,
+          hasGitRemote: !!gitRemote,
+        });
         await loadTeamData();
       } else {
         setError(result.error || 'Failed to link project');
+        trackFailure('link_project', result.error, 'project');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to link project');
+      trackFailure('link_project', err, 'project');
     }
   };
 
@@ -758,21 +987,36 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
     try {
       const result = await (window as any).electronAPI.team.clearProjectIdentity(team.orgId);
       if (result.success) {
+        trackTeamAnalyticsEvent('team_project_identity_changed', {
+          surface: 'desktop',
+          action: 'unlinked',
+          callerRole: analyticsCallerRole,
+          hasGitRemote: !!gitRemote,
+        });
         await loadTeamData();
       } else {
         setError(result.error || 'Failed to unlink project');
+        trackFailure('unlink_project', result.error, 'project');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to unlink project');
+      trackFailure('unlink_project', err, 'project');
     }
   };
 
-  const handleUpdateRole = async (memberId: string, newRole: 'admin' | 'member') => {
+  const handleUpdateRole = async (memberId: string, newRole: EditableTeamMemberRole) => {
     if (!team) return;
     setError(null);
     try {
       const result = await (window as any).electronAPI.team.updateRole(team.orgId, memberId, newRole);
       if (result.success) {
+        const previousRole = team.members.find((member) => member.id === memberId)?.role ?? 'unknown';
+        trackTeamAnalyticsEvent('team_member_role_changed', {
+          surface: 'desktop',
+          callerRole: analyticsCallerRole,
+          fromRole: normalizeTeamAnalyticsCallerRole(previousRole),
+          toRole: normalizeTeamAnalyticsCallerRole(newRole),
+        });
         // Optimistic update
         setTeam({
           ...team,
@@ -782,28 +1026,38 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
         });
       } else {
         setError(result.error || 'Failed to update role');
+        trackFailure('change_member_role', result.error);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update role');
+      trackFailure('change_member_role', err);
     }
   };
 
   const handleDeleteTeam = async () => {
     if (!team) return;
     const confirmed = window.confirm(
-      `Permanently delete team "${team.name}"? This will remove all members, shared documents, and encryption keys. This action cannot be undone.`
+      `Permanently delete organization "${team.name}"? This will remove all members, shared documents, and encryption keys. This action cannot be undone.`
     );
     if (!confirmed) return;
     setError(null);
     try {
       const result = await (window as any).electronAPI.team.deleteTeam(team.orgId);
       if (result.success) {
+        trackTeamAnalyticsEvent('team_organization_deleted', {
+          surface: 'desktop',
+          callerRole: analyticsCallerRole,
+          memberCountBucket: bucketMemberCount(team.members.length),
+          projectCountBucket: bucketProjectCount(projects.length),
+        });
         setTeam(null);
       } else {
-        setError(result.error || 'Failed to delete team');
+        setError(result.error || 'Failed to delete organization');
+        trackFailure('delete_organization', result.error);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete team');
+      setError(err instanceof Error ? err.message : 'Failed to delete organization');
+      trackFailure('delete_organization', err);
     }
   };
 
@@ -814,7 +1068,7 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
         data-component="WorkspaceProjectSharingPanel"
         data-testid="workspace-project-sharing-panel"
       >
-        <span className="text-[13px] text-[var(--nim-text-muted)]">Loading team data...</span>
+        <span className="text-[13px] text-[var(--nim-text-muted)]">Loading organization data…</span>
       </div>
     );
   }
@@ -829,28 +1083,43 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
       >
         <div className="provider-panel-header mb-5 pb-4 border-b border-[var(--nim-border)]">
           <h3 className="provider-panel-title text-xl font-semibold leading-tight mb-1.5 text-[var(--nim-text)] flex items-center gap-2">
-            Team
-            <AlphaBadge size="sm" tooltip={SETTINGS_ALPHA_TOOLTIP} />
+            Organization
+            <AlphaBadge size="sm" tooltip={TEAM_ALPHA_TOOLTIP} />
           </h3>
           <p className="provider-panel-description text-[13px] leading-relaxed text-[var(--nim-text-muted)]">
-            Create a team to collaborate on shared, encrypted tracker items and documents.
+            Create an organization to collaborate on shared, encrypted tracker items and documents.
           </p>
-          <TeamPricingNotice />
+          <TeamAlphaNotice className="mt-2.5" />
         </div>
-        <div className="p-6 bg-[var(--nim-bg-secondary)] rounded-lg text-center">
-          <div className="w-12 h-12 mx-auto mb-3 bg-[rgba(96,165,250,0.15)] rounded-xl flex items-center justify-center">
+        {/* Signing out of this state is one click, not an instruction to go
+            find another panel: the wizard's first step is the sign-in. */}
+        <div
+          className="project-sharing-signed-out p-6 bg-[var(--nim-bg-secondary)] rounded-lg text-center"
+          data-testid="project-sharing-signed-out"
+        >
+          <div className="w-12 h-12 mx-auto mb-3 bg-[color-mix(in_srgb,var(--nim-primary)_15%,transparent)] rounded-xl flex items-center justify-center">
             <MaterialSymbol icon="account_circle" size={24} className="text-[var(--nim-primary)]" />
           </div>
-          <p className="text-[13px] text-[var(--nim-text-muted)] mb-2 leading-relaxed">
-            Sign in to create or join a team.
+          <p className="text-[13px] text-[var(--nim-text-muted)] mb-3 leading-relaxed">
+            Sharing this project needs a Nimbalyst account. Signing in or creating one is the
+            first step.
           </p>
-          <p className="text-[12px] text-[var(--nim-text-faint)] m-0">
-            Go to <strong className="text-[var(--nim-text-muted)]">Account & Sync</strong> in the sidebar to sign in.
-          </p>
+          <button
+            type="button"
+            className="project-sharing-sign-in rounded-md bg-[var(--nim-primary)] px-4 py-2 text-[13px] font-medium text-white"
+            data-testid="project-sharing-sign-in"
+            onClick={handleSignedOutSignIn}
+          >
+            Sign in or create an account
+          </button>
         </div>
       </div>
     );
   }
+
+  // One starting point instead of a stack of options: an invite outranks
+  // everything, otherwise the user picks between an existing org and a new one.
+  const sharingEntry = selectProjectSharingEntry({ pendingInvite, gitRemote, adminOrgs });
 
   const userEmail = stytchAuth.user?.emails?.[0]?.email;
   const userName = stytchAuth.user?.name?.first_name
@@ -866,13 +1135,13 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
       {/* Header */}
       <div className="provider-panel-header mb-5 pb-4 border-b border-[var(--nim-border)]">
         <h3 className="provider-panel-title text-xl font-semibold leading-tight mb-1.5 text-[var(--nim-text)] flex items-center gap-2">
-          Team
-          <AlphaBadge size="sm" tooltip={SETTINGS_ALPHA_TOOLTIP} />
+          Organization
+          <AlphaBadge size="sm" tooltip={TEAM_ALPHA_TOOLTIP} />
         </h3>
         <p className="provider-panel-description text-[13px] leading-relaxed text-[var(--nim-text-muted)]">
-          Create a team to collaborate on shared, encrypted tracker items and documents.
+          Create an organization to collaborate on shared, encrypted tracker items and documents.
         </p>
-        <TeamPricingNotice />
+        <TeamAlphaNotice className="mt-2.5" />
         {userEmail && team && (
           <div className="flex items-center gap-1.5 mt-2 text-[12px] text-[var(--nim-text-faint)]">
             <MaterialSymbol icon="person" size={13} />
@@ -898,22 +1167,22 @@ export function WorkspaceProjectSharingPanel({ workspacePath }: WorkspaceProject
           }}
           localGitRemote={gitRemote}
         />
-      ) : pendingInvite ? (
+      ) : sharingEntry.state === 'invite-pending' && sharingEntry.invite ? (
         <InvitePendingState
-          invite={pendingInvite}
+          invite={sharingEntry.invite as PendingInvite}
           onAccept={handleAcceptInvite}
           loading={loading}
           gitRemote={gitRemote}
         />
       ) : (
-        <NoTeamState
+        <UnsharedProjectSharingState
+          workspacePath={workspacePath}
           gitRemote={gitRemote}
-          onCreateTeam={handleCreateTeam}
-          loading={loading}
           adminOrgs={adminOrgs}
+          onCreateOrganization={handleCreateTeam}
           onAddToOrg={handleAddToOrg}
+          loading={loading}
           addingProject={addingProject}
-          hasGitRemote={!!gitRemote}
         />
       )}
     </div>

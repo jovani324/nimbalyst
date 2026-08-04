@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * TrackerSyncEngine integration tests.
  *
@@ -11,8 +12,7 @@
  *   2. Optimistic apply + rollback on rejection.
  *   3. Transaction queue lifecycle (created -> queued -> executing -> ack).
  *   4. Offline enqueue + reconnect replay.
- *   5. Key rotation mid-flight (re-encrypt on `staleKeyEpoch`).
- *   6. `linkedSessions` stripped at the upload boundary.
+ *   5. `linkedSessions` stripped at the upload boundary.
  *
  * Phase 2's `trackerRoom.integration.test.ts` is the contract test for
  * the real DO -- this file is the contract test for the client engine
@@ -23,10 +23,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   TrackerSyncEngine,
   type TrackerSyncEngineConfig,
-  type TrackerKeyMaterial,
 } from '../TrackerSyncEngine';
 import { InMemoryTrackerPersistence } from '../trackerPersistence';
-import { encryptTrackerPayload, fingerprintTrackerKey } from '../TrackerEnvelopeCrypto';
+import { encodeTrackerPayloadPlaintext } from '../TrackerEnvelopeCrypto';
 import { createFakeServer, type FakeTrackerRoom } from './fakeTrackerServer';
 import type { EncryptedTrackerItemEnvelope, TrackerItemPayload } from '../trackerProtocol';
 
@@ -88,23 +87,18 @@ interface BuiltEngine {
 async function buildEngine(opts: {
   room: FakeTrackerRoom;
   serverConnect: () => WebSocket;
-  encryptionKey: CryptoKey;
-  refreshKey?: () => Promise<TrackerKeyMaterial | null>;
+  encryptionKey?: CryptoKey;
   initializeIssueKeyPrefix?: string;
 }): Promise<BuiltEngine> {
-  const fingerprint = await fingerprintTrackerKey(opts.encryptionKey);
   const persistence = new InMemoryTrackerPersistence();
   const config: TrackerSyncEngineConfig = {
     serverUrl: 'ws://fake',
     orgId: 'test-org',
     teamProjectId: 'tracker-test-project',
     userId: `user-${Math.random().toString(36).slice(2, 8)}`,
-    encryptionKey: opts.encryptionKey,
-    orgKeyFingerprint: fingerprint,
     persistence,
     initializeIssueKeyPrefix: opts.initializeIssueKeyPrefix,
     getJwt: async () => 'fake-jwt',
-    refreshKey: opts.refreshKey,
     createWebSocket: () => opts.serverConnect(),
   };
   const engine = new TrackerSyncEngine(config);
@@ -303,6 +297,73 @@ describe('TrackerSyncEngine (in-memory)', () => {
     c.engine.destroy();
   });
 
+  it('syncs team-shared saved views through outbox, live delta, and bootstrap', async () => {
+    const server = createFakeServer();
+    const sprintView = JSON.stringify({
+      id: 'view-sprint-7',
+      name: 'Sprint 7 -- open bugs',
+      definition: { selectedType: 'bug', viewMode: 'grid' },
+    });
+
+    // A peer that is already connected receives the view as a live delta.
+    const b = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    const bApplied: Array<{ viewId: string; payload: string | null; syncId: number }> = [];
+    b.config.savedViewSync = {
+      getMaxSyncId: async () => 0,
+      listUnsynced: async () => [],
+      applyRemote: async (def) => { bApplied.push(def); },
+    };
+    await b.engine.connect();
+    await waitUntil(() => b.engine.getStatus() === 'connected');
+
+    let pending: Array<{ viewId: string; payload: string | null; deleted: boolean }> =
+      [{ viewId: 'view-sprint-7', payload: sprintView, deleted: false }];
+    const a = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    a.config.savedViewSync = {
+      getMaxSyncId: async () => 0,
+      listUnsynced: async () => pending,
+      applyRemote: async (def) => {
+        pending = pending.filter((view) => view.viewId !== def.viewId);
+      },
+    };
+    await a.engine.connect();
+    await waitUntil(() => a.engine.getStatus() === 'connected');
+    await waitUntil(() => bApplied.some((view) => view.viewId === 'view-sprint-7'));
+    expect(JSON.parse(bApplied[0].payload!)).toMatchObject({ name: 'Sprint 7 -- open bugs' });
+
+    // Unsharing a view travels as a tombstone, not a payload.
+    pending = [{ viewId: 'view-sprint-7', payload: null, deleted: true }];
+    await a.engine.flushSavedViews();
+    await waitUntil(() => bApplied.length === 2);
+    expect(bApplied[1]).toMatchObject({ viewId: 'view-sprint-7', payload: null });
+
+    // A fresh client bootstraps the whole lane from syncId 0.
+    const c = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    const cApplied: Array<{ viewId: string; payload: string | null; syncId: number }> = [];
+    c.config.savedViewSync = {
+      getMaxSyncId: async () => 0,
+      listUnsynced: async () => [],
+      applyRemote: async (def) => { cApplied.push(def); },
+    };
+    await c.engine.connect();
+    await waitUntil(() => c.engine.getStatus() === 'connected');
+    await waitUntil(() => cApplied.length >= 1);
+    expect(cApplied.at(-1)).toMatchObject({ viewId: 'view-sprint-7', payload: null });
+
+    expect(server.room.receivedSavedViewMutations.map((v) => v.viewId)).toEqual([
+      'view-sprint-7',
+      'view-sprint-7',
+    ]);
+
+    // The server never sees the view's contents.
+    const stored = server.room.getStoredSavedViews();
+    expect(stored[0].encryptedPayload).toBeNull();
+
+    a.engine.destroy();
+    b.engine.destroy();
+    c.engine.destroy();
+  });
+
   // ==========================================================================
   // Stripping linked sessions at upload boundary
   // ==========================================================================
@@ -449,97 +510,6 @@ describe('TrackerSyncEngine (in-memory)', () => {
     expect(localA?.payload?.labels?.['b-urgent']?.tombstone).toBeUndefined();
     expect(localB?.payload?.labels?.['a-bug']?.value).toBe('bug');
     expect(localB?.payload?.labels?.['b-urgent']?.value).toBe('urgent');
-
-    a.engine.destroy();
-    b.engine.destroy();
-  });
-
-  // ==========================================================================
-  // Key rotation mid-flight: staleKeyEpoch -> refreshKey -> re-send -> ack
-  // ==========================================================================
-
-  it('handles staleKeyEpoch by calling refreshKey and re-sending under the new key', async () => {
-    // Server starts requiring fingerprint = sha256(oldKey).
-    const oldKey = await generateKey();
-    const oldFingerprint = await fingerprintTrackerKey(oldKey);
-    const server = createFakeServer({ currentFingerprint: oldFingerprint });
-
-    // Imagine the client has the WRONG key cached (the org actually
-    // rotated, but the client doesn't know yet). When the mutation gets
-    // rejected, refreshKey() returns the actual current key/fingerprint
-    // and the server starts accepting writes encrypted under it.
-    const wrongKey = await generateKey();
-    const refreshKey = vi.fn(async (): Promise<TrackerKeyMaterial> => {
-      // The host adapter would simulate "the admin rotated and we now
-      // hold the correct key". Update the server's expectation too so the
-      // retry succeeds.
-      const fresh = await generateKey();
-      const freshFingerprint = await fingerprintTrackerKey(fresh);
-      server.room.setCurrentFingerprint(freshFingerprint);
-      return { encryptionKey: fresh, orgKeyFingerprint: freshFingerprint };
-    });
-
-    const a = await buildEngine({
-      room: server.room,
-      serverConnect: server.connect,
-      encryptionKey: wrongKey,
-      refreshKey,
-    });
-    await a.engine.connect();
-    await waitUntil(() => a.engine.getStatus() === 'connected');
-
-    const { clientMutationId } = await a.engine.upsertItem(basePayload('rotate-1'));
-    // Wait for the re-sent ack to land (transaction row deleted).
-    await waitUntil(() => !a.persistence.transactions.has(clientMutationId), 1000);
-
-    expect(refreshKey).toHaveBeenCalledOnce();
-    // The mutation went out twice -- first rejected, then accepted under
-    // the fresh key.
-    expect(server.room.receivedMutations.filter(m => m.itemId === 'rotate-1').length).toBe(2);
-
-    a.engine.destroy();
-  });
-
-  // ==========================================================================
-  // Bootstrap stale-key detection: a fresh connect refreshes the key when
-  // the server's envelopes carry a fingerprint we don't have.
-  // ==========================================================================
-
-  it('refreshes the encryption key on connect when bootstrap envelopes carry a mismatched fingerprint', async () => {
-    // ClientA writes an item under keyA; the server stores it with
-    // fingerprint(keyA) in plaintext envelope metadata.
-    const keyA = await generateKey();
-    const fingerprintA = await fingerprintTrackerKey(keyA);
-    const server = createFakeServer({ currentFingerprint: fingerprintA });
-
-    const a = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: keyA });
-    await a.engine.connect();
-    await waitUntil(() => a.engine.getStatus() === 'connected');
-    await a.engine.upsertItem(basePayload('stale-1', { fields: { title: 'after rotation' } }));
-    await waitUntil(() => server.room.getStoredItems().some(i => i.itemId === 'stale-1'));
-
-    // ClientB shows up with the WRONG key (e.g. the org rotated while B
-    // was offline; B's local envelope cache still holds the prior epoch).
-    // Bootstrap should detect the fingerprint mismatch and call refreshKey
-    // before applying the batch -- otherwise every envelope decrypt fails
-    // and B sees an empty board.
-    const wrongKey = await generateKey();
-    const refreshKey = vi.fn(async (): Promise<TrackerKeyMaterial> => {
-      return { encryptionKey: keyA, orgKeyFingerprint: fingerprintA };
-    });
-    const b = await buildEngine({
-      room: server.room,
-      serverConnect: server.connect,
-      encryptionKey: wrongKey,
-      refreshKey,
-    });
-    await b.engine.connect();
-    await waitUntil(() => b.engine.getStatus() === 'connected');
-    await waitUntil(() => b.persistence.items.has('stale-1'));
-
-    expect(refreshKey).toHaveBeenCalledOnce();
-    const projected = b.persistence.items.get('stale-1');
-    expect(projected?.payload?.fields.title).toBe('after rotation');
 
     a.engine.destroy();
     b.engine.destroy();
@@ -763,20 +733,19 @@ describe('TrackerSyncEngine (in-memory)', () => {
   });
 
   // ==========================================================================
-  // Phase 7: Recovery / rekey scenarios (per D10 + audit-doc Q7)
+  // Phase 7: Recovery scenarios (per D10 + audit-doc Q7)
   //
-  // Four scenarios in which a client interacts with a tracker room in an
-  // unusual state. Phase 7 of the rewrite gates the PR on these contracts:
-  // a sync change that breaks any of them blocks the PR.
+  // Scenarios in which a client interacts with a tracker room in an unusual
+  // state. Phase 7 of the rewrite gates the PR on these contracts: a sync
+  // change that breaks any of them blocks the PR.
   //   1. New room (no prior state) -- fresh client + fresh DO.
-  //   2. Decrypt-failure recovery -- some envelopes encrypted under a key
-  //      we don't have; rest of bootstrap completes.
   //   3. Empty-room recovery -- server has zero items, client has local
   //      state; client treats response as "caught up" without dropping
   //      local state.
-  //   4. Key rotation locked / no fresh key yet -- `staleKeyEpoch`
-  //      rejection with `refreshKey` returning null falls through to a
-  //      normal rejection and rolls back the optimistic apply.
+  //
+  // Scenarios 2 and 4 covered the retired client-managed lane (decrypt
+  // failure under a key we don't have, and `staleKeyEpoch` rekey) and went
+  // away with it: the server now decrypts the rows it owns.
   // ==========================================================================
 
   describe('Phase 7: recovery scenarios', () => {
@@ -810,97 +779,6 @@ describe('TrackerSyncEngine (in-memory)', () => {
       expect(row?.payload?.fields.title).toBe('first item');
 
       a.engine.destroy();
-    });
-
-    // ------------------------------------------------------------------------
-    // Scenario 2a: Decrypt-failure recovery (partial)
-    //
-    // The room holds a mix of envelopes encrypted under keyA and keyB. The
-    // client only has keyA. The unreadable items must be skipped (not
-    // fatal), and the readable items must project normally. The bootstrap
-    // detects the fingerprint mismatch and calls `refreshKey`; the harness
-    // here returns the SAME (wrong) key, simulating "admin hasn't shared
-    // the new envelope yet". The engine still finishes bootstrap with
-    // partial visibility rather than empty.
-    // ------------------------------------------------------------------------
-    it('Scenario 2 (decrypt-failure): unreadable envelopes are skipped while readable ones project', async () => {
-      const keyA = await generateKey();
-      const keyB = await generateKey();
-      const fingerprintA = await fingerprintTrackerKey(keyA);
-      const fingerprintB = await fingerprintTrackerKey(keyB);
-
-      // Build the server with no key gating (we directly inject envelopes,
-      // so the per-write fingerprint check would block us).
-      const server = createFakeServer();
-
-      // Inject one envelope encrypted under keyA at syncId=1, and one
-      // under keyB at syncId=2.
-      const payloadA = basePayload('readable-A', { fields: { title: 'I am readable' } });
-      const encA = await encryptTrackerPayload(payloadA, keyA, 'readable-A');
-      const envA: EncryptedTrackerItemEnvelope = {
-        itemId: 'readable-A',
-        syncId: 1,
-        encryptedPayload: encA.encryptedPayload,
-        iv: encA.iv,
-        updatedAt: Date.now(),
-        deletedAt: null,
-        orgKeyFingerprint: fingerprintA,
-        issueNumber: 1,
-        issueKey: 'NIM-1',
-      };
-      server.room.injectStoredEnvelope(envA);
-
-      const payloadB = basePayload('opaque-B', { fields: { title: 'I am opaque to clientA' } });
-      const encB = await encryptTrackerPayload(payloadB, keyB, 'opaque-B');
-      const envB: EncryptedTrackerItemEnvelope = {
-        itemId: 'opaque-B',
-        syncId: 2,
-        encryptedPayload: encB.encryptedPayload,
-        iv: encB.iv,
-        updatedAt: Date.now(),
-        deletedAt: null,
-        orgKeyFingerprint: fingerprintB,
-        issueNumber: 2,
-        issueKey: 'NIM-2',
-      };
-      server.room.injectStoredEnvelope(envB);
-
-      // refreshKey returns the SAME key we already have. The bootstrap's
-      // staleness heuristic will try once and get nothing better; the
-      // envelope encrypted under keyB stays unreadable. The bootstrap MUST
-      // complete anyway and the readable envelope must project.
-      const refreshKey = vi.fn(async (): Promise<TrackerKeyMaterial> => ({
-        encryptionKey: keyA,
-        orgKeyFingerprint: fingerprintA,
-      }));
-
-      const client = await buildEngine({
-        room: server.room,
-        serverConnect: server.connect,
-        encryptionKey: keyA,
-        refreshKey,
-      });
-
-      await client.engine.connect();
-      await waitUntil(() => client.engine.getStatus() === 'connected');
-
-      // The readable item projects with its plaintext payload.
-      const readable = client.persistence.items.get('readable-A');
-      expect(readable?.payload?.fields.title).toBe('I am readable');
-
-      // The opaque item has its plaintext payload absent (`null`), but the
-      // envelope was still recorded with its sync_id so future bootstraps
-      // don't re-fetch it. Implementation detail: per applyEnvelope in
-      // TrackerSyncEngine.ts, a row where decryption fails is NOT written
-      // to persistence (`return false`). We assert the absent-payload
-      // contract here -- the item is invisible to the user, no crash.
-      expect(client.persistence.items.has('opaque-B')).toBe(false);
-
-      // refreshKey was attempted -- the bootstrap-staleness check fires
-      // when at least one envelope's fingerprint doesn't match ours.
-      expect(refreshKey).toHaveBeenCalled();
-
-      client.engine.destroy();
     });
 
     // ------------------------------------------------------------------------
@@ -973,68 +851,6 @@ describe('TrackerSyncEngine (in-memory)', () => {
       expect(tombstoneEvents).toHaveLength(0);
 
       b.engine.destroy();
-    });
-
-    // ------------------------------------------------------------------------
-    // Scenario 4: Key rotation locked / no fresh key yet
-    //
-    // The server rejects a mutation with `staleKeyEpoch` (rotation
-    // happened) but `refreshKey` returns `null` (admin hasn't shared the
-    // new envelope, or the rotation is mid-flight and the new key isn't
-    // available yet). The engine MUST fall through to a normal rejection:
-    // roll back the optimistic apply, fire `onRejection`, and leave the
-    // transaction row in `failed` state with `lastRejection` populated so
-    // the UI can surface the failure to the user.
-    // ------------------------------------------------------------------------
-    it('Scenario 4 (rotation locked, no fresh key): staleKeyEpoch + refreshKey -> null rolls back the mutation', async () => {
-      const serverKey = await generateKey();
-      const serverFingerprint = await fingerprintTrackerKey(serverKey);
-      const server = createFakeServer({ currentFingerprint: serverFingerprint });
-
-      // Client holds the WRONG key. refreshKey is wired but returns null,
-      // simulating "admin hasn't re-shared the envelope yet".
-      const clientWrongKey = await generateKey();
-      const refreshKey = vi.fn(async (): Promise<TrackerKeyMaterial | null> => null);
-
-      const client = await buildEngine({
-        room: server.room,
-        serverConnect: server.connect,
-        encryptionKey: clientWrongKey,
-        refreshKey,
-      });
-
-      const rejections: Array<{ clientMutationId: string; code: string }> = [];
-      client.config.onRejection = (r) => {
-        rejections.push({ clientMutationId: r.clientMutationId, code: r.rejection.code });
-      };
-
-      await client.engine.connect();
-      await waitUntil(() => client.engine.getStatus() === 'connected');
-
-      const { clientMutationId } = await client.engine.upsertItem(
-        basePayload('locked-out-1', { fields: { title: 'should roll back' } }),
-      );
-
-      // Wait for the rejection path to land.
-      await waitUntil(() => rejections.length > 0);
-
-      // refreshKey was attempted exactly once before the engine gave up.
-      expect(refreshKey).toHaveBeenCalledOnce();
-
-      // The rejection surfaces with staleKeyEpoch (matches the server's
-      // reason) -- the engine does not mask the underlying code.
-      expect(rejections[0].code).toBe('staleKeyEpoch');
-      expect(rejections[0].clientMutationId).toBe(clientMutationId);
-
-      // The optimistic projection was rolled back (no row for the new
-      // item) and the transaction row stays around with `lastRejection`
-      // populated for UI surfacing.
-      expect(client.persistence.items.has('locked-out-1')).toBe(false);
-      const txn = client.persistence.transactions.get(clientMutationId);
-      expect(txn).toBeDefined();
-      expect(txn?.lastRejection?.code).toBe('staleKeyEpoch');
-
-      client.engine.destroy();
     });
   });
 });

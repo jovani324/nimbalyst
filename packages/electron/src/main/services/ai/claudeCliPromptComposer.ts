@@ -22,6 +22,8 @@
  * full document content — the CLI reads the document itself (Read for file
  * paths, the readCollabDoc MCP tool for collab:// URIs).
  */
+import type { PromptProvenance } from '@nimbalyst/runtime/ai/server/types';
+
 export interface ClaudeCliDocumentContext {
   filePath?: string | null;
   fileType?: string | null;
@@ -31,6 +33,7 @@ export interface ClaudeCliDocumentContext {
    * tolerate both (mirrors DocumentContextService.normalizeTextSelection).
    */
   textSelection?: { text?: string | null } | string | null;
+  promptProvenance?: PromptProvenance;
 }
 
 /** Extract the selection text from either supported textSelection shape. */
@@ -110,7 +113,10 @@ export function composeClaudeCliContextPreamble(
  *   context alone is not a submission.
  */
 export function composeClaudeCliPtySubmission(input: ComposeClaudeCliInput): string {
-  const trimmed = (input.prompt ?? '').trim();
+  // Flatten the typed prompt for the same reason the selection is flattened: a
+  // real newline is Enter to the CLI's readline, so a multi-line prompt submits
+  // at the first line break and the rest is lost.
+  const trimmed = flattenToSingleLine((input.prompt ?? '').trim());
 
   const paths = (input.attachments ?? [])
     .map((a) => (a && typeof a.filepath === 'string' ? a.filepath.trim() : ''))
