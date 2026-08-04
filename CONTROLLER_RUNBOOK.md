@@ -112,14 +112,27 @@ cd packages/electron ; npm run dev:user2:relay                            # 3: c
 ```
 (`dev:user2:relay` bakes the relay URL, so nushell's env quirk can't bite.)
 
-### Plan 3 — packaged host app (once `Nimbalyst.app` is installed)
-Double-click **Nimbalyst.app** in /Applications (it opens your data + your relay),
-then start just the controller:
-```
-cd packages/electron ; npm run dev:user2:relay
-```
-Use this only after you've confirmed the packaged app launches; Plan 1 is the
-safe default. (The packaged app is the HOST; the controller still runs separately.)
+### Plan 3 — packaged host app (installed at /Applications/Nimbalyst.app)
+A real double-clickable host is now installed. It's the **fork build (0.69.1, x64)**
+with the environment baked in, so it opens your existing data
+(`@nimbalyst/electron`) and syncs to `wss://relay.moasfar.app` — not the cloud.
+
+1. **Quit any `npm run dev` host first** (same data folder, exclusive DB lock).
+2. **Double-click `Nimbalyst.app`.** First launch: it's ad-hoc signed, so
+   right-click → **Open** once to get past Gatekeeper.
+3. **Sanity-check on first launch:** it should show *your* sessions/projects (not
+   an empty app). If it's empty, the baked env didn't apply — fall back to Plan 1.
+4. Start the controller separately (the packaged app is only the HOST):
+   ```
+   cd packages/electron ; npm run dev:user2:relay
+   ```
+
+Notes:
+- Needs the hosted relay reachable (Tailscale up). For a fully-local/offline day,
+  use **Plan 1** (localhost relay) instead.
+- The old 0.71.3 app was moved to `~/Nimbalyst-0.71.3.prev.app` (restore it there
+  if you ever want it back).
+- Plan 1 remains the safe default; Plan 3 is the convenience of a Dock/Finder icon.
 
 ---
 
