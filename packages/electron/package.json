@@ -12,7 +12,9 @@
   "scripts": {
     "start": "electron-vite preview",
     "dev": "./scripts/dev.sh",
+    "dev:relay": "NIMBALYST_SYNC_URL=wss://relay.moasfar.app ./scripts/dev.sh",
     "dev:user2": "NIMBALYST_USER_DATA_DIR=\"$HOME/Library/Application Support/@nimbalyst/electron-user2\" VITE_PORT=5274 ./scripts/dev.sh",
+    "dev:user2:relay": "NIMBALYST_SYNC_URL=wss://relay.moasfar.app NIMBALYST_USER_DATA_DIR=\"$HOME/Library/Application Support/@nimbalyst/electron-user2\" VITE_PORT=5274 ./scripts/dev.sh",
     "dev:user2:loop": "NIMBALYST_USER_DATA_DIR=\"$HOME/Library/Application Support/@nimbalyst/electron-user2\" VITE_PORT=5274 ./scripts/dev-loop.sh",
     "dev:loop": "./scripts/dev-loop.sh",
     "licenses:generate": "node build/generate-third-party-licenses.js",

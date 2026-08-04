@@ -101,10 +101,14 @@ export const setRemoteIndexAtom = atom(
  * Merge a live index change into the session list. If the session is unknown
  * (created on the host after our last full fetch), it is inserted with the
  * fields we have; a subsequent full fetch fills in the rest.
+ *
+ * Returns `true` when it inserted a previously-unknown session — the listener
+ * uses that signal to schedule a full index re-fetch, which fills in the
+ * projectId so the session doesn't linger under "Unknown project".
  */
 export const applyRemoteIndexChangeAtom = atom(
   null,
-  (get, set, change: RemoteIndexChangeEntry) => {
+  (get, set, change: RemoteIndexChangeEntry): boolean => {
     const sessions = get(remoteSessionsAtom);
     const idx = sessions.findIndex((s) => s.sessionId === change.sessionId);
     if (idx === -1) {
@@ -127,7 +131,7 @@ export const applyRemoteIndexChangeAtom = atom(
         },
         ...sessions,
       ]);
-      return;
+      return true;
     }
     const next = sessions.slice();
     const prev = next[idx];
@@ -144,6 +148,7 @@ export const applyRemoteIndexChangeAtom = atom(
       isExecuting: change.isExecuting ?? prev.isExecuting,
     };
     set(remoteSessionsAtom, next);
+    return false;
   },
 );
 

@@ -12,6 +12,7 @@ import {
   applyRemoteIndexChangeAtom,
   appendRemoteMessageAtom,
   setRemoteConnectionStatusAtom,
+  setRemoteIndexAtom,
   setRemotePendingPromptAtom,
   type RemotePendingPromptData,
 } from '../atoms/remoteSessions';
@@ -28,9 +29,30 @@ export function initRemoteSessionsListeners(): () => void {
   const api = window.electronAPI.remoteSessions;
   const cleanups: Array<() => void> = [];
 
+  // A live index-change for a session created on the host after our last full
+  // fetch carries no projectId, so it lands under "Unknown project". When that
+  // happens, re-fetch the full (decrypted) index — which does carry projectId —
+  // to reclassify it. Debounced so a burst of changes triggers one refetch.
+  let healTimer: ReturnType<typeof setTimeout> | null = null;
+  const scheduleIndexHeal = () => {
+    if (healTimer) return;
+    healTimer = setTimeout(() => {
+      healTimer = null;
+      void (async () => {
+        try {
+          const index = await api.list();
+          store.set(setRemoteIndexAtom, index);
+        } catch {
+          /* transient — a later change or manual refresh will retry */
+        }
+      })();
+    }, 500);
+  };
+
   cleanups.push(
     api.onIndexChange(({ entry }) => {
-      store.set(applyRemoteIndexChangeAtom, entry);
+      const insertedUnknown = store.set(applyRemoteIndexChangeAtom, entry);
+      if (insertedUnknown) scheduleIndexHeal();
     }),
   );
 
@@ -61,6 +83,10 @@ export function initRemoteSessionsListeners(): () => void {
 
   return () => {
     initialized = false;
+    if (healTimer) {
+      clearTimeout(healTimer);
+      healTimer = null;
+    }
     for (const cleanup of cleanups) {
       try {
         cleanup();
