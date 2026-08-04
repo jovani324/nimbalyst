@@ -139,6 +139,7 @@ import {
 } from './QueueDriveService';
 import { createWorkspaceWindowResolver } from './resolveWorkspaceWindow';
 import { runQueueDriveAttempt } from './queueDriveAttempt';
+import { publishQueuedPromptsToSync } from './queuedPromptSyncPublisher';
 import { onWorkspaceWindowAvailable } from '../../window/workspaceWindowAvailability';
 import { dispatchQueuedPromptToClaudeCli } from './claudeCliQueueDispatch';
 import { ensureClaudeCliSession, claudeCliSessionSupportsPlugins } from './claudeCliLauncherSingleton';
@@ -393,6 +394,25 @@ export class AIService {
     this.getQueueDrive().requestDrive(sessionId, workspacePath, reason);
   }
 
+  /**
+   * Mirror a session's remaining pending queue into the sync index. Must run
+   * after every queue transition, or mobile keeps re-showing a prompt the
+   * desktop already claimed — see queuedPromptSyncPublisher.ts (NIM-2402).
+   */
+  public async publishQueueStateToSync(sessionId: string): Promise<void> {
+    await publishQueuedPromptsToSync(
+      {
+        listPending: async (id) => {
+          const { getQueuedPromptsStore } = await import('../RepositoryManager');
+          return getQueuedPromptsStore().listPending(id);
+        },
+        getSyncProvider,
+        logWarn: (message) => logger.main.warn(message),
+      },
+      sessionId,
+    );
+  }
+
   /** Drain a session's queue and report what happened. */
   public driveQueuedPrompts(
     sessionId: string,
@@ -433,7 +453,11 @@ export class AIService {
         },
         resolveWindow: (path, allowAutoOpen) =>
           this.queueWindowResolver.resolve(path, { allowAutoOpen }),
-        failAllPending: (id, errorMessage) => queueStore.failAllPendingForSession(id, errorMessage),
+        failAllPending: async (id, errorMessage) => {
+          const failed = await queueStore.failAllPendingForSession(id, errorMessage);
+          await this.publishQueueStateToSync(id);
+          return failed;
+        },
         dispatch: ({ sessionId: id, workspacePath: path, window, reason: driveReason }) =>
           this.tryDispatchNextQueuedPrompt(id, path, window, `queue-drive:${driveReason}`),
         logWarn: (message) => logger.main.warn(message),
@@ -939,6 +963,8 @@ export class AIService {
           sessionId: claimedSessionId,
           promptId,
         });
+        // The claimed row leaves the queue mobile sees; the publisher never throws.
+        void this.publishQueueStateToSync(claimedSessionId);
       },
       processingSet: this.sessionsProcessingQueue,
       queueStore,
@@ -1618,6 +1644,7 @@ export class AIService {
           // back to pending (matches the prior contract).
           const { getQueuedPromptsStore } = await import('../RepositoryManager');
           const { rolledBack } = await getQueuedPromptsStore().sweepExecutingForSession(sessionId);
+          await this.publishQueueStateToSync(sessionId);
           return rolledBack;
         },
       });
@@ -2316,6 +2343,9 @@ export class AIService {
 
       if (claimed) {
         logger.main.info(`[AIService] claimQueuedPrompt: claimed ${promptId} for session ${sessionId}`);
+        // The claimed prompt is now in the transcript, so drop it from the
+        // queue mobile sees rather than leaving it double-reported.
+        await this.publishQueueStateToSync(sessionId);
         // Return in the format expected by the renderer
         return {
           id: claimed.id,
@@ -2337,8 +2367,12 @@ export class AIService {
     ) => {
       const { getQueuedPromptsStore } = await import('../RepositoryManager');
       const queueStore = getQueuedPromptsStore();
+      const row = await queueStore.get(promptId);
       await queueStore.complete(promptId);
       logger.main.info(`[AIService] completeQueuedPrompt: ${promptId}`);
+      if (row?.sessionId) {
+        await this.publishQueueStateToSync(row.sessionId);
+      }
     });
 
     // Mark a queued prompt as failed
@@ -2349,8 +2383,12 @@ export class AIService {
     ) => {
       const { getQueuedPromptsStore } = await import('../RepositoryManager');
       const queueStore = getQueuedPromptsStore();
+      const row = await queueStore.get(promptId);
       await queueStore.fail(promptId, errorMessage);
       logger.main.info(`[AIService] failQueuedPrompt: ${promptId} - ${errorMessage}`);
+      if (row?.sessionId) {
+        await this.publishQueueStateToSync(row.sessionId);
+      }
     });
 
     // List pending prompts for a session
@@ -2403,6 +2441,9 @@ export class AIService {
       });
 
       logger.main.info(`[AIService] createQueuedPrompt: created ${promptId} for session ${sessionId}`);
+
+      // Mirror the new depth to mobile so a desktop-queued prompt shows there too.
+      await this.publishQueueStateToSync(sessionId);
 
       // Look up the session once (lightweight — no message log) for both the
       // analytics event and the claude-code-cli idle-flush kick below.
@@ -2485,8 +2526,12 @@ export class AIService {
     ) => {
       const { getQueuedPromptsStore } = await import('../RepositoryManager');
       const queueStore = getQueuedPromptsStore();
+      const row = await queueStore.get(promptId);
       await queueStore.delete(promptId);
       logger.main.info(`[AIService] deleteQueuedPrompt: deleted ${promptId}`);
+      if (row?.sessionId) {
+        await this.publishQueueStateToSync(row.sessionId);
+      }
       return { success: true };
     });
 
@@ -3053,6 +3098,7 @@ export class AIService {
             logger.main.info(
               `[AIService] cancelRequest: swept session ${sessionId} -- ${completed} answered marked completed, ${failed} delivered-but-unanswered marked failed, ${rolledBack} undelivered rolled back`
             );
+            await this.publishQueueStateToSync(sessionId);
           }
         } catch (sweepErr) {
           logger.main.error('[AIService] cancelRequest: sweepExecutingForSession failed:', sweepErr);
@@ -3121,6 +3167,7 @@ export class AIService {
           logger.main.info(
             `[AIService] interruptCurrentTurn: swept session ${sessionId} -- ${completed} answered marked completed, ${failed} delivered-but-unanswered marked failed, ${rolledBack} undelivered rolled back`
           );
+          await this.publishQueueStateToSync(sessionId);
         }
       } catch (sweepErr) {
         logger.main.error('[AIService] interruptCurrentTurn: sweepExecutingForSession failed:', sweepErr);

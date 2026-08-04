@@ -125,12 +125,26 @@ describe('InboxSection', () => {
     expect(screen.queryByTestId('inbox-list')).toBeNull();
   });
 
-  it('marks a row read only after navigation succeeds', async () => {
+  it('selects a row without navigating or consuming read state', async () => {
+    // The whole click model rests on this: a plain click is safe to spend on a
+    // row you are not sure about, because it cannot move you or mark anything.
     const navigate = vi.fn().mockResolvedValue(true);
     renderInbox({ navigate });
     await screen.findByTestId('inbox-list');
 
     fireEvent.click(screen.getByTestId('inbox-row-delivery-mention-room'));
+
+    await screen.findByTestId('inbox-context-open');
+    expect(navigate).not.toHaveBeenCalled();
+    expect(screen.getByTestId('inbox-row-delivery-mention-room').getAttribute('data-unread')).toBe('true');
+  });
+
+  it('marks a row read only after navigation succeeds', async () => {
+    const navigate = vi.fn().mockResolvedValue(true);
+    renderInbox({ navigate });
+    await screen.findByTestId('inbox-list');
+
+    fireEvent.doubleClick(screen.getByTestId('inbox-row-delivery-mention-room'));
 
     await waitFor(() => expect(
       screen.getByTestId('inbox-row-delivery-mention-room').getAttribute('data-unread'),
@@ -138,11 +152,23 @@ describe('InboxSection', () => {
     expect(navigate).toHaveBeenCalled();
   });
 
+  it('opens from the row action as well as the keyboard', async () => {
+    const navigate = vi.fn().mockResolvedValue(true);
+    renderInbox({ navigate });
+    await screen.findByTestId('inbox-list');
+
+    fireEvent.click(screen.getByTestId('inbox-row-open-delivery-mention-room'));
+    await waitFor(() => expect(navigate).toHaveBeenCalledTimes(1));
+
+    fireEvent.keyDown(screen.getByTestId('inbox-row-delivery-dm'), { key: 'Enter' });
+    await waitFor(() => expect(navigate).toHaveBeenCalledTimes(2));
+  });
+
   it('keeps a row unread and says so when navigation fails', async () => {
     renderInbox({ navigate: vi.fn().mockResolvedValue(false) });
     await screen.findByTestId('inbox-list');
 
-    fireEvent.click(screen.getByTestId('inbox-row-delivery-mention-room'));
+    fireEvent.doubleClick(screen.getByTestId('inbox-row-delivery-mention-room'));
 
     await waitFor(() => screen.getByTestId('inbox-activation-notice'));
     expect(screen.getByTestId('inbox-row-delivery-mention-room').getAttribute('data-unread')).toBe('true');

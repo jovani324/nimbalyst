@@ -240,7 +240,10 @@ describe('TrackerGridView column layout', () => {
     );
 
     await waitFor(() => {
-      expect(gridElement.columns).toHaveLength(2);
+      expect(gridElement.columns).toEqual(expect.arrayContaining([
+        expect.objectContaining({ prop: 'title', name: 'Title' }),
+        expect.objectContaining({ prop: 'status', name: 'Status' }),
+      ]));
       expect(gridElement.source).toHaveLength(1);
     });
   });
@@ -300,7 +303,9 @@ describe('TrackerGridView column layout', () => {
       />,
     );
 
-    await waitFor(() => expect(gridElement.columns).toHaveLength(2));
+    await waitFor(() => expect(gridElement.columns).toEqual(expect.arrayContaining([
+      expect.objectContaining({ prop: 'status', columnTemplate: expect.any(Function) }),
+    ])));
     const status = (gridElement.columns as Array<Record<string, any>>)
       .find(column => column.prop === 'status')!;
     const h = (tag: string, props: Record<string, unknown>, children: unknown) => ({
@@ -353,7 +358,9 @@ describe('TrackerGridView column layout', () => {
       />,
     );
 
-    await waitFor(() => expect(gridElement.columns).toHaveLength(2));
+    await waitFor(() => expect(gridElement.columns).toEqual(expect.arrayContaining([
+      expect.objectContaining({ prop: 'status', sortable: true }),
+    ])));
     const status = (gridElement.columns as Array<Record<string, any>>)
       .find(column => column.prop === 'status')!;
 

@@ -14,6 +14,7 @@ import {
 import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
 
 import type { PersonalAccountSummary } from '../../store/atoms/settingsDomains';
+import { formatUnreadCount } from '../../store/projectWindowUnreadViewModel';
 
 /** The organization the active project belongs to, resolved by the gutter. */
 export interface ProjectOrganization {
@@ -31,6 +32,10 @@ interface AccountInspectorPopoverProps {
   onOpenAccount: () => void;
   /** Open the org-management window for an organization (omit orgId to create one). */
   onManageOrganization: (orgId?: string) => void;
+  /** Unread inbox deliveries in the active project's organization. */
+  messagesUnreadCount?: number;
+  /** Open the organization inbox (the org window). Only used when there's an org. */
+  onOpenMessages?: (orgId: string) => void;
   /** Open the global Application settings. */
   onOpenApplicationSettings: () => void;
   /** Open the current project's settings. */
@@ -50,6 +55,8 @@ export function AccountInspectorPopover({
   onManageOrganization,
   onOpenApplicationSettings,
   onOpenProjectSettings,
+  messagesUnreadCount = 0,
+  onOpenMessages,
 }: AccountInspectorPopoverProps) {
   const { refs, floatingStyles, context } = useFloating({
     open: true,
@@ -105,6 +112,36 @@ export function AccountInspectorPopover({
         </button>
 
         <div className="border-t border-[var(--nim-border)]" />
+
+        {/* Messages → the organization inbox, which is what the org window is
+            since NIM-2322 moved administration into a dialog. Kept separate from
+            the Organization row below so administration and messaging stay
+            apart, and only shown when there is an org whose inbox to open. */}
+        {projectOrg && onOpenMessages && (
+          <button
+            type="button"
+            className={ROW_CLASS}
+            data-testid="account-inspector-messages-row"
+            aria-label={
+              messagesUnreadCount > 0
+                ? `Messages, ${messagesUnreadCount} unread`
+                : 'Messages'
+            }
+            onClick={() => onOpenMessages(projectOrg.orgId)}
+          >
+            <MaterialSymbol icon="forum" size={20} className="shrink-0 text-[var(--nim-text-muted)]" />
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">Messages</span>
+            {messagesUnreadCount > 0 && (
+              <span
+                className="shrink-0 rounded-full bg-[var(--nim-error)] px-1.5 text-[10px] font-bold leading-[18px] text-white"
+                data-testid="account-inspector-messages-unread"
+              >
+                {formatUnreadCount(messagesUnreadCount)}
+              </span>
+            )}
+            <MaterialSymbol icon="chevron_right" size={18} className="text-[var(--nim-text-faint)]" />
+          </button>
+        )}
 
         {/* Organization row → org-management window for the active project's org.
             A single compact line whether or not the project has an org. */}

@@ -108,6 +108,14 @@ export type BoundedPreview = {
   actorLabel?: string;
   sourceTitle?: string;
   snippet?: string;
+  /**
+   * Tracker item type (`bug`, `task`, a registry-defined custom type…) for a
+   * `trackerComment` source. Display-only, like everything else here: the
+   * recipient's client cannot read the item to derive it, because the item may
+   * live in a project it has never synced. Absent means "unknown", and the
+   * surface falls back to a generic tracker identity rather than guessing.
+   */
+  itemType?: string;
 };
 
 export type InboxDelivery = {

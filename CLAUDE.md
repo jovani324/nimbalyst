@@ -243,7 +243,7 @@ See the Critical Rules block above ("Always Run Your Own Observation Commands").
 - **Don't `git reset` or `git add -A` without asking**
 - **Don't add `Co-Authored-By` lines to commit messages**
 - **Never restart Nimbalyst without explicit permission** — always ask before `restart_nimbalyst`
-- **Never mark work as done/completed without user approval** — set tracker items to a review state (e.g., `in-review`), session phase to `validating`, never `done` / `completed` / `complete`. Only the user can promote to those states.
+- **Never mark work done before the user approves it — but a commit IS their approval.** Until the work is committed, set tracker items to `in-review` and session phase to `validating`, never `done` / `complete`. Once the user commits the work, they have reviewed it and agreed it's finished: put a closing reference (`Fixes NIM-123`) in the commit message and the item closes itself; also set session phase to `complete`. Do not leave finished, committed work parked in `in-review`. `approved` on the review lane remains human-only.
 
 **Keyboard Shortcuts**: when adding or modifying shortcuts, update `KeyboardShortcutsDialog.tsx`.
 

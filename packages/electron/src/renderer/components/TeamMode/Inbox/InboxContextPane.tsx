@@ -6,6 +6,7 @@ import { settingAtom } from '../../../store/atoms/settingAtomFamily';
 import { CommentThread } from '../../Comments/CommentThread';
 import { createConversationCommentAdapter } from '../../Comments/ConversationCommentAdapter';
 import type { CommentCapabilities } from '../../Comments/commentTypes';
+import { openActionLabel } from './inboxViewModel';
 import type { InboxRowView, InboxSubscriptionState } from './inboxTypes';
 
 /**
@@ -71,8 +72,28 @@ export function InboxContextPane({
       data-component="InboxContextPane"
     >
       <header className="inbox-context-header border-b border-[var(--nim-border)] px-4 py-3">
-        <p className="m-0 text-[11px] font-semibold uppercase tracking-wide text-[var(--nim-text-faint)]">{row.reasonLabel}</p>
-        <h3 className="m-0 mt-0.5 truncate text-[14px] font-semibold text-[var(--nim-text)]">
+        <div className="inbox-context-kind flex items-center gap-2">
+          <span
+            className="flex size-5 shrink-0 items-center justify-center rounded"
+            style={{
+              backgroundColor: `color-mix(in srgb, ${row.type.accent} 16%, transparent)`,
+              color: row.type.accent,
+            }}
+          >
+            <MaterialSymbol icon={row.type.icon} size={12} />
+          </span>
+          <span
+            className="inbox-context-type truncate text-[11px] font-bold uppercase tracking-wide"
+            style={{ color: row.type.accent }}
+            data-testid="inbox-context-type"
+          >
+            {row.type.label}
+          </span>
+          <span className="truncate text-[11px] uppercase tracking-wide text-[var(--nim-text-faint)]">
+            · {row.reasonLabel}
+          </span>
+        </div>
+        <h3 className="m-0 mt-1 truncate text-[14px] font-semibold text-[var(--nim-text)]">
           {unavailable ? row.unavailableLabel : row.sourceTitle ?? 'Conversation'}
         </h3>
         <p className="m-0 mt-0.5 text-[11px] text-[var(--nim-text-faint)]">
@@ -80,6 +101,19 @@ export function InboxContextPane({
           {row.projectName ? ` · ${row.projectName}` : ''}
           {` · ${row.timestampLabel}`}
         </p>
+        {!unavailable && (
+          // The only control on this surface that moves you, and it says where
+          // to. Selecting a row is free; leaving is always deliberate.
+          <button
+            type="button"
+            className="inbox-context-open mt-2.5 flex items-center gap-1.5 rounded-md bg-[var(--nim-primary)] px-2.5 py-1 text-[12px] text-[var(--nim-on-primary)] hover:bg-[var(--nim-primary-hover)]"
+            data-testid="inbox-context-open"
+            onClick={() => onOpenSource(row)}
+          >
+            <MaterialSymbol icon="open_in_new" size={13} />
+            {openActionLabel(row)}
+          </button>
+        )}
       </header>
 
       {conversationId
@@ -135,14 +169,6 @@ export function InboxContextPane({
               </p>
 
               <div className="inbox-context-actions mt-4 flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  className="inbox-context-open rounded-md bg-[var(--nim-primary)] px-2.5 py-1 text-[12px] text-[var(--nim-on-primary)] hover:bg-[var(--nim-primary-hover)]"
-                  data-testid="inbox-context-open"
-                  onClick={() => onOpenSource(row)}
-                >
-                  Open source
-                </button>
                 {canChangeSubscription && row.subscription && (
                   <button
                     type="button"

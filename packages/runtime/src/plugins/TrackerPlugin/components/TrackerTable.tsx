@@ -1002,6 +1002,7 @@ export function TrackerTable({
     contextRefs,
     contextFloatingStyles,
     handleContextMenu,
+    openContextMenuForIds,
     closeContextMenu,
     handleBulkStatusUpdate,
     handleBulkPriorityUpdate,
@@ -1364,7 +1365,7 @@ export function TrackerTable({
                   </div>
                 )}
                 <div
-                  className={`tracker-table-row flex items-center gap-3 px-3 py-[7px] border-b border-[var(--nim-border)] cursor-pointer transition-colors duration-100 hover:bg-[var(--nim-bg-secondary)] select-none ${
+                  className={`tracker-table-row group flex items-center gap-3 px-3 py-[7px] border-b border-[var(--nim-border)] cursor-pointer transition-colors duration-100 hover:bg-[var(--nim-bg-secondary)] select-none ${
                     selectedIds.has(item.id) ? 'bg-[var(--nim-bg-secondary)]' : ''
                   } ${
                     selectedItemId && item.id === selectedItemId ? 'bg-[var(--nim-bg-secondary)]' : ''
@@ -1444,6 +1445,28 @@ export function TrackerTable({
                     );
                   })}
                 </div>
+                <button
+                  type="button"
+                  aria-label={`Actions for ${item.issueKey ?? title}`}
+                  title="Item actions"
+                  data-testid="tracker-row-more-actions"
+                  className="tracker-row-more-actions shrink-0 inline-flex h-6 w-6 items-center justify-center rounded border-none bg-transparent p-0 text-[var(--nim-text-faint)] opacity-0 transition-opacity hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)] focus-visible:opacity-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--nim-border-focus)] group-hover:opacity-100"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onDoubleClick={(event) => event.stopPropagation()}
+                  onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    openContextMenuForIds(
+                      selectedIds.has(item.id) ? Array.from(selectedIds) : [item.id],
+                      { x: rect.right, y: rect.bottom },
+                    );
+                  }}
+                >
+                  <span className="material-symbols-outlined text-[17px] leading-none">more_horiz</span>
+                </button>
                 </div>
               </React.Fragment>
             );

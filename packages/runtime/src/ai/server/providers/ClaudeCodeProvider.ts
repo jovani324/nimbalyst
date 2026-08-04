@@ -102,7 +102,7 @@ import {
   handleToolPermissionWithService as handleToolPermissionWithServiceHelper,
 } from './claudeCode/toolAuthorization';
 import { ClaudeCodeDeps } from './claudeCode/dependencyInjection';
-import { buildSdkOptions, type PromptStreamController } from './claudeCode/sdkOptionsBuilder';
+import { buildSdkOptions, resolvePermissionMode, type PromptStreamController } from './claudeCode/sdkOptionsBuilder';
 import { resolveEffectiveSessionMode } from './claudeCode/resolveEffectiveSessionMode';
 import { resolveClaudeConfigDir } from './claudeCode/claudeConfigDir';
 import {
@@ -199,8 +199,21 @@ export interface ScheduleWakeupRequest {
 
 export class ClaudeCodeProvider extends BaseAgentProvider {
   private currentMode?: 'planning' | 'agent' | 'auto'; // Track session mode for prompt customization and tool filtering
+  // The mode the UI asked for, before the bypass-all -> auto classifier upgrade.
+  // Kept separate from `currentMode` so a mid-turn permission change can redo the
+  // upgrade decision without clobbering an explicitly-picked 'auto'/'planning'.
+  private requestedMode?: 'planning' | 'agent' | 'auto';
+  // Path whose stored project permissions govern this turn (worktrees resolve to
+  // the parent project). Recorded so a permission change can re-evaluate it.
+  private pathForTrust?: string;
   private slashCommands: string[] = []; // Available slash commands from SDK
   private skills: string[] = []; // Available user-invocable skills from SDK
+
+  // Providers with a live `leadQuery`. Registered when a turn starts and removed
+  // in the turn's finally block, so this never accumulates idle instances.
+  // Drives `applyPermissionChange`, which is how a project permission change
+  // reaches a turn that is already in flight (NIM-2403).
+  private static readonly streamingInstances = new Set<ClaudeCodeProvider>();
 
   // Static cache of SDK-reported skills/commands so they survive across provider instances.
   // Once any session receives the init chunk, new sessions can use the cached list as a
@@ -520,6 +533,56 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   public static setTrustChecker(checker: ((workspacePath: string) => { trusted: boolean; mode: 'ask' | 'allow-all' | 'bypass-all' | null; allowAllUsesClassifier?: boolean }) | null): void { BaseAgentProvider.setTrustChecker(checker); }
   public static setExtensionFileTypesLoader(loader: (() => Set<string>) | null): void { ClaudeCodeDeps.setExtensionFileTypesLoader(loader); }
 
+  /**
+   * Push a project permission change into every turn that is already in flight.
+   *
+   * A turn snapshots the effective session mode once (see sendMessage) and hands
+   * the derived `permissionMode` to `query()` for the life of that turn, so
+   * without this a user who switches to "Allow everything" mid-turn keeps being
+   * asked until the agent stops. Re-running the bypass-all -> auto upgrade against
+   * the fresh trust status and pushing the result through the SDK's
+   * `Query.setPermissionMode` makes the change land on the very next tool call.
+   *
+   * `requestedMode` (not `currentMode`) is the input, so an explicitly-picked
+   * 'auto' or 'planning' session is never silently downgraded.
+   *
+   * Every in-flight turn re-reads trust for its OWN path rather than the caller
+   * filtering by the changed path: worktrees, the subfolder trust cascade, and
+   * `permissionsPath` all mean the changed path and a session's trust path are
+   * often related but not equal. A turn whose effective mode did not move is a
+   * no-op, so the broad sweep is safe.
+   */
+  public static async applyPermissionChange(): Promise<void> {
+    for (const provider of [...ClaudeCodeProvider.streamingInstances]) {
+      await provider.applyPermissionChange();
+    }
+  }
+
+  private async applyPermissionChange(): Promise<void> {
+    const leadQuery = this.leadQuery;
+    if (!leadQuery || typeof leadQuery.setPermissionMode !== 'function') return;
+    if (this.requestedMode !== 'agent' || !this.pathForTrust || !BaseAgentProvider.trustChecker) return;
+
+    const trustStatus = BaseAgentProvider.trustChecker(this.pathForTrust);
+    // An untrusted workspace is handled by canUseTool's deny path, which already
+    // reads the live trust status. Nothing to re-negotiate with the SDK here.
+    if (!trustStatus.trusted) return;
+
+    const nextMode = resolveEffectiveSessionMode('agent', trustStatus);
+    if (nextMode === this.currentMode) return;
+
+    const previousMode = this.currentMode;
+    this.currentMode = nextMode;
+    try {
+      await leadQuery.setPermissionMode(resolvePermissionMode(nextMode));
+    } catch (error) {
+      // The transport can die between the permission change and this call. Roll
+      // back so canUseTool keeps honouring the mode the turn actually runs under.
+      this.currentMode = previousMode;
+      console.warn('[CLAUDE-CODE] Failed to apply permission change to in-flight turn:', error);
+    }
+  }
+
   private static scheduleWakeupHandler: ((request: ScheduleWakeupRequest) => Promise<void>) | null = null;
   public static setScheduleWakeupHandler(handler: ((request: ScheduleWakeupRequest) => Promise<void>) | null): void {
     ClaudeCodeProvider.scheduleWakeupHandler = handler;
@@ -576,6 +639,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
     // Track session mode for MCP server configuration and tool filtering
     this.currentMode = (documentContext as any)?.mode || 'agent';
+    this.requestedMode = this.currentMode;
 
     // Trust-level upgrade: when workspace permission is "Allow All" (internal
     // mode 'bypass-all') and session mode is 'agent', the session is upgraded
@@ -585,6 +649,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     // mode is never upgraded — it always uses the SDK's native read-only
     // enforcement.
     const pathForTrustUpgrade = (documentContext as any)?.permissionsPath || workspacePath;
+    this.pathForTrust = pathForTrustUpgrade;
     if (this.currentMode === 'agent' && pathForTrustUpgrade && BaseAgentProvider.trustChecker) {
       const trustStatus = BaseAgentProvider.trustChecker(pathForTrustUpgrade);
       this.currentMode = resolveEffectiveSessionMode(this.currentMode, trustStatus);
@@ -875,6 +940,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       });
 
       this.leadQuery = leadQuery as unknown as Query;
+      ClaudeCodeProvider.streamingInstances.add(this);
       this.teammateIdleMessagePending = false;
       // Reset per-turn background-drain state (defensive; also reset in finally).
       this.drainingBackgroundTasks = false;
@@ -1942,6 +2008,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       // against the torn-down control channel and leaks. NIM-1470.
       const queryForDrainCleanup = this.leadQuery;
       this.leadQuery = null;
+      ClaudeCodeProvider.streamingInstances.delete(this);
       this.abortController = null;
       this.wasInterrupted = false;
       this.interruptResolve = null;

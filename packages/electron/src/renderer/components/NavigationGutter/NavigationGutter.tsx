@@ -33,6 +33,8 @@ import {
 import { workspaceHasTeamAtom } from '../../store/atoms/collabDocuments';
 import { stytchIsSignedInAtom } from '../../store/atoms/stytchAuth';
 import { personalAccountsAtom } from '../../store/atoms/settingsDomains';
+import { orgInboxUnreadCountAtomFamily } from '../../store/atoms/teamInbox';
+import { useProjectOrg } from '../../hooks/useProjectOrg';
 import { AlphaBadge } from '../common/AlphaBadge';
 import { AccountInspectorPopover } from '../Accounts/AccountInspectorPopover';
 import { GutterContextMenu } from './GutterContextMenu';
@@ -125,21 +127,12 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
   const isSignedIn = useAtomValue(stytchIsSignedInAtom);
   const accounts = useAtomValue(personalAccountsAtom);
 
-  // Organization for the active project, resolved lazily when the account menu
-  // opens, so the popover's Organization row links to the right org window.
-  const [projectOrg, setProjectOrg] = useState<{ orgId: string; name: string } | null>(null);
-  useEffect(() => {
-    if (!userMenuOpen || !workspacePath) return;
-    let cancelled = false;
-    void window.electronAPI?.team?.findForWorkspace(workspacePath)
-      .then((result: any) => {
-        if (cancelled) return;
-        const found = result?.team ?? result;
-        setProjectOrg(found?.orgId ? { orgId: found.orgId, name: found.name } : null);
-      })
-      .catch(() => { if (!cancelled) setProjectOrg(null); });
-    return () => { cancelled = true; };
-  }, [userMenuOpen, workspacePath]);
+  // Organization for the active project — feeds the popover's Organization and
+  // Messages rows.
+  const projectOrg = useProjectOrg(workspacePath);
+  const projectOrgUnread = useAtomValue(
+    orgInboxUnreadCountAtomFamily(projectOrg?.orgId ?? ''),
+  );
 
   // Global gutter customization (visibility + per-section order).
   const hiddenItems = useAtomValue(hiddenGutterItemsAtom);
@@ -557,6 +550,14 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
               onManageOrganization={(orgId) => {
                 setUserMenuOpen(false);
                 openOrganizationSurface(orgId, workspacePath);
+              }}
+              messagesUnreadCount={projectOrgUnread}
+              onOpenMessages={(orgId) => {
+                setUserMenuOpen(false);
+                void window.electronAPI?.team?.openManagementWindow?.({
+                  orgId,
+                  workspacePath: workspacePath ?? undefined,
+                });
               }}
             />
           )}

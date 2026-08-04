@@ -60,7 +60,13 @@ import {
   type TrackerFieldFilter,
   type TrackerFilterSet,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
-import { buildGridColumns, buildGridSource, ROW_ITEM_ID } from './grid/trackerGridColumns';
+import {
+  buildGridActionsColumn,
+  buildGridColumns,
+  buildGridSource,
+  ROW_ACTIONS,
+  ROW_ITEM_ID,
+} from './grid/trackerGridColumns';
 import type { RelationshipCandidate } from './grid/trackerGridEditors';
 import {
   TrackerFilterValueMenu,
@@ -287,18 +293,22 @@ export function TrackerGridView({
     [favoriteItemIds, onToggleFavorite],
   );
   const gridColumns = useMemo(
-    () => buildGridColumns(visibleColumnDefs, {
-      trackerType: schemaType,
-      columnWidths: effectiveColumnConfig.columnWidths,
-      isRowEditable,
-      editorContext: { relationshipCandidates },
-      filteredColumnIds,
-      onOpenFilter: onColumnFiltersChange
-        ? (columnId, rect) => setFilterTarget({ columnId, rect })
-        : undefined,
-      sortingEnabled,
-      favorites,
-    }),
+    () => [
+      ...buildGridColumns(visibleColumnDefs, {
+        trackerType: schemaType,
+        columnWidths: effectiveColumnConfig.columnWidths,
+        isRowEditable,
+        editorContext: { relationshipCandidates },
+        filteredColumnIds,
+        onOpenFilter: onColumnFiltersChange
+          ? (columnId, rect) => setFilterTarget({ columnId, rect })
+          : undefined,
+        sortingEnabled,
+        favorites,
+        rowActions: true,
+      }),
+      buildGridActionsColumn(),
+    ],
     [
       visibleColumnDefs, schemaType, effectiveColumnConfig.columnWidths,
       isRowEditable, relationshipCandidates, filteredColumnIds, onColumnFiltersChange,
@@ -612,7 +622,7 @@ export function TrackerGridView({
           const items = store.get('items') as number[];
           const visibleColumns = items
             .map(index => source[index]?.prop)
-            .filter((prop): prop is string => typeof prop === 'string');
+            .filter((prop): prop is string => typeof prop === 'string' && prop !== ROW_ACTIONS);
           if (
             visibleColumns.length === effectiveColumnConfig.visibleColumns.length
             && visibleColumns.some((id, index) => id !== effectiveColumnConfig.visibleColumns[index])

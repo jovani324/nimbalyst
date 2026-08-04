@@ -150,7 +150,6 @@ import { TeamManagementApp } from './components/TeamMode';
 import { TerminalBottomPanel } from './components/TerminalBottomPanel';
 import { SessionLaunchPopup } from './components/UnifiedAI/SessionLaunchPopup';
 import { ProjectRail } from './components/ProjectRail';
-import { ProjectWindowStatusBar } from './components/ProjectWindowStatusBar';
 import {
   WindowTopBar,
   type WindowTopBarPanelControls,
@@ -2510,6 +2509,7 @@ export default function App() {
           }}
           panelControls={windowTopBarPanelControls}
           newSessionControl={windowTopBarNewSessionControl}
+          workspacePath={workspacePath}
         />
       )}
       <div data-layout="workspace-row" className="flex flex-row flex-1 min-h-0">
@@ -2849,7 +2849,6 @@ export default function App() {
         })()}
       </div>
       </div>
-      {workspaceMode && <ProjectWindowStatusBar workspacePath={workspacePath} />}
 
       {/* Navigation dialogs (QuickOpen, SessionQuickOpen, PromptQuickOpen, ProjectQuickOpen) */}
       {/* are now managed by DialogProvider and rendered automatically */}

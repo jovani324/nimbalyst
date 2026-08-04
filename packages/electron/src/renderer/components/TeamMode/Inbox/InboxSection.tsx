@@ -17,10 +17,10 @@ import {
 import { useInboxProvider, type InboxProvider } from './inboxProvider';
 import {
   INBOX_FILTERS,
-  activateRow,
   deriveScopeOptions,
   groupRows,
   isScopeActive,
+  openRow,
   selectRows,
 } from './inboxViewModel';
 import { EMPTY_INBOX_SCOPE, type InboxFilterId, type InboxRowView, type InboxScope, type InboxSubscriptionState } from './inboxTypes';
@@ -73,6 +73,7 @@ export function InboxSection({
   const snapshot = useSyncExternalStore(provider.subscribe, provider.getSnapshot, provider.getSnapshot);
 
   const [filter, setFilter] = useState<InboxFilterId>(DEFAULT_INBOX_PREFERENCES.filter);
+  const [unreadOnly, setUnreadOnly] = useState<boolean>(DEFAULT_INBOX_PREFERENCES.unreadOnly);
   const [scope, setScope] = useState<InboxScope>(DEFAULT_INBOX_PREFERENCES.scope);
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -114,6 +115,7 @@ export function InboxSection({
     void readInboxPreferences().then((preferences) => {
       if (cancelled) return;
       setFilter(preferences.filter);
+      setUnreadOnly(preferences.unreadOnly);
       setScope(preferences.scope);
       preferencesLoaded.current = true;
     });
@@ -123,23 +125,24 @@ export function InboxSection({
   useEffect(() => {
     // Don't write back the defaults before the stored value has been read.
     if (!preferencesLoaded.current) return;
-    void persistInboxPreferences({ filter, scope });
-  }, [filter, scope]);
+    void persistInboxPreferences({ filter, unreadOnly, scope });
+  }, [filter, unreadOnly, scope]);
 
   const loading = snapshot.status === 'loading';
   const offline = snapshot.status === 'offlineWithCache' || snapshot.status === 'offlineWithoutCache';
   const offlineWithoutCache = snapshot.status === 'offlineWithoutCache';
 
-  const { rows, scoped, counts } = useMemo(
+  const { rows, scoped, counts, unreadInScope, typeCounts } = useMemo(
     () => selectRows({
       deliveries: snapshot.deliveries,
       filter,
+      unreadOnly,
       scope,
       query,
       now,
       stalePreviews: offline,
     }),
-    [snapshot.deliveries, filter, scope, query, now, offline],
+    [snapshot.deliveries, filter, unreadOnly, scope, query, now, offline],
   );
 
   const scopeOptions = useMemo(() => deriveScopeOptions(snapshot.deliveries), [snapshot.deliveries]);
@@ -147,10 +150,18 @@ export function InboxSection({
   const selectedRow = useMemo(() => rows.find((row) => row.id === selectedId) ?? null, [rows, selectedId]);
   const filterLabel = INBOX_FILTERS.find((entry) => entry.id === filter)?.label ?? 'All';
 
-  const handleActivate = useCallback(async (row: InboxRowView) => {
+  // Selecting is free: it fills the context pane and never moves you. Every
+  // navigation is an explicit second act, so a click is safe to spend on
+  // reading a row you are not sure about.
+  const handleSelect = useCallback((row: InboxRowView) => {
     setSelectedId(row.id);
     setActivationNotice(null);
-    const result = await activateRow(row, {
+  }, []);
+
+  const handleOpen = useCallback(async (row: InboxRowView) => {
+    setSelectedId(row.id);
+    setActivationNotice(null);
+    const result = await openRow(row, {
       navigate: (target) => provider.navigate(target),
       markRead: (id) => provider.markRead([id]),
     });
@@ -175,11 +186,10 @@ export function InboxSection({
 
   const clearFilters = useCallback(() => {
     setFilter('all');
+    setUnreadOnly(false);
     setScope(EMPTY_INBOX_SCOPE);
     setQuery('');
   }, []);
-
-  const unreadInScope = counts.unread ?? 0;
 
   return (
     <section
@@ -237,10 +247,14 @@ export function InboxSection({
           <InboxFilterBar
             filter={filter}
             counts={counts}
+            unreadOnly={unreadOnly}
+            unreadCount={unreadInScope}
+            typeCounts={typeCounts}
             scope={scope}
             scopeOptions={scopeOptions}
             disabled={loading}
             onFilterChange={setFilter}
+            onUnreadOnlyChange={setUnreadOnly}
             onScopeChange={setScope}
           />
         </div>
@@ -290,6 +304,7 @@ export function InboxSection({
           {!loading && !offlineWithoutCache && rows.length === 0 && (
             <InboxEmptyState
               filter={filter}
+              unreadOnly={unreadOnly}
               query={query}
               scopeActive={isScopeActive(scope)}
               onClearFilters={clearFilters}
@@ -311,7 +326,8 @@ export function InboxSection({
                       key={row.id}
                       row={row}
                       selected={row.id === selectedId}
-                      onActivate={handleActivate}
+                      onSelect={handleSelect}
+                      onOpen={(target) => { void handleOpen(target); }}
                       onDismiss={(target) => { void provider.dismiss(target.id); }}
                     />
                   ))}
@@ -333,7 +349,7 @@ export function InboxSection({
             conversationTransport={provider.conversationTransport === true}
             canChangeSubscription={provider.setSubscriptionState !== undefined}
             onSubscriptionChange={handleSubscription}
-            onOpenSource={(row) => { void handleActivate(row); }}
+            onOpenSource={(row) => { void handleOpen(row); }}
           />
         </div>
       </div>

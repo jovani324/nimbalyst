@@ -10,12 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- The organization inbox is reachable from any project in that organization — a title-bar button badges unread messages, and the account menu gains a Messages entry.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- The organization Inbox is easier to triage: shorter rows that lead with what each delivery points at — a bug, a decision, the document's own icon — clearer unread state, unread and source-type filters that combine with mentions and assignments, and a click that previews a delivery instead of navigating away from the list.
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Tracker items in list and table views now expose their action menu without requiring a right-click.
+- Committing an agent's work now closes the tracker item it fixed and marks the session complete, instead of leaving finished work sitting in review for you to clear by hand.
+- Changing a project's permission mode now applies to agent sessions that are already running, instead of taking effect only after they finish.
+- Prompts you queue from the phone now disappear from the queued list once the agent picks them up, instead of staying there for the rest of the session.
+- Tables exported to PDF now span the full page width with content-sized columns, instead of collapsing into a narrow strip; columns you sized with the resizer are still honoured.
 
 ### Removed
 <!-- Removed features go here -->
