@@ -131,6 +131,35 @@ export function SyncPanel({ section = 'all' }: { section?: PersonalSyncSection }
   const [projects, setProjects] = useState<Project[]>([]);
   const [showQRModal, setShowQRModal] = useState(false);
   const [pairError, setPairError] = useState<string | null>(null);
+  // Controller-mode bootstrap: paste a pairing code from another desktop instead
+  // of scanning its QR. Calls the same import IPC the QR flow uses.
+  const [showImportPairing, setShowImportPairing] = useState(false);
+  const [importPairingText, setImportPairingText] = useState('');
+  const [importPairingBusy, setImportPairingBusy] = useState(false);
+  const [importPairingMsg, setImportPairingMsg] = useState<string | null>(null);
+  const [importPairingErr, setImportPairingErr] = useState<string | null>(null);
+  const handleImportPairing = async () => {
+    const text = importPairingText.trim();
+    if (!text) return;
+    setImportPairingBusy(true);
+    setImportPairingErr(null);
+    setImportPairingMsg(null);
+    try {
+      const res = await window.electronAPI.credentials.importPairingPayload(text);
+      if (res.success) {
+        setImportPairingMsg(
+          `Paired${res.syncEmail ? ` as ${res.syncEmail}` : ''}. Restart to finish (stop then start the app).`,
+        );
+        setImportPairingText('');
+      } else {
+        setImportPairingErr('Import failed');
+      }
+    } catch (err) {
+      setImportPairingErr(err instanceof Error ? err.message : 'Import failed');
+    } finally {
+      setImportPairingBusy(false);
+    }
+  };
   const [showAddProject, setShowAddProject] = useState(false);
   const [connectedDevices, setConnectedDevices] = useState<DeviceInfo[]>([]);
   const [devicesLoading, setDevicesLoading] = useState(false);
@@ -726,6 +755,54 @@ export function SyncPanel({ section = 'all' }: { section?: PersonalSyncSection }
             {pairError}
           </p>
       )}
+
+      {/* Import a pairing code from another desktop (controller-mode bootstrap) */}
+      <div className={`sync-import-pairing mt-2 ${sectionClass('mobile')}`}>
+        {!showImportPairing ? (
+          <button
+            type="button"
+            className="text-[12px] text-[var(--nim-text-muted)] underline bg-transparent border-none cursor-pointer p-0 hover:text-[var(--nim-text)]"
+            onClick={() => setShowImportPairing(true)}
+          >
+            Have a pairing code from another desktop? Import it
+          </button>
+        ) : (
+          <div className="flex flex-col gap-2 p-3 rounded-lg bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)]">
+            <p className="text-[12px] font-medium text-[var(--nim-text)] m-0">Import pairing code</p>
+            <p className="text-[11px] text-[var(--nim-text-muted)] m-0">
+              Paste the code from the host&apos;s &ldquo;Pair Device&rdquo; dialog to make this instance a controller.
+            </p>
+            <textarea
+              className="w-full rounded px-2 py-1.5 text-[12px] font-mono resize-none bg-[var(--nim-bg)] border border-[var(--nim-border)] text-[var(--nim-text)]"
+              rows={3}
+              value={importPairingText}
+              onChange={(e) => setImportPairingText(e.target.value)}
+              placeholder="nimbalyst://pair?data=…  or the copied JSON"
+              data-testid="sync-import-pairing-input"
+            />
+            {importPairingErr && <p className="text-[11px] text-[var(--nim-error)] m-0">{importPairingErr}</p>}
+            {importPairingMsg && <p className="text-[11px] text-emerald-500 m-0">{importPairingMsg}</p>}
+            <div className="flex gap-2 justify-end">
+              <button
+                type="button"
+                className="text-[12px] px-2.5 py-1 rounded bg-transparent cursor-pointer border border-[var(--nim-border)] text-[var(--nim-text-muted)]"
+                onClick={() => { setShowImportPairing(false); setImportPairingErr(null); }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="text-[12px] px-2.5 py-1 rounded border-none cursor-pointer bg-nim-primary text-nim-on-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={() => void handleImportPairing()}
+                disabled={importPairingBusy || !importPairingText.trim()}
+                data-testid="sync-import-pairing-submit"
+              >
+                {importPairingBusy ? 'Importing…' : 'Import'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Prevent sleep mode selector */}
       {config.enabled && (

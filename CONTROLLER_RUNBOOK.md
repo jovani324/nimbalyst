@@ -52,33 +52,30 @@ Copy `~/nimbalyst-host-seed.tgz` to an external drive / cloud.
 Restore later = extract it back into `.../@nimbalyst/` on any fork Mac → a host
 with all your data.
 
-### 3. First launch + pair the controller (do once)
+### 3. First launch + pair the controller (do once — all UI, no devtools)
 ```
 bash packages/electron/scripts/controller-stack.sh start
 ```
 Two windows come up (host + controller popover; Alt+Space toggles the popover).
 
 **a. Host** — should already be signed in (same data as the normal app).
-   - Settings → enable **personal sync**, and tick the **projects** you want the
-     controller to see. (Only synced projects show up.)
-   - Open host devtools (Cmd+Opt+I) and copy a pairing payload:
-     ```
-     JSON.stringify(await window.electronAPI.credentials.generateQRPayload('ws://localhost:8790'))
-     ```
-     Copy the whole JSON string it prints.
+   - Settings → Sync → enable **personal sync**, tick the **projects** you want
+     the controller to see (only synced projects show up).
+   - Click **Pair Device** → in that dialog click **Copy** to copy the pairing
+     code to your clipboard.
 
-**b. Controller** — sign in with the **same account**, then open its devtools
-   (Cmd+Opt+I) and paste:
-   ```
-   await window.electronAPI.credentials.importPairingPayload('<PASTE THE JSON HERE>')
-   ```
-   It returns `requiresRestart: true`.
+**b. Controller** — sign in with the **same account** → Settings → Sync →
+   **"Have a pairing code from another desktop? Import it"** → paste the code →
+   **Import**. It says "Paired — restart to finish."
 
-**c. Restart just the stack to apply pairing:**
+**c. Restart the stack to apply pairing:**
    ```
    bash packages/electron/scripts/controller-stack.sh stop
    bash packages/electron/scripts/controller-stack.sh start
    ```
+
+> This is a **one-time** step per controller profile. Daily use never touches
+> pairing again.
 
 ### 4. Verify + set discreet defaults
 - Alt+Space → the popover lists your synced sessions. Open one: you should read
