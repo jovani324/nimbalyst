@@ -58,6 +58,12 @@ bash packages/electron/scripts/controller-stack.sh start
 ```
 Two windows come up (host + controller popover; Alt+Space toggles the popover).
 
+> **Run this from a terminal on the machine's own desktop — never over SSH.**
+> Electron started over SSH has no GUI session, so macOS denies Keychain access
+> and `safeStorage` cannot decrypt the stored Stytch credentials: both instances
+> come up silently signed out, with no sync provider and an empty session list.
+> The launcher refuses an SSH start for this reason.
+
 **a. Host** — should already be signed in (same data as the normal app).
    - Settings → Sync → enable **personal sync**, tick the **projects** you want
      the controller to see (only synced projects show up).
