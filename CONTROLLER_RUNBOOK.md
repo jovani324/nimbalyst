@@ -90,26 +90,36 @@ bash packages/electron/scripts/controller-stack.sh stop
 
 ---
 
-## TOMORROW — daily use
+## TOMORROW — daily use (pick one plan)
 
-**Start (normal Nimbalyst app must be quit):**
-```
-bash packages/electron/scripts/controller-stack.sh start
-```
-- **Alt+Space** → discreet popover. Hide the host window.
-- Read / reply / approve from the popover. Shift+Enter sends. New sessions
-  self-heal into their project group automatically.
+> First: **quit the normal packaged Nimbalyst app** if it's open — the host uses
+> the same data folder and the DB lock is exclusive.
 
-**Check / watch:**
+### Plan 1 — one command (recommended)
 ```
-bash packages/electron/scripts/controller-stack.sh status
-bash packages/electron/scripts/controller-stack.sh logs      # Ctrl+C to stop tailing
+bash packages/electron/scripts/controller-stack.sh start     # relay + host + controller
+#   Alt+Space = discreet popover · Shift+Enter = send · hide the host window
+bash packages/electron/scripts/controller-stack.sh status    # / logs
+bash packages/electron/scripts/controller-stack.sh stop      # end of day
 ```
+Read / reply / approve from the popover; new sessions self-heal into their project.
 
-**End of day:**
+### Plan 2 — manual, if the launcher misbehaves (3 terminals)
 ```
-bash packages/electron/scripts/controller-stack.sh stop
+cd private-sync-relay ; node server.mjs                                   # 1: local relay
+cd packages/electron ; NIMBALYST_SYNC_URL=ws://localhost:8790 npm run dev # 2: host (hide it)
+cd packages/electron ; npm run dev:user2:relay                            # 3: controller
 ```
+(`dev:user2:relay` bakes the relay URL, so nushell's env quirk can't bite.)
+
+### Plan 3 — packaged host app (once `Nimbalyst.app` is installed)
+Double-click **Nimbalyst.app** in /Applications (it opens your data + your relay),
+then start just the controller:
+```
+cd packages/electron ; npm run dev:user2:relay
+```
+Use this only after you've confirmed the packaged app launches; Plan 1 is the
+safe default. (The packaged app is the HOST; the controller still runs separately.)
 
 ---
 
