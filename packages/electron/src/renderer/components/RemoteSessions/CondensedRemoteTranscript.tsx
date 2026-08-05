@@ -226,7 +226,7 @@ function ToolDetail({ tool }: { tool: TranscriptViewMessage }) {
   const t = tool.toolCall;
   const isError = t?.status === 'error' || t?.isError;
   return (
-    <div className="text-[12px]">
+    <div className="condensed-remote-tool-detail text-[12px]">
       <div style={{ color: isError ? 'var(--nim-error)' : 'var(--nim-text)' }}>{redact(toolChipLabel(tool))}</div>
       {t?.result && (
         <pre

@@ -72,6 +72,27 @@ version and delete ours rather than maintaining a divergent copy: on 2026-08-04
 upstream's `queueWindowResolver` (#962) replaced a controller-mode fallback in
 `AIService` and did the job better. Check for orphaned imports afterward.
 
+## Never lead a className with a Tailwind arbitrary-value class
+
+In fork JSX, put a stable kebab-case marker class **first**:
+
+```jsx
+<button className="sync-import-pairing-toggle text-[12px] …">   // correct
+<button className="text-[12px] …">                              // breaks jsdom
+```
+
+jsdom's selector engine (nwsapi) resolves a `:has()` rule by building
+`tag.firstClass <inner>` from the candidate element. With a bracket class in
+first position that yields `button.text-[12px] .copied` — invalid CSS unescaped —
+and it throws `SyntaxError` inside `getComputedStyle`, failing **every** test in
+the file with a stack that names neither the test nor the component.
+
+The trigger is upstream's `.rich-transcript-message-copy-action:has(.copied)`
+(`RichTranscriptView.tsx`), which is loaded in the jsdom test environment. Cost
+on 2026-08-04: two failing `SyncPanel` tests and a long hunt. The repo's
+REACT_DOM_MARKERS rule already asks for the marker class — this is why it matters
+beyond debuggability.
+
 ## Do not "clean up" these fork-only files
 
 `CONTROLLER_RUNBOOK.md`, `packages/electron/scripts/controller-stack.sh` and its

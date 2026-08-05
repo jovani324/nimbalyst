@@ -776,15 +776,20 @@ export function SyncPanel({ section }: { section: PersonalSyncSection }) {
         {!showImportPairing ? (
           <button
             type="button"
-            className="text-[12px] text-[var(--nim-text-muted)] underline bg-transparent border-none cursor-pointer p-0 hover:text-[var(--nim-text)]"
+            // Lead with a plain marker class (REACT_DOM_MARKERS). jsdom's nwsapi
+            // scopes a `:has()` rule by building `tag.firstClass <inner>`, so a
+            // Tailwind arbitrary-value class in first position yields the invalid
+            // selector `button.text-[12px] .copied` and throws in every test that
+            // style-resolves this node.
+            className="sync-import-pairing-toggle text-[12px] text-[var(--nim-text-muted)] underline bg-transparent border-none cursor-pointer p-0 hover:text-[var(--nim-text)]"
             onClick={() => setShowImportPairing(true)}
           >
             Have a pairing code from another desktop? Import it
           </button>
         ) : (
           <div className="flex flex-col gap-2 p-3 rounded-lg bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)]">
-            <p className="text-[12px] font-medium text-[var(--nim-text)] m-0">Import pairing code</p>
-            <p className="text-[11px] text-[var(--nim-text-muted)] m-0">
+            <p className="sync-import-pairing-title text-[12px] font-medium text-[var(--nim-text)] m-0">Import pairing code</p>
+            <p className="sync-import-pairing-help text-[11px] text-[var(--nim-text-muted)] m-0">
               Paste the code from the host&apos;s &ldquo;Pair Device&rdquo; dialog to make this instance a controller.
             </p>
             <textarea
@@ -795,19 +800,19 @@ export function SyncPanel({ section }: { section: PersonalSyncSection }) {
               placeholder="nimbalyst://pair?data=…  or the copied JSON"
               data-testid="sync-import-pairing-input"
             />
-            {importPairingErr && <p className="text-[11px] text-[var(--nim-error)] m-0">{importPairingErr}</p>}
-            {importPairingMsg && <p className="text-[11px] text-emerald-500 m-0">{importPairingMsg}</p>}
+            {importPairingErr && <p className="sync-import-pairing-error text-[11px] text-[var(--nim-error)] m-0">{importPairingErr}</p>}
+            {importPairingMsg && <p className="sync-import-pairing-message text-[11px] text-emerald-500 m-0">{importPairingMsg}</p>}
             <div className="flex gap-2 justify-end">
               <button
                 type="button"
-                className="text-[12px] px-2.5 py-1 rounded bg-transparent cursor-pointer border border-[var(--nim-border)] text-[var(--nim-text-muted)]"
+                className="sync-import-pairing-cancel text-[12px] px-2.5 py-1 rounded bg-transparent cursor-pointer border border-[var(--nim-border)] text-[var(--nim-text-muted)]"
                 onClick={() => { setShowImportPairing(false); setImportPairingErr(null); }}
               >
                 Cancel
               </button>
               <button
                 type="button"
-                className="text-[12px] px-2.5 py-1 rounded border-none cursor-pointer bg-nim-primary text-nim-on-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                className="sync-import-pairing-submit text-[12px] px-2.5 py-1 rounded border-none cursor-pointer bg-nim-primary text-nim-on-primary disabled:opacity-50 disabled:cursor-not-allowed"
                 onClick={() => void handleImportPairing()}
                 disabled={importPairingBusy || !importPairingText.trim()}
                 data-testid="sync-import-pairing-submit"
