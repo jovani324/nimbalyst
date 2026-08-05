@@ -1877,7 +1877,12 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       console.log('[CollabV3] connectToIndex() - closing zombie WebSocket (readyState:', indexWs.readyState, ')');
       try {
         indexWs.onclose = null; // Prevent onclose from triggering reconnect loop
-        indexWs.onerror = null;
+        // Keep an error handler attached. Closing a socket that is still
+        // CONNECTING makes `ws` abort the handshake and report it on a LATER
+        // tick -- after this try/catch has already returned -- so detaching the
+        // handler leaves that event unlistened and Node escalates it to an
+        // uncaught exception, killing the host mid-reconnect.
+        indexWs.onerror = () => { /* expected: this socket is being discarded */ };
         indexWs.close();
       } catch (_) { /* ignore close errors */ }
       indexWs = null;
@@ -4323,7 +4328,12 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         console.log('[CollabV3] reconnectIndex() - forcing fresh index socket (readyState:', indexWs.readyState, ')');
         try {
           indexWs.onclose = null;
-          indexWs.onerror = null;
+          // Same async-abort trap as the zombie cleanup in connectToIndex():
+          // if this socket is still CONNECTING, `ws` reports the aborted
+          // handshake after this try/catch returns. Detaching the handler makes
+          // that an uncaught exception -- and this path runs on wake-from-sleep,
+          // so it took the host down exactly when it was reconnecting.
+          indexWs.onerror = () => { /* expected: this socket is being discarded */ };
           indexWs.close();
         } catch (_) {
           /* ignore close errors */
