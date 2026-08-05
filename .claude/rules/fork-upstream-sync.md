@@ -72,6 +72,27 @@ version and delete ours rather than maintaining a divergent copy: on 2026-08-04
 upstream's `queueWindowResolver` (#962) replaced a controller-mode fallback in
 `AIService` and did the job better. Check for orphaned imports afterward.
 
+## Run tests on Node 24 — a newer Node fabricates failures
+
+`.nvmrc` pins **24**. Homebrew's default `node` on this Mac is 26, and Node 26
+gated `localStorage` behind `--localstorage-file`, so tests touching it die with
+`TypeError: Cannot read properties of undefined (reading 'getItem')`.
+
+The failures look like real breakage and are not: on 2026-08-04 six tests across
+`AgentTranscriptPanel.listenerCleanup` and `MarkdownRenderer.rtl` failed under
+Node 26 on **both** this fork and clean `origin/main`, and all six passed under
+Node 24. Hours went into treating them as upstream bugs.
+
+`node@24` is installed keg-only, so prefix the PATH rather than relinking:
+
+```
+export PATH="/usr/local/opt/node@24/bin:$PATH"   # node -v -> v24.x
+```
+
+Before concluding any test is broken, re-run it under Node 24. And do not
+`npm install` under the wrong Node — it can rebuild natives against the wrong
+ABI and rewrite the lockfile.
+
 ## Never lead a className with a Tailwind arbitrary-value class
 
 In fork JSX, put a stable kebab-case marker class **first**:
