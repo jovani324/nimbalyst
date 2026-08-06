@@ -596,6 +596,8 @@ body[data-dev-mode="true"] .nav-quick-access::before {
   align-self: center;
   padding-left: 4px;
   font-weight: 700;
+}
+
 /* Chat sidebar header: on a narrow panel the session title truncates (flex-1)
    while the actions stay pinned (shrink-0), so "New" never clips. Below the
    threshold, collapse the "New" button to an icon-only primary pill to reclaim
