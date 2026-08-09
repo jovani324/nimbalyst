@@ -11,11 +11,13 @@
  * relayed to the host as a `prompt_response` control message.
  */
 
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
 import { useAtomValue } from 'jotai';
 import { InteractivePromptWidget } from '@nimbalyst/runtime/ui/AgentTranscript/components/InteractivePromptWidget';
 import { CondensedRemoteTranscript } from './CondensedRemoteTranscript';
 import { buildSessionMarkdown } from './condensedTranscript';
+import { resolvePendingPrompt } from './pendingPrompt';
+import { prepareImage, toPayload, type ControllerImage } from './controllerImages';
 import { useControllerPrivacy, AUTO_BLUR_IDLE_MS, type ControllerPrivacySettings } from './controllerPrivacy';
 import {
   useControllerAppearance,
@@ -25,15 +27,12 @@ import {
   type ControllerTheme,
 } from './controllerAppearance';
 import {
-  type PermissionRequestContent,
-  type AskUserQuestionRequestContent,
   type PermissionResponseContent,
   type AskUserQuestionResponseContent,
 } from '@nimbalyst/runtime/ai/server/types';
 import {
   projectRawMessagesToViewMessages,
   type RawMessage,
-  type TranscriptViewMessage,
 } from '@nimbalyst/runtime/ai/server/transcript';
 import {
   remoteSessionsAtom,
@@ -48,66 +47,6 @@ interface RemoteSessionTranscriptProps {
   isActive: boolean;
 }
 
-/** The pending interactive prompt currently awaiting a response, if any. */
-type PendingPrompt =
-  | { promptType: 'permission_request'; content: PermissionRequestContent }
-  | { promptType: 'ask_user_question_request'; content: AskUserQuestionRequestContent }
-  | null;
-
-/**
- * Find a pending interactive prompt from the PROJECTED transcript. The projector
- * surfaces a provider-agnostic `interactivePrompt` payload on `interactive_prompt`
- * view messages (with requestId/status), which is the same representation the
- * desktop widgets use — and it works regardless of whether the underlying prompt
- * came from a persisted `permission_request` message or a synthetic ToolPermission
- * tool_use. (The old raw-content scan only matched the former, so it missed most
- * real prompts.) Returns the most recent still-pending request.
- */
-function findPendingPrompt(viewMessages: TranscriptViewMessage[]): PendingPrompt {
-  for (let i = viewMessages.length - 1; i >= 0; i--) {
-    const vm = viewMessages[i];
-    const p = vm.interactivePrompt;
-    if (vm.type !== 'interactive_prompt' || !p || p.status !== 'pending') continue;
-
-    if (p.promptType === 'permission_request') {
-      return {
-        promptType: 'permission_request',
-        content: {
-          type: 'permission_request',
-          requestId: p.requestId,
-          toolName: p.toolName,
-          rawCommand: p.rawCommand,
-          pattern: p.pattern,
-          patternDisplayName: p.patternDisplayName,
-          isDestructive: p.isDestructive,
-          warnings: p.warnings,
-          timestamp: 0,
-          status: p.status,
-        },
-      };
-    }
-    if (p.promptType === 'ask_user_question') {
-      return {
-        promptType: 'ask_user_question_request',
-        content: {
-          type: 'ask_user_question_request',
-          questionId: p.requestId,
-          questions: p.questions.map((q) => ({
-            question: q.question,
-            header: q.header,
-            options: (q.options ?? []).map((o) => ({ label: o.label, description: o.description ?? '' })),
-            multiSelect: q.multiSelect ?? false,
-          })),
-          timestamp: 0,
-          status: p.status,
-        },
-      };
-    }
-    // git_commit_proposal and other types aren't answerable from the controller yet.
-  }
-  return null;
-}
-
 export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTranscriptProps) {
   const rawMessages = useAtomValue(remoteTranscriptAtomFamily(sessionId));
   const sessions = useAtomValue(remoteSessionsAtom);
@@ -119,6 +58,8 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
 
   const [viewMessages, setViewMessages] = useState<ViewMessages>([]);
   const [draft, setDraft] = useState('');
+  const [images, setImages] = useState<ControllerImage[]>([]);
+  const [preparingImages, setPreparingImages] = useState(0);
   const [sending, setSending] = useState(false);
   const [promptSubmitting, setPromptSubmitting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -225,44 +166,25 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
       });
   }, [rawMessages, provider]);
 
-  // Two sources for a pending prompt: (1) the projected transcript, which works
-  // for sessions that write the prompt into the message stream (e.g. CLI), and
-  // (2) a payload the host syncs via session metadata, which is the ONLY way SDK
-  // tool-permissions reach a remote device. Prefer the transcript one; fall back
-  // to the synced payload.
+  // See pendingPrompt.ts for why there are two sources and why the transcript wins.
   const syncedPending = useAtomValue(remotePendingPromptAtomFamily(sessionId));
-  const pendingPrompt = useMemo<PendingPrompt>(() => {
-    const fromTranscript = findPendingPrompt(viewMessages);
-    if (fromTranscript) return fromTranscript;
-    if (syncedPending && syncedPending.promptType === 'permission_request') {
-      return {
-        promptType: 'permission_request',
-        content: {
-          type: 'permission_request',
-          requestId: syncedPending.requestId,
-          toolName: syncedPending.toolName,
-          rawCommand: syncedPending.rawCommand,
-          pattern: syncedPending.pattern,
-          patternDisplayName: syncedPending.patternDisplayName,
-          isDestructive: syncedPending.isDestructive,
-          warnings: syncedPending.warnings,
-          timestamp: 0,
-          status: 'pending',
-        },
-      };
-    }
-    return null;
-  }, [viewMessages, syncedPending]);
+  const pendingPrompt = useMemo(
+    () => resolvePendingPrompt(viewMessages, syncedPending),
+    [viewMessages, syncedPending],
+  );
 
   const handleSend = async () => {
     const text = draft.trim();
     const api = window.electronAPI?.remoteSessions;
-    if (!text || !api) return;
+    if ((!text && images.length === 0) || !api) return;
     setSending(true);
     setActionError(null);
     try {
-      await api.sendPrompt(sessionId, text);
+      // An image with no words still needs a prompt for the agent to act on.
+      const prompt = text || 'Take a look at this image.';
+      await api.sendPrompt(sessionId, prompt, images.length ? toPayload(images) : undefined);
       setDraft('');
+      setImages([]);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to send prompt');
     } finally {
@@ -275,6 +197,28 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
     if (e.key === 'Enter' && e.shiftKey) {
       e.preventDefault();
       void handleSend();
+    }
+  };
+
+  /** Paste an image straight into the composer; it rides along with the prompt. */
+  const handleComposerPaste = async (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData?.items ?? [])
+      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((f): f is File => !!f);
+    if (files.length === 0) return;
+    e.preventDefault();
+    setActionError(null);
+    setPreparingImages((n) => n + files.length);
+    for (const file of files) {
+      try {
+        const image = await prepareImage(file);
+        setImages((prev) => [...prev, image]);
+      } catch (err) {
+        setActionError(err instanceof Error ? err.message : 'Failed to attach image');
+      } finally {
+        setPreparingImages((n) => Math.max(0, n - 1));
+      }
     }
   };
 
@@ -489,31 +433,66 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
       )}
 
       {/* Composer */}
-      <div className="remote-session-composer flex items-end gap-2 px-4 py-3 border-t shrink-0" style={{ borderColor: 'var(--nim-border)' }}>
-        <textarea
-          className="flex-1 resize-none rounded px-3 py-2 text-sm outline-none"
-          style={{
-            background: 'var(--nim-bg-secondary)',
-            color: 'var(--nim-text)',
-            border: '1px solid var(--nim-border)',
-            maxHeight: 160,
-          }}
-          rows={2}
-          placeholder="Reply to the host…  (Shift+Enter to send)"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={handleComposerKeyDown}
-          data-testid="remote-session-composer-input"
-        />
-        <button
-          className="text-sm px-3 py-2 rounded shrink-0"
-          style={{ background: 'var(--nim-primary)', color: '#fff', opacity: sending || !draft.trim() ? 0.5 : 1 }}
-          onClick={() => void handleSend()}
-          disabled={sending || !draft.trim()}
-          data-testid="remote-session-send-button"
-        >
-          Send
-        </button>
+      <div className="remote-session-composer flex flex-col gap-2 px-4 py-3 border-t shrink-0" style={{ borderColor: 'var(--nim-border)' }}>
+        {(images.length > 0 || preparingImages > 0) && (
+          <div className="remote-session-composer-images flex items-center gap-2 flex-wrap" data-testid="remote-session-composer-images">
+            {images.map((image) => (
+              <div
+                key={image.id}
+                className="remote-session-composer-image relative rounded overflow-hidden"
+                style={{ border: '1px solid var(--nim-border)' }}
+                title={`${image.name} · ${Math.max(1, Math.round(image.size / 1024))}KB`}
+              >
+                <img src={image.previewUrl} alt={image.name} style={{ height: 44, width: 'auto', display: 'block' }} />
+                <button
+                  className="remote-session-composer-image-remove absolute top-0 right-0 leading-none px-1"
+                  style={{ background: 'var(--nim-bg)', color: 'var(--nim-text-muted)', fontSize: 11 }}
+                  onClick={() => setImages((prev) => prev.filter((i) => i.id !== image.id))}
+                  title="Remove image"
+                  aria-label={`Remove ${image.name}`}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            {preparingImages > 0 && (
+              <span className="text-xs" style={{ color: 'var(--nim-text-muted)' }}>
+                preparing image…
+              </span>
+            )}
+          </div>
+        )}
+        <div className="flex items-end gap-2">
+          <textarea
+            className="flex-1 resize-none rounded px-3 py-2 text-sm outline-none"
+            style={{
+              background: 'var(--nim-bg-secondary)',
+              color: 'var(--nim-text)',
+              border: '1px solid var(--nim-border)',
+              maxHeight: 160,
+            }}
+            rows={2}
+            placeholder="Reply to the host…  (Shift+Enter to send, paste an image to attach)"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={handleComposerKeyDown}
+            onPaste={(e) => void handleComposerPaste(e)}
+            data-testid="remote-session-composer-input"
+          />
+          <button
+            className="text-sm px-3 py-2 rounded shrink-0"
+            style={{
+              background: 'var(--nim-primary)',
+              color: '#fff',
+              opacity: sending || (!draft.trim() && images.length === 0) ? 0.5 : 1,
+            }}
+            onClick={() => void handleSend()}
+            disabled={sending || (!draft.trim() && images.length === 0)}
+            data-testid="remote-session-send-button"
+          >
+            Send
+          </button>
+        </div>
       </div>
     </div>
   );

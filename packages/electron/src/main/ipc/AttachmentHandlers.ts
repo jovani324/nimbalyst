@@ -3,35 +3,16 @@
  */
 
 import { BrowserWindow } from 'electron';
-import { AttachmentService } from '../services/AttachmentService';
 import { getWindowId, windowStates } from '../window/WindowManager';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
-import { getAttachmentStagingConfig, setAttachmentStagingConfig } from '../utils/store';
-import { resolveWorkspaceAttachmentStagingDirectory } from '../services/attachments/attachmentStagingRoot';
-import { addNimAssetRoot } from '../protocols/nimAssetProtocol';
+import { setAttachmentStagingConfig } from '../utils/store';
+import { getAttachmentService } from '../services/attachments/attachmentServiceRegistry';
 import { promises as fs } from 'fs';
 import type { ChatAttachment } from '@nimbalyst/runtime';
 import {
   appendAttachmentGitignore,
   getAttachmentGitignoreStatus,
 } from '../services/attachments/attachmentGitignore';
-
-// Map of workspace paths to AttachmentService instances
-const attachmentServices = new Map<string, AttachmentService>();
-
-/**
- * Get or create an AttachmentService for a workspace
- */
-function getAttachmentService(workspacePath: string): AttachmentService {
-  const config = getAttachmentStagingConfig();
-  const stagingDirectory = resolveWorkspaceAttachmentStagingDirectory(workspacePath);
-  const key = `${workspacePath}\0${config.mode}\0${stagingDirectory}`;
-  if (!attachmentServices.has(key)) {
-    addNimAssetRoot(stagingDirectory);
-    attachmentServices.set(key, new AttachmentService(workspacePath, stagingDirectory, config.mode));
-  }
-  return attachmentServices.get(key)!;
-}
 
 export function registerAttachmentHandlers() {
   safeHandle('attachment:workspace-staging-status', async (_event, workspacePath: string) => {

@@ -1573,8 +1573,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('remote-sessions:resync', { sessionId }),
     exportMarkdown: (sessionId: string, title: string | undefined, markdown: string) =>
       ipcRenderer.invoke('remote-sessions:export-markdown', { sessionId, title, markdown }),
-    sendPrompt: (sessionId: string, prompt: string) =>
-      ipcRenderer.invoke('remote-sessions:send-prompt', { sessionId, prompt }),
+    sendPrompt: (
+      sessionId: string,
+      prompt: string,
+      images?: Array<{ name: string; mimeType: string; data: string }>,
+    ) => ipcRenderer.invoke('remote-sessions:send-prompt', { sessionId, prompt, images }),
     create: (request: {
       projectId: string;
       initialPrompt?: string;

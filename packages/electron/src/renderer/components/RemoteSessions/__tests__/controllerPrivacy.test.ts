@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
-import { redactSecrets } from './controllerPrivacy';
+import { redactSecrets } from '../controllerPrivacy';
 
 describe('redactSecrets', () => {
   it('masks emails', () => {

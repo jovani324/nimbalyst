@@ -99,7 +99,29 @@ vi.mock('../../WorktreeStore', () => ({
   createWorktreeStore: mocks.createWorktreeStore,
 }));
 
-import { resolveGitCommitWorkspacePath, resolveVoicePromptResponse } from '../MobileSessionControlHandler';
+const queueMocks = vi.hoisted(() => ({
+  queueGet: vi.fn(),
+  queueCreate: vi.fn(),
+  saveAttachment: vi.fn(),
+  trigger: vi.fn(),
+}));
+
+vi.mock('../../RepositoryManager', () => ({
+  getQueuedPromptsStore: () => ({
+    get: queueMocks.queueGet,
+    create: queueMocks.queueCreate,
+  }),
+}));
+
+vi.mock('../../attachments/attachmentServiceRegistry', () => ({
+  getAttachmentService: () => ({ saveAttachment: queueMocks.saveAttachment }),
+}));
+
+import {
+  initMobileSessionControlHandler,
+  resolveGitCommitWorkspacePath,
+  resolveVoicePromptResponse,
+} from '../MobileSessionControlHandler';
 
 describe('MobileSessionControlHandler', () => {
   beforeEach(() => {
@@ -421,5 +443,77 @@ describe('MobileSessionControlHandler', () => {
       cancelled: true,
       respondedBy: 'mobile',
     });
+  });
+});
+
+describe('remote prompt images', () => {
+  /** Deliver a `prompt` control message the way the sync layer would. */
+  const sendPromptControl = (payload: Record<string, unknown>) => {
+    let deliver: ((message: unknown) => void) | undefined;
+    initMobileSessionControlHandler(
+      {
+        onSessionControlMessage: (callback: (message: unknown) => void) => {
+          deliver = callback;
+          return () => {};
+        },
+      } as never,
+      vi.fn(),
+      {
+        triggerQueuedPromptProcessing: queueMocks.trigger,
+        rollbackExecutingPrompts: vi.fn(),
+      },
+    );
+    deliver?.({ sessionId: 'session-1', type: 'prompt', payload, timestamp: 1, sentBy: 'mobile' });
+  };
+
+  const imagePayload = {
+    promptId: 'p1',
+    prompt: 'what is this',
+    images: [{ name: 'shot.png', mimeType: 'image/png', data: Buffer.from('fake-png').toString('base64') }],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getSession.mockResolvedValue({ provider: 'claude-code', workspacePath: '/work' });
+    queueMocks.queueGet.mockResolvedValue(null);
+    queueMocks.queueCreate.mockResolvedValue(undefined);
+    queueMocks.trigger.mockResolvedValue(true);
+  });
+
+  it('stages a controller-pasted image on the host and references it in the prompt', async () => {
+    queueMocks.saveAttachment.mockResolvedValue({
+      success: true,
+      attachment: { filename: 'shot.jpg', filepath: '/work/.attachments/shot.jpg' },
+    });
+
+    sendPromptControl(imagePayload);
+
+    await vi.waitFor(() => expect(queueMocks.queueCreate).toHaveBeenCalledTimes(1));
+    // The bytes must be decoded and written into THIS machine's attachment
+    // store — the sender's filepath means nothing here.
+    expect(queueMocks.saveAttachment).toHaveBeenCalledWith(
+      Buffer.from('fake-png'),
+      'shot.png',
+      'image/png',
+      'session-1',
+    );
+    expect(queueMocks.queueCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'p1',
+        prompt: 'what is this @shot.jpg',
+        attachments: [expect.objectContaining({ filename: 'shot.jpg' })],
+      }),
+    );
+  });
+
+  it('still delivers the prompt when the image cannot be staged', async () => {
+    queueMocks.saveAttachment.mockResolvedValue({ success: false, error: 'disk full' });
+
+    sendPromptControl(imagePayload);
+
+    await vi.waitFor(() => expect(queueMocks.queueCreate).toHaveBeenCalledTimes(1));
+    const created = queueMocks.queueCreate.mock.calls[0][0];
+    expect(created.prompt).toBe('what is this');
+    expect(created.attachments).toBeUndefined();
   });
 });

@@ -83,7 +83,7 @@ import { ToolUsageService } from '../ToolUsageService';
 import { historyManager } from '../../HistoryManager';
 import { addGitignoreBypass } from '../../file/WorkspaceEventBus';
 import { getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
-import { setSessionPendingPrompt } from './pendingPromptPersistence';
+import { setSessionPendingPrompt, normalizeSyncedQuestions } from './pendingPromptPersistence';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { getMetaAgentOpenAITools } from '../../mcp/metaAgentServer';
 import { getDevAgentOpenAITools, resolveDevToolScope } from '../../mcp/devAgentTools';
@@ -941,7 +941,14 @@ export class MessageStreamingHandler {
     const onAskUserQuestion = async (data: { questionId: string; sessionId: string; questions: any[]; timestamp: number }) => {
       // logger.main.info('[AIService] AskUserQuestion requested:', data.questionId);
       safeSend(event, 'ai:askUserQuestion', { ...data, workspacePath: effectiveWorkspacePath });
-      syncPendingPrompt(data.sessionId, true);
+      // Sync the questions themselves, not just the pending bit — SDK sessions
+      // never write the question into the transcript, so this is the only way a
+      // remote device (controller / mobile) can render and answer it.
+      syncPendingPrompt(data.sessionId, true, {
+        promptType: 'ask_user_question',
+        questionId: data.questionId,
+        questions: normalizeSyncedQuestions(data.questions),
+      });
       TrayManager.getInstance().onPromptCreated(data.sessionId);
 
       // Update session status to waiting_for_input so all windows show the pending indicator

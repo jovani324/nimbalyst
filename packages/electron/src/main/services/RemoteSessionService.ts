@@ -269,12 +269,33 @@ export async function resyncRemoteSession(sessionId: string): Promise<void> {
 }
 
 /**
+ * An image to send along with a prompt. Base64 bytes, because the host is a
+ * different machine and a local filepath would mean nothing there.
+ */
+export interface RemotePromptImage {
+  name: string;
+  mimeType: string;
+  data: string;
+}
+
+/**
  * Queue a prompt on a remote session, mirroring the phone: push the prompt into
  * the session metadata (host inserts it into its queued_prompts table via
  * onIndexChange) then nudge the host's queue processor with a `prompt` control
  * message. The prompt id is a plain UUID (never `local-*`).
+ *
+ * With images attached we take ONLY the control-message path. Both paths are
+ * idempotent by prompt id, so whichever lands first wins — and the metadata path
+ * cannot carry image bytes (they'd bloat the index Y.Doc, which syncs to every
+ * device forever). Racing them would let the imageless row win at random. The
+ * tradeoff is that an image prompt needs the host online, where a text prompt
+ * survives in the Y.Doc until the host reconnects.
  */
-export async function sendRemotePrompt(sessionId: string, prompt: string): Promise<string> {
+export async function sendRemotePrompt(
+  sessionId: string,
+  prompt: string,
+  images?: RemotePromptImage[],
+): Promise<string> {
   const provider = requireProvider();
   const trimmed = prompt.trim();
   if (!trimmed) {
@@ -283,25 +304,30 @@ export async function sendRemotePrompt(sessionId: string, prompt: string): Promi
 
   const promptId = randomUUID();
   const timestamp = Date.now();
+  const hasImages = !!images?.length;
 
-  provider.pushChange(sessionId, {
-    type: 'metadata_updated',
-    metadata: {
-      queuedPrompts: [{ id: promptId, prompt: trimmed, timestamp }],
-    },
-  });
+  if (!hasImages) {
+    provider.pushChange(sessionId, {
+      type: 'metadata_updated',
+      metadata: {
+        queuedPrompts: [{ id: promptId, prompt: trimmed, timestamp }],
+      },
+    });
+  }
 
   if (provider.sendSessionControlMessage) {
     await provider.sendSessionControlMessage({
       sessionId,
       type: 'prompt',
-      payload: { promptId, prompt: trimmed },
+      payload: { promptId, prompt: trimmed, ...(hasImages ? { images } : {}) },
       timestamp,
       sentBy: 'mobile',
     });
+  } else if (hasImages) {
+    throw new Error('Sync provider cannot deliver images to the host');
   }
 
-  log.info('[RemoteSessionService] Sent remote prompt', { sessionId, promptId });
+  log.info('[RemoteSessionService] Sent remote prompt', { sessionId, promptId, images: images?.length ?? 0 });
   return promptId;
 }
 

@@ -8,7 +8,7 @@ import {
   summarizeToolGroup,
   toolGroupHasError,
   buildSessionMarkdown,
-} from './condensedTranscript';
+} from '../condensedTranscript';
 
 function msg(partial: Partial<TranscriptViewMessage> & { type: TranscriptViewMessage['type'] }): TranscriptViewMessage {
   return {

@@ -8,7 +8,7 @@
  * and the remoteSessions atoms — this view owns no local session state.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import {
   remoteSessionsByProjectAtom,
@@ -20,13 +20,14 @@ import {
 import type { RemoteSessionIndexEntry } from '../../types/remoteSessions';
 import { RemoteSessionTranscript } from './RemoteSessionTranscript';
 import { NewRemoteSessionDialog } from './NewRemoteSessionDialog';
+import { filterSessionsByProject } from './sessionSearch';
 
 interface RemoteSessionsViewProps {
   isActive: boolean;
 }
 
 export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
-  const sessionsByProject = useAtomValue(remoteSessionsByProjectAtom);
+  const allSessionsByProject = useAtomValue(remoteSessionsByProjectAtom);
   const projects = useAtomValue(remoteProjectsAtom);
   const indexLoaded = useAtomValue(remoteIndexLoadedAtom);
   const activeSessionId = useAtomValue(remoteActiveSessionIdAtom);
@@ -37,6 +38,9 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
   const [error, setError] = useState<string | null>(null);
   const [showNewDialog, setShowNewDialog] = useState(false);
   const [listCollapsed, setListCollapsed] = useState(false);
+  const [query, setQuery] = useState('');
+  const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
     if (!window.electronAPI?.remoteSessions) return;
@@ -68,6 +72,12 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
     [projects],
   );
 
+  const searching = query.trim().length > 0;
+  const sessionsByProject = useMemo(
+    () => filterSessionsByProject(allSessionsByProject, projectName, query),
+    [allSessionsByProject, projectName, query],
+  );
+
   // Build an ordered list of [projectId, sessions] groups: known projects first
   // (by recent activity), then any orphan group with empty projectId.
   const groupOrder: string[] = [
@@ -79,24 +89,52 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
     ...[...sessionsByProject.keys()].filter((id) => !projects.some((p) => p.projectId === id)),
   ];
 
+  // A search shows every hit regardless of which groups you had collapsed —
+  // otherwise a match hides inside a collapsed group and the list reads empty.
+  const isCollapsed = (projectId: string) => !searching && collapsedProjects.has(projectId);
+  const toggleProject = (projectId: string) => {
+    setCollapsedProjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(projectId)) next.delete(projectId);
+      else next.add(projectId);
+      return next;
+    });
+  };
+
   // Flattened session order for keyboard navigation — Arrow Up/Down moves the
   // active session through the list (unless the user is typing in the composer).
+  // Collapsed groups are skipped: arrowing into a row you cannot see looks broken.
   const flatSessionIds: string[] = groupOrder.flatMap((projectId) =>
-    (sessionsByProject.get(projectId) ?? []).map((s) => s.sessionId),
+    isCollapsed(projectId) ? [] : (sessionsByProject.get(projectId) ?? []).map((s) => s.sessionId),
   );
+  const moveSelection = (delta: number) => {
+    if (flatSessionIds.length === 0) return;
+    const cur = activeSessionId ? flatSessionIds.indexOf(activeSessionId) : -1;
+    const nextIdx = cur < 0 ? 0 : Math.min(flatSessionIds.length - 1, Math.max(0, cur + delta));
+    setActiveSessionId(flatSessionIds[nextIdx]);
+  };
+
   useEffect(() => {
     if (!isActive) return;
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'f' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        // The list may be collapsed (display:none), where focus() is a no-op —
+        // wait for the re-render that reveals it.
+        setListCollapsed(false);
+        requestAnimationFrame(() => {
+          searchRef.current?.focus();
+          searchRef.current?.select();
+        });
+        return;
+      }
       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
       if (flatSessionIds.length === 0) return;
       e.preventDefault();
-      const cur = activeSessionId ? flatSessionIds.indexOf(activeSessionId) : -1;
-      const delta = e.key === 'ArrowDown' ? 1 : -1;
-      const nextIdx = cur < 0 ? 0 : Math.min(flatSessionIds.length - 1, Math.max(0, cur + delta));
-      setActiveSessionId(flatSessionIds[nextIdx]);
+      moveSelection(e.key === 'ArrowDown' ? 1 : -1);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -172,6 +210,54 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
           </div>
         </div>
 
+        <div
+          className="remote-sessions-search flex items-center gap-1 px-2 py-1 border-b shrink-0"
+          style={{ borderColor: 'var(--nim-border)' }}
+        >
+          <input
+            ref={searchRef}
+            className="flex-1 min-w-0 rounded px-2 py-1 text-xs outline-none"
+            style={{
+              background: 'var(--nim-bg)',
+              color: 'var(--nim-text)',
+              border: '1px solid var(--nim-border)',
+            }}
+            placeholder="Search name or id…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              // Arrow/Enter walk the results without leaving the box — the global
+              // handler deliberately ignores keys typed into an input.
+              if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                moveSelection(e.key === 'ArrowDown' ? 1 : -1);
+                return;
+              }
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                if (!activeSessionId || !flatSessionIds.includes(activeSessionId)) moveSelection(1);
+                return;
+              }
+              if (e.key === 'Escape') {
+                e.stopPropagation();
+                setQuery('');
+              }
+            }}
+            data-testid="remote-sessions-search-input"
+          />
+          {searching && (
+            <button
+              className="remote-sessions-search-clear text-xs px-1 shrink-0"
+              style={{ color: 'var(--nim-text-muted)' }}
+              onClick={() => setQuery('')}
+              title="Clear search"
+              aria-label="Clear search"
+            >
+              ×
+            </button>
+          )}
+        </div>
+
         <div className="flex-1 overflow-y-auto">
           {error && (
             <div className="px-3 py-2 text-xs" style={{ color: 'var(--nim-error)' }}>
@@ -185,27 +271,39 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
           )}
           {indexLoaded && groupOrder.length === 0 && (
             <div className="px-3 py-4 text-xs" style={{ color: 'var(--nim-text-muted)' }}>
-              No sessions on the host yet. Use “New” to start one.
+              {searching ? `No session matches “${query.trim()}”.` : 'No sessions on the host yet. Use “New” to start one.'}
             </div>
           )}
           {groupOrder.map((projectId) => {
             const sessions = sessionsByProject.get(projectId) ?? [];
+            const collapsed = isCollapsed(projectId);
             return (
               <div key={projectId || '__unknown__'} className="remote-project-group">
-                <div
-                  className="px-3 pt-3 pb-1 text-[11px] uppercase tracking-wide font-medium"
+                <button
+                  className="remote-project-group-header flex items-center gap-1 w-full text-left px-2 pt-2 pb-0.5 text-[10px] uppercase tracking-wide font-medium"
                   style={{ color: 'var(--nim-text-muted)' }}
+                  onClick={() => toggleProject(projectId)}
+                  data-testid="remote-project-group-header"
+                  title={collapsed ? 'Show sessions' : 'Hide sessions'}
+                  aria-expanded={!collapsed}
                 >
-                  {projectName(projectId)}
-                </div>
-                {sessions.map((session) => (
-                  <RemoteSessionRow
-                    key={session.sessionId}
-                    session={session}
-                    selected={session.sessionId === activeSessionId}
-                    onSelect={() => setActiveSessionId(session.sessionId)}
-                  />
-                ))}
+                  <span className="shrink-0" style={{ width: 8 }}>
+                    {collapsed ? '▸' : '▾'}
+                  </span>
+                  <span className="truncate">{projectName(projectId)}</span>
+                  <span className="shrink-0" style={{ opacity: 0.7 }}>
+                    {sessions.length}
+                  </span>
+                </button>
+                {!collapsed &&
+                  sessions.map((session) => (
+                    <RemoteSessionRow
+                      key={session.sessionId}
+                      session={session}
+                      selected={session.sessionId === activeSessionId}
+                      onSelect={() => setActiveSessionId(session.sessionId)}
+                    />
+                  ))}
               </div>
             );
           })}
@@ -247,7 +345,7 @@ interface RemoteSessionRowProps {
 function RemoteSessionRow({ session, selected, onSelect }: RemoteSessionRowProps) {
   return (
     <button
-      className="remote-session-row flex items-center gap-2 w-full text-left px-3 py-2 text-sm"
+      className="remote-session-row flex items-center gap-1.5 w-full text-left px-3 py-0.5 text-[12px] leading-5"
       style={{
         background: selected ? 'var(--nim-bg-selected)' : 'transparent',
         color: 'var(--nim-text)',
@@ -255,18 +353,30 @@ function RemoteSessionRow({ session, selected, onSelect }: RemoteSessionRowProps
       onClick={onSelect}
       data-testid="remote-session-row"
       data-session-id={session.sessionId}
+      title={session.title || 'Untitled'}
     >
       <span className="flex-1 truncate">{session.title || 'Untitled'}</span>
+      {/* A blocked session is the one you actually have to open — it outranks
+          "running" and "queued", which resolve on their own. */}
+      {session.hasPendingPrompt && (
+        <span
+          className="remote-session-awaiting-answer shrink-0 leading-none"
+          style={{ color: 'var(--nim-warning)', fontSize: 11 }}
+          title="Waiting for your answer"
+        >
+          ?
+        </span>
+      )}
       {session.isExecuting && (
         <span
-          className="remote-session-executing shrink-0 w-2 h-2 rounded-full animate-pulse"
+          className="remote-session-executing shrink-0 w-1.5 h-1.5 rounded-full animate-pulse"
           style={{ background: 'var(--nim-success)' }}
           title="Executing"
         />
       )}
       {session.pendingExecution && !session.isExecuting && (
         <span
-          className="remote-session-pending shrink-0 w-2 h-2 rounded-full"
+          className="remote-session-pending shrink-0 w-1.5 h-1.5 rounded-full"
           style={{ background: 'var(--nim-warning)' }}
           title="Prompt queued"
         />

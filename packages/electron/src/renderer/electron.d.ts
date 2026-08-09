@@ -732,7 +732,11 @@ interface ElectronAPI {
       title: string | undefined,
       markdown: string,
     ) => Promise<{ success: boolean; filePath: string; error?: string }>;
-    sendPrompt: (sessionId: string, prompt: string) => Promise<{ success: boolean; promptId: string }>;
+    sendPrompt: (
+      sessionId: string,
+      prompt: string,
+      images?: import('./types/remoteSessions').RemotePromptImage[],
+    ) => Promise<{ success: boolean; promptId: string }>;
     create: (request: {
       projectId: string;
       initialPrompt?: string;

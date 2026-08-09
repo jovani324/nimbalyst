@@ -571,16 +571,8 @@ async function decryptTitle(
  * UI and answer it — not just know a prompt is pending. Additive: older clients
  * that don't understand this field simply ignore it. `null` clears it on resolve.
  */
-export interface SyncedPendingPrompt {
-  promptType: 'permission_request';
-  requestId: string;
-  toolName: string;
-  rawCommand: string;
-  pattern: string;
-  patternDisplayName: string;
-  isDestructive: boolean;
-  warnings: string[];
-}
+import type { SyncedPendingPrompt } from './types';
+export type { SyncedPendingPrompt };
 
 interface ClientMetadata {
   currentContext?: {
@@ -1699,6 +1691,37 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
           `(prior personal-key seed epoch; unrecoverable). firstId=${firstFailedId} ` +
           `createdAt=${oldestFailedAt ? new Date(oldestFailedAt).toISOString() : '?'}..${newestFailedAt ? new Date(newestFailedAt).toISOString() : '?'}`,
         );
+      }
+    }
+
+    // Replay an open interactive prompt to listeners.
+    //
+    // The host only sends `updateMetadata` to a session room it is connected to,
+    // so a prompt raised before this device joined arrives nowhere: sync_response
+    // carries it, but caching it silently means a remote device opens the session
+    // and sees a stalled agent with nothing to answer. Emit it as a normal
+    // metadata change so the same listener path handles both cases.
+    if (
+      response.metadata?.encryptedClientMetadata &&
+      response.metadata.clientMetadataIv &&
+      session.encryptionKey
+    ) {
+      try {
+        const clientMeta = await decryptClientMetadata(
+          response.metadata.encryptedClientMetadata,
+          response.metadata.clientMetadataIv,
+          session.encryptionKey,
+        );
+        if (clientMeta.hasPendingPrompt !== undefined || clientMeta.pendingPromptData !== undefined) {
+          const metadata: Record<string, unknown> = {};
+          if (clientMeta.hasPendingPrompt !== undefined) metadata.hasPendingPrompt = clientMeta.hasPendingPrompt;
+          if (clientMeta.pendingPromptData !== undefined) metadata.pendingPromptData = clientMeta.pendingPromptData;
+          session.changeListeners.forEach((cb) =>
+            cb({ type: 'metadata_updated', metadata: metadata as SyncedSessionMetadata })
+          );
+        }
+      } catch (err) {
+        console.error('[CollabV3] Failed to decrypt client metadata from sync_response:', err);
       }
     }
 

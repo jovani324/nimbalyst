@@ -482,6 +482,33 @@ export interface EncryptedAttachment {
   height?: number;
 }
 
+/**
+ * A pending interactive prompt, carried whole so a remote device (controller /
+ * mobile) can render the answer UI and respond. SDK sessions never write these
+ * into the transcript, so this is the only channel that reaches another device.
+ */
+export type SyncedPendingPrompt =
+  | {
+      promptType: 'permission_request';
+      requestId: string;
+      toolName: string;
+      rawCommand: string;
+      pattern: string;
+      patternDisplayName: string;
+      isDestructive: boolean;
+      warnings: string[];
+    }
+  | {
+      promptType: 'ask_user_question';
+      questionId: string;
+      questions: Array<{
+        question: string;
+        header: string;
+        options: Array<{ label: string; description: string }>;
+        multiSelect: boolean;
+      }>;
+    };
+
 /** Session metadata that gets synced */
 export interface SyncedSessionMetadata {
   title?: string;
@@ -533,19 +560,11 @@ export interface SyncedSessionMetadata {
   /** Whether there are pending interactive prompts (permissions, questions, plan approvals, git commits) */
   hasPendingPrompt?: boolean;
   /**
-   * Full payload of a pending tool-permission prompt so a remote device can render
-   * the approve UI and answer it. `null` clears it. Additive; older clients ignore it.
+   * Full payload of a pending interactive prompt so a remote device can render
+   * the answer UI and respond to it. `null` clears it. Additive; older clients
+   * ignore it. See {@link SyncedPendingPrompt}.
    */
-  pendingPromptData?: {
-    promptType: 'permission_request';
-    requestId: string;
-    toolName: string;
-    rawCommand: string;
-    pattern: string;
-    patternDisplayName: string;
-    isDestructive: boolean;
-    warnings: string[];
-  } | null;
+  pendingPromptData?: SyncedPendingPrompt | null;
   /** Kanban phase: backlog, planning, implementing, validating, complete */
   phase?: string;
   /** Arbitrary tags for categorization */

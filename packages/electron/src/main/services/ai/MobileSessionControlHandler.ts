@@ -12,7 +12,8 @@ import {
   isExitPlanModeProvider,
   isToolPermissionProvider,
 } from '@nimbalyst/runtime/ai/server';
-import { AISessionsRepository, type PermissionScope } from '@nimbalyst/runtime';
+import { AISessionsRepository, type PermissionScope, type ChatAttachment } from '@nimbalyst/runtime';
+import { getAttachmentService } from '../attachments/attachmentServiceRegistry';
 import { ipcMain, BrowserWindow } from 'electron';
 import { logger } from '../../utils/logger';
 import { TrayManager } from '../../tray/TrayManager';
@@ -60,6 +61,15 @@ interface QuestionResponsePayload {
 interface PromptPayload {
   promptId: string;
   prompt: string;
+  /** Images pasted on a remote device, as base64 bytes (see stageRemoteImages). */
+  images?: RemotePromptImage[];
+}
+
+/** An image sent from a remote device alongside a prompt. */
+export interface RemotePromptImage {
+  name: string;
+  mimeType: string;
+  data: string;
 }
 
 /**
@@ -226,6 +236,41 @@ function handleControlMessage(
 }
 
 /**
+ * Write images pasted on a remote device into this host's attachment store.
+ *
+ * The remote device has no filesystem here, so it ships raw bytes; only once
+ * they are staged locally does a ChatAttachment (which is a filepath) mean
+ * anything to the provider. Returns the attachments that were staged — a
+ * failure on one image is logged and skipped rather than losing the prompt.
+ */
+async function stageRemoteImages(
+  images: RemotePromptImage[],
+  workspacePath: string,
+  sessionId: string,
+): Promise<ChatAttachment[]> {
+  const staged: ChatAttachment[] = [];
+  const service = getAttachmentService(workspacePath);
+  for (const image of images) {
+    try {
+      const buffer = Buffer.from(image.data, 'base64');
+      if (buffer.length === 0) {
+        log.warn('[Remote] Skipping empty image attachment:', image.name);
+        continue;
+      }
+      const result = await service.saveAttachment(buffer, image.name, image.mimeType, sessionId);
+      if (result.success && result.attachment) {
+        staged.push(result.attachment);
+      } else {
+        log.warn('[Remote] Failed to stage image attachment:', image.name, result.error);
+      }
+    } catch (err) {
+      log.error('[Remote] Error staging image attachment:', image.name, err);
+    }
+  }
+  return staged;
+}
+
+/**
  * Look up the session's workspacePath and ask AIService to drain the queue.
  */
 async function handlePromptTrigger(
@@ -251,8 +296,28 @@ async function handlePromptTrigger(
         const queueStore = getQueuedPromptsStore();
         const existing = await queueStore.get(payload.promptId);
         if (!existing) {
-          await queueStore.create({ id: payload.promptId, sessionId, prompt: payload.prompt });
-          log.info('Enqueued prompt from control payload:', payload.promptId, 'for session:', sessionId);
+          const attachments = payload.images?.length
+            ? await stageRemoteImages(payload.images, session.workspacePath, sessionId)
+            : [];
+          // Mirror the desktop composer: the agent finds an attachment by the
+          // `@filename` reference in the prompt text.
+          const prompt = attachments.length
+            ? `${payload.prompt} ${attachments.map((a) => `@${a.filename}`).join(' ')}`
+            : payload.prompt;
+          await queueStore.create({
+            id: payload.promptId,
+            sessionId,
+            prompt,
+            ...(attachments.length ? { attachments } : {}),
+          });
+          log.info(
+            'Enqueued prompt from control payload:',
+            payload.promptId,
+            'for session:',
+            sessionId,
+            'attachments:',
+            attachments.length,
+          );
         }
       } catch (enqueueErr) {
         log.error('Failed to enqueue prompt from control payload:', enqueueErr);

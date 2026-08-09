@@ -39,22 +39,36 @@ export const remoteConnectionStatusAtomFamily = atomFamily((_sessionId: string) 
 );
 
 /**
- * A pending tool-permission prompt synced from the host (via session metadata),
- * so the controller can render the approve UI and answer it. Null when none.
- * SDK sessions surface permission prompts ONLY through this channel (they don't
- * write them into the transcript), so this is the controller's source of truth
- * for those.
+ * A pending interactive prompt synced from the host (via session metadata), so
+ * the controller can render the answer UI and respond. Null when none.
+ * SDK sessions surface permission requests and questions ONLY through this
+ * channel (they don't write them into the transcript), so this is the
+ * controller's source of truth for those.
+ *
+ * Mirrors SyncedPendingPromptData in main/services/ai/pendingPromptPersistence.ts.
  */
-export type RemotePendingPromptData = {
-  promptType: 'permission_request';
-  requestId: string;
-  toolName: string;
-  rawCommand: string;
-  pattern: string;
-  patternDisplayName: string;
-  isDestructive: boolean;
-  warnings: string[];
-} | null;
+export type RemotePendingPromptData =
+  | {
+      promptType: 'permission_request';
+      requestId: string;
+      toolName: string;
+      rawCommand: string;
+      pattern: string;
+      patternDisplayName: string;
+      isDestructive: boolean;
+      warnings: string[];
+    }
+  | {
+      promptType: 'ask_user_question';
+      questionId: string;
+      questions: Array<{
+        question: string;
+        header: string;
+        options: Array<{ label: string; description: string }>;
+        multiSelect: boolean;
+      }>;
+    }
+  | null;
 
 export const remotePendingPromptAtomFamily = atomFamily((_sessionId: string) =>
   atom<RemotePendingPromptData>(null),
@@ -128,6 +142,7 @@ export const applyRemoteIndexChangeAtom = atom(
           updatedAt: change.updatedAt ?? Date.now(),
           pendingExecution: change.pendingExecution,
           isExecuting: change.isExecuting,
+          hasPendingPrompt: change.hasPendingPrompt,
         },
         ...sessions,
       ]);
@@ -146,6 +161,9 @@ export const applyRemoteIndexChangeAtom = atom(
       updatedAt: change.updatedAt ?? prev.updatedAt,
       pendingExecution: 'pendingExecution' in change ? change.pendingExecution : prev.pendingExecution,
       isExecuting: change.isExecuting ?? prev.isExecuting,
+      // Explicit `false` must win: it is how the host says the prompt was
+      // answered, and `??` would keep the stale `true` forever.
+      hasPendingPrompt: 'hasPendingPrompt' in change ? change.hasPendingPrompt : prev.hasPendingPrompt,
     };
     set(remoteSessionsAtom, next);
     return false;

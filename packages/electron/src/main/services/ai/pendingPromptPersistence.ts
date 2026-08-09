@@ -17,11 +17,8 @@ import { AISessionsRepository } from '@nimbalyst/runtime';
 import { getSyncProvider } from '../SyncManager';
 import { logger } from '../../utils/logger';
 
-/**
- * Full tool-permission payload synced to remote devices so they can render the
- * approve UI and answer it (controller / mobile). Additive; other clients ignore it.
- */
-export interface SyncedPendingPromptData {
+/** A tool-permission prompt, with everything a remote device needs to answer it. */
+export interface SyncedPermissionPromptData {
   promptType: 'permission_request';
   requestId: string;
   toolName: string;
@@ -30,6 +27,55 @@ export interface SyncedPendingPromptData {
   patternDisplayName: string;
   isDestructive: boolean;
   warnings: string[];
+}
+
+/**
+ * An AskUserQuestion prompt. SDK sessions never write the question into the
+ * transcript, so without this a remote device only learns that *some* prompt is
+ * open and has no way to render or answer it.
+ */
+export interface SyncedQuestionPromptData {
+  promptType: 'ask_user_question';
+  questionId: string;
+  questions: Array<{
+    question: string;
+    header: string;
+    options: Array<{ label: string; description: string }>;
+    multiSelect: boolean;
+  }>;
+}
+
+/**
+ * Full prompt payload synced to remote devices so they can render the answer UI
+ * and respond (controller / mobile). Additive; other clients ignore it.
+ */
+export type SyncedPendingPromptData = SyncedPermissionPromptData | SyncedQuestionPromptData;
+
+/**
+ * Coerce a provider's loosely-typed question list into the synced shape.
+ *
+ * The emitter types `questions` as `any[]` (it is tool input), and the payload
+ * crosses a device boundary where a missing `options` array would render an
+ * unanswerable prompt — so every field is defaulted rather than trusted.
+ */
+export function normalizeSyncedQuestions(questions: unknown): SyncedQuestionPromptData['questions'] {
+  if (!Array.isArray(questions)) return [];
+  return questions.map((q) => {
+    const raw = (q ?? {}) as Record<string, unknown>;
+    const options = Array.isArray(raw.options) ? raw.options : [];
+    return {
+      question: typeof raw.question === 'string' ? raw.question : '',
+      header: typeof raw.header === 'string' ? raw.header : '',
+      options: options.map((o) => {
+        const opt = (o ?? {}) as Record<string, unknown>;
+        return {
+          label: typeof opt.label === 'string' ? opt.label : '',
+          description: typeof opt.description === 'string' ? opt.description : '',
+        };
+      }),
+      multiSelect: raw.multiSelect === true,
+    };
+  });
 }
 
 /**

@@ -40,6 +40,7 @@ import {
   respondToRemotePrompt,
   ensureRemoteSubscriptions,
   type RemotePromptResponse,
+  type RemotePromptImage,
 } from '../services/RemoteSessionService';
 
 export function registerRemoteSessionHandlers() {
@@ -101,16 +102,19 @@ export function registerRemoteSessionHandlers() {
     },
   );
 
-  safeHandle('remote-sessions:send-prompt', async (_event, payload: { sessionId: string; prompt: string }) => {
-    if (!payload?.sessionId) {
-      throw new Error('remote-sessions:send-prompt requires sessionId');
-    }
-    if (!payload?.prompt || !payload.prompt.trim()) {
-      throw new Error('remote-sessions:send-prompt requires a non-empty prompt');
-    }
-    const promptId = await sendRemotePrompt(payload.sessionId, payload.prompt);
-    return { success: true, promptId };
-  });
+  safeHandle(
+    'remote-sessions:send-prompt',
+    async (_event, payload: { sessionId: string; prompt: string; images?: RemotePromptImage[] }) => {
+      if (!payload?.sessionId) {
+        throw new Error('remote-sessions:send-prompt requires sessionId');
+      }
+      if (!payload?.prompt || !payload.prompt.trim()) {
+        throw new Error('remote-sessions:send-prompt requires a non-empty prompt');
+      }
+      const promptId = await sendRemotePrompt(payload.sessionId, payload.prompt, payload.images);
+      return { success: true, promptId };
+    },
+  );
 
   safeHandle(
     'remote-sessions:create',

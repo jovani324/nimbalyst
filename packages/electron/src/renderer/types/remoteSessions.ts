@@ -30,6 +30,8 @@ export interface RemoteSessionIndexEntry {
     sentBy: 'mobile' | 'desktop';
   };
   isExecuting?: boolean;
+  /** An interactive prompt (question, permission, plan) is waiting for an answer. */
+  hasPendingPrompt?: boolean;
 }
 
 /** A project as it appears in the decrypted index list. */
@@ -64,6 +66,7 @@ export interface RemoteIndexChangeEntry {
     sentBy: 'mobile' | 'desktop';
   };
   isExecuting?: boolean;
+  hasPendingPrompt?: boolean;
   lastReadAt?: number;
   queuedPromptCount?: number;
   draftInput?: string;
@@ -88,6 +91,17 @@ export type RemoteSessionChange =
   | { type: 'message_added'; message: RemoteAgentMessage }
   | { type: 'metadata_updated'; metadata: Record<string, unknown> }
   | { type: 'session_deleted' };
+
+/**
+ * An image the controller sends along with a prompt. The bytes travel to the
+ * host (base64, no `data:` prefix), which stages them as real attachments —
+ * a filepath would be meaningless across machines.
+ */
+export interface RemotePromptImage {
+  name: string;
+  mimeType: string;
+  data: string;
+}
 
 /** Response to a create-session request. */
 export interface RemoteCreateResponse {
