@@ -130,7 +130,7 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
 
   // Organization for the active project — feeds the popover's Organization and
   // Messages rows.
-  const projectOrg = useProjectOrg(workspacePath);
+  const { org: projectOrg, loading: projectOrgLoading } = useProjectOrg(workspacePath);
   const projectOrgUnread = useAtomValue(
     orgInboxUnreadCountAtomFamily(projectOrg?.orgId ?? ''),
   );
@@ -543,6 +543,7 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
             <AccountInspectorPopover
               accounts={accounts}
               projectOrg={projectOrg}
+              projectOrgLoading={projectOrgLoading}
               anchorEl={userMenuButtonRef.current}
               onClose={() => setUserMenuOpen(false)}
               onOpenAccount={() => {
