@@ -1,0 +1,254 @@
+/**
+ * Popover styling.
+ *
+ * Sized for an Alt+Space panel, not a window: a fixed narrow column with the
+ * transcript as the only scrolling region. Colors follow the system scheme so
+ * the popover matches the desktop it floats over.
+ */
+:root {
+  --controller-bg: #ffffff;
+  --controller-fg: #1c1c1e;
+  --controller-muted: #6b6b70;
+  --controller-border: #e2e2e5;
+  --controller-accent: #2f6feb;
+  --controller-error: #c0392b;
+  --controller-surface: #f6f6f7;
+
+  color-scheme: light dark;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --controller-bg: #1e1e20;
+    --controller-fg: #f2f2f4;
+    --controller-muted: #9a9aa0;
+    --controller-border: #34343a;
+    --controller-accent: #5b8cf5;
+    --controller-error: #ff6b5e;
+    --controller-surface: #27272b;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--controller-bg);
+  color: var(--controller-fg);
+}
+
+#controller-root {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ---- shared ---- */
+.controller-muted {
+  padding: 12px;
+  color: var(--controller-muted);
+}
+
+.controller-error {
+  margin: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--controller-error) 12%, transparent);
+  color: var(--controller-error);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: 1px solid var(--controller-border);
+  border-radius: 6px;
+  background: var(--controller-surface);
+  padding: 5px 10px;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+textarea,
+input {
+  font: inherit;
+  color: inherit;
+  background: var(--controller-bg);
+  border: 1px solid var(--controller-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+/* ---- pairing ---- */
+.controller-pair {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  height: 100%;
+}
+
+.controller-pair-title {
+  margin: 0;
+  font-size: 15px;
+}
+
+.controller-pair-hint {
+  margin: 0;
+  color: var(--controller-muted);
+  line-height: 1.4;
+}
+
+.controller-pair-input {
+  flex: 1;
+  resize: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.controller-pair-error {
+  color: var(--controller-error);
+  line-height: 1.4;
+}
+
+/* ---- session list ---- */
+.controller-list {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.controller-list-header {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--controller-border);
+}
+
+.controller-list-search {
+  flex: 1;
+}
+
+.controller-list-items {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+}
+
+.controller-list-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 7px 8px;
+  border-radius: 6px;
+}
+
+.controller-list-item:hover {
+  background: var(--controller-surface);
+}
+
+.controller-list-item-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.controller-list-item-meta {
+  flex-shrink: 0;
+  color: var(--controller-muted);
+  font-size: 11px;
+}
+
+.controller-unpair {
+  margin: 8px;
+  border: none;
+  background: transparent;
+  color: var(--controller-muted);
+}
+
+/* ---- session ---- */
+.controller-session {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.controller-session-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid var(--controller-border);
+}
+
+.controller-session-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.controller-transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+  user-select: text;
+}
+
+.controller-msg {
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  border-radius: 6px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.controller-msg-user_message {
+  background: var(--controller-surface);
+}
+
+.controller-msg-tool {
+  color: var(--controller-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.controller-composer {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--controller-border);
+}
+
+.controller-composer-input {
+  flex: 1;
+  resize: none;
+}
+
+.controller-composer-send {
+  align-self: flex-end;
+  background: var(--controller-accent);
+  border-color: var(--controller-accent);
+  color: #fff;
+}

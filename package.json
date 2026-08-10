@@ -109,6 +109,7 @@
     "packages/collab-adapters",
     "packages/ios",
     "packages/android",
+    "packages/controller",
     "packages/extension-sdk",
     "packages/extensions/*",
     "packages/marketplace"
