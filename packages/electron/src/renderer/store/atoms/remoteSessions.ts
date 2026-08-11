@@ -74,12 +74,36 @@ export const remotePendingPromptAtomFamily = atomFamily((_sessionId: string) =>
   atom<RemotePendingPromptData>(null),
 );
 
+/**
+ * Store a pending prompt, but ONLY when it differs from the one already held.
+ *
+ * An unanswered prompt is re-delivered on every sync_response: the host's client
+ * metadata still carries it and CollabV3Sync replays it so a device that joined
+ * after the prompt was raised still sees it. The transcript view polls resync
+ * every 4s, so an unanswered question re-arrives — freshly parsed, identical in
+ * content, new object identity — every 4 seconds. Storing it unconditionally
+ * re-rendered the whole transcript pane on that interval and rebuilt the answer
+ * widget while the user was reading it.
+ */
 export const setRemotePendingPromptAtom = atom(
   null,
   (get, set, payload: { sessionId: string; data: RemotePendingPromptData }) => {
-    set(remotePendingPromptAtomFamily(payload.sessionId), payload.data);
+    const target = remotePendingPromptAtomFamily(payload.sessionId);
+    if (samePendingPrompt(get(target), payload.data)) return;
+    set(target, payload.data);
   },
 );
+
+/**
+ * Structural equality for a pending prompt. Both sides are plain JSON decoded
+ * from the same producer, so field order is stable and stringify is a faithful
+ * (and cheap) comparison for payloads this small.
+ */
+function samePendingPrompt(a: RemotePendingPromptData, b: RemotePendingPromptData): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 // === Derived selectors ===
 

@@ -3,9 +3,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   applyRemoteIndexChangeAtom,
+  remotePendingPromptAtomFamily,
   remoteSessionsAtom,
   remoteSessionsByProjectAtom,
   setRemoteIndexAtom,
+  setRemotePendingPromptAtom,
+  type RemotePendingPromptData,
 } from '../remoteSessions';
 import type {
   RemoteIndexChangeEntry,
@@ -76,5 +79,59 @@ describe('remote index self-heal', () => {
     groups = store.get(remoteSessionsByProjectAtom);
     expect(groups.has('')).toBe(false);
     expect(groups.get('/repo/app')?.map((s) => s.sessionId).sort()).toEqual(['s1', 's2']);
+  });
+});
+
+/**
+ * An unanswered prompt is re-delivered on EVERY sync_response, because the
+ * host's client metadata still carries it and CollabV3Sync replays it to the
+ * listeners (so a device that joined late still sees it). The transcript view
+ * polls resync on a 4s interval, so a freshly-parsed — but identical — payload
+ * lands every 4 seconds for as long as the question goes unanswered. Storing it
+ * unconditionally re-renders the whole transcript pane on that interval and
+ * rebuilds the answer widget under the user's cursor. Only a real change may
+ * reach the atom.
+ */
+describe('pending prompt churn', () => {
+  const question = (): RemotePendingPromptData => ({
+    promptType: 'ask_user_question',
+    questionId: 'q1',
+    questions: [
+      {
+        question: 'Which approach?',
+        header: 'Approach',
+        options: [
+          { label: 'Rewrite', description: 'Start over' },
+          { label: 'Patch', description: 'Minimal change' },
+        ],
+        multiSelect: false,
+      },
+    ],
+  });
+
+  it('ignores a re-delivery of the identical prompt', () => {
+    const store = createStore();
+    const atom = remotePendingPromptAtomFamily('s1');
+
+    store.set(setRemotePendingPromptAtom, { sessionId: 's1', data: question() });
+    const first = store.get(atom);
+
+    // Same prompt, freshly parsed off the wire — must not become a new value.
+    store.set(setRemotePendingPromptAtom, { sessionId: 's1', data: question() });
+    expect(store.get(atom)).toBe(first);
+  });
+
+  it('still applies a changed prompt and a clear', () => {
+    const store = createStore();
+    const atom = remotePendingPromptAtomFamily('s2');
+
+    store.set(setRemotePendingPromptAtom, { sessionId: 's2', data: question() });
+    const asked = { ...question(), questionId: 'q2' } as RemotePendingPromptData;
+    store.set(setRemotePendingPromptAtom, { sessionId: 's2', data: asked });
+    expect(store.get(atom)).toEqual(asked);
+
+    // Answering clears it — `null` must win over the stored object.
+    store.set(setRemotePendingPromptAtom, { sessionId: 's2', data: null });
+    expect(store.get(atom)).toBeNull();
   });
 });

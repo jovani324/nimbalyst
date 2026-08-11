@@ -413,9 +413,17 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
         />
       </div>
 
-      {/* Pending interactive prompt */}
+      {/* Pending interactive prompt. InteractivePromptWidget is sized for the
+          desktop's full-height transcript pane; a question with several options
+          and long descriptions is taller than the whole controller popover. Cap
+          it and scroll inside, so it can never squeeze the transcript above it
+          out of existence. */}
       {pendingPrompt && (
-        <div className="px-4 py-2 border-t shrink-0" style={{ borderColor: 'var(--nim-border)' }}>
+        <div
+          className="remote-session-pending-prompt px-4 py-2 border-t shrink-0 max-h-[45%] overflow-y-auto"
+          style={{ borderColor: 'var(--nim-border)' }}
+          data-testid="remote-session-pending-prompt"
+        >
           <InteractivePromptWidget
             promptType={pendingPrompt.promptType}
             content={pendingPrompt.content}

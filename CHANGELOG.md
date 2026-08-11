@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
-- Questions the agent asks now reach controller mode and can be answered there, including ones raised before you opened the session.
+- Questions the agent asks now reach controller mode and can be answered there, including ones raised before you opened the session, without stuttering or crowding the transcript off screen.
 - Pairing payloads now point at the sync server this app is actually connected to, so pairing a device against a self-hosted relay no longer fails to connect.
 
 ### Removed
