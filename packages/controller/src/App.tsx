@@ -11,7 +11,8 @@ import { projectRawMessagesToViewMessages } from '@nimbalyst/runtime/ai/server/t
 import type { RawMessage } from '@nimbalyst/runtime/ai/server/transcript/TranscriptTransformer';
 import type { TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/transcript/TranscriptProjector';
 
-import { deriveEncryptionKey } from './relay/crypto';
+import { deriveEncryptionKey, INSECURE_CONTEXT_MESSAGE, isCryptoAvailable } from './relay/crypto';
+import { groupByProject } from './projectGroups';
 import { RelayClient, type RelayMessage, type RelaySession, type SessionHandle } from './relay/relayClient';
 import {
   clearConfig,
@@ -51,6 +52,10 @@ function PairScreen({ onPaired }: { onPaired: (c: ControllerConfig) => void }) {
   }, [text, relayEdited]);
 
   const submit = () => {
+    if (!isCryptoAvailable()) {
+      setError(INSECURE_CONTEXT_MESSAGE);
+      return;
+    }
     try {
       const config = parsePairingPayload(text, { relayUrl });
       saveConfig(config);
@@ -120,11 +125,19 @@ function SessionList({
   onUnpair: () => void;
 }) {
   const [query, setQuery] = useState('');
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return sessions;
-    return sessions.filter((s) => (s.title ?? s.sessionId).toLowerCase().includes(q));
+    return sessions.filter((s) =>
+      `${s.title ?? s.sessionId} ${s.projectPath ?? ''}`.toLowerCase().includes(q)
+    );
   }, [sessions, query]);
+
+  // Every enabled project shares one index room, so without this the list reads
+  // as a single flat workspace no matter how many projects are syncing.
+  const groups = useMemo(() => groupByProject(filtered), [filtered]);
 
   return (
     <div className="controller-list">
@@ -149,18 +162,44 @@ function SessionList({
         </div>
       )}
 
-      <ul className="controller-list-items">
-        {filtered.map((s) => (
-          <li key={s.sessionId}>
-            <button className="controller-list-item" onClick={() => onOpen(s)}>
-              <span className="controller-list-item-title">
-                {s.title ?? <em>untitled — check the seed</em>}
+      {groups.map((group) => {
+        const isCollapsed = collapsed.has(group.key);
+        return (
+          <section className="controller-project-group" key={group.key}>
+            <button
+              className="controller-project-header"
+              onClick={() =>
+                setCollapsed((prev) => {
+                  const next = new Set(prev);
+                  if (!next.delete(group.key)) next.add(group.key);
+                  return next;
+                })
+              }
+              aria-expanded={!isCollapsed}
+            >
+              <span className="controller-project-caret">{isCollapsed ? '▸' : '▾'}</span>
+              <span className="controller-project-name" title={group.path ?? undefined}>
+                {group.label}
               </span>
-              <span className="controller-list-item-meta">{s.provider ?? 'unknown'}</span>
+              <span className="controller-project-count">{group.sessions.length}</span>
             </button>
-          </li>
-        ))}
-      </ul>
+            {!isCollapsed && (
+              <ul className="controller-list-items">
+                {group.sessions.map((s) => (
+                  <li key={s.sessionId}>
+                    <button className="controller-list-item" onClick={() => onOpen(s)}>
+                      <span className="controller-list-item-title">
+                        {s.title ?? <em>untitled — check the seed</em>}
+                      </span>
+                      <span className="controller-list-item-meta">{s.provider ?? 'unknown'}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        );
+      })}
 
       <button className="controller-unpair" onClick={onUnpair}>
         Unpair
@@ -321,6 +360,10 @@ export function App() {
 
   const refresh = useCallback(async () => {
     if (!client || !config) return;
+    if (!isCryptoAvailable()) {
+      setError(INSECURE_CONTEXT_MESSAGE);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {

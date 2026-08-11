@@ -30,6 +30,20 @@ function b64ToU8(b64: string): Uint8Array<ArrayBuffer> {
   return u8;
 }
 
+/**
+ * Web Crypto is exposed only in a secure context, so serving this app over
+ * plain `http://<lan-or-tailnet-ip>` leaves `crypto.subtle` undefined and every
+ * call below dies on "Cannot read properties of undefined". Callers check this
+ * first and say so, rather than surfacing that as a pairing failure.
+ */
+export function isCryptoAvailable(): boolean {
+  return typeof globalThis.crypto?.subtle !== 'undefined';
+}
+
+export const INSECURE_CONTEXT_MESSAGE =
+  'This page needs a secure context for encryption, and is being served over plain http. ' +
+  'Open it on localhost, or over https (Tailscale Serve gives you an https URL for the same server).';
+
 /** The salt is the personal user id -- a team member id here decrypts nothing. */
 export async function deriveEncryptionKey(seed: string, personalUserId: string): Promise<CryptoKey> {
   const material = await crypto.subtle.importKey('raw', enc.encode(seed), 'PBKDF2', false, [

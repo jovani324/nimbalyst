@@ -33,6 +33,12 @@ export interface RelaySession {
   provider: string | null;
   messageCount: number;
   updatedAt: number | null;
+  /**
+   * The host's workspace path for this session, decrypted. Null when there is
+   * no key or the entry predates it. Sessions from every enabled project land
+   * in one index room, so this is the only thing that tells them apart.
+   */
+  projectPath: string | null;
 }
 
 /**
@@ -280,22 +286,27 @@ export class RelayClient {
     ws.send(JSON.stringify({ type: 'indexSyncRequest' }));
     const snapshot = await pending;
 
+    const decryptField = async (
+      ciphertext: string | undefined,
+      iv: string | undefined
+    ): Promise<string | null> => {
+      if (!key || !ciphertext || !iv) return null;
+      try {
+        return await decrypt(ciphertext, iv, key);
+      } catch {
+        return null;
+      }
+    };
+
     const sessions: RelaySession[] = [];
     for (const entry of snapshot.sessions ?? []) {
-      let title: string | null = null;
-      if (key && entry.encryptedTitle && entry.titleIv) {
-        try {
-          title = await decrypt(entry.encryptedTitle, entry.titleIv, key);
-        } catch {
-          title = null;
-        }
-      }
       sessions.push({
         sessionId: entry.sessionId,
-        title,
+        title: await decryptField(entry.encryptedTitle, entry.titleIv),
         provider: entry.provider ?? null,
         messageCount: entry.messageCount ?? 0,
         updatedAt: entry.updatedAt ?? null,
+        projectPath: await decryptField(entry.encryptedProjectId, entry.projectIdIv),
       });
     }
     return { sessions, projects: snapshot.projects ?? [] };

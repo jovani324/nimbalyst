@@ -115,6 +115,48 @@ input {
   font-size: 11px;
 }
 
+.controller-project-group {
+  display: block;
+}
+
+.controller-project-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  background: none;
+  border: 0;
+  border-top: 1px solid var(--controller-border);
+  color: var(--controller-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  text-align: left;
+}
+
+.controller-project-header:hover {
+  color: var(--controller-fg);
+}
+
+.controller-project-caret {
+  width: 10px;
+  flex: none;
+}
+
+.controller-project-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.controller-project-count {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
 .controller-pair-relay-label {
   margin-top: 2px;
   color: var(--controller-muted);

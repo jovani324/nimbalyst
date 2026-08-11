@@ -32,6 +32,13 @@ export default defineConfig({
     },
   },
   base: './',
-  server: { port: 5275 },
+  server: {
+    port: 5275,
+    // Web Crypto only exists in a secure context, so reaching this dev server
+    // from another machine over plain http://<ip> makes pairing fail on
+    // `crypto.subtle` being undefined. Tailscale's HTTPS proxy fixes that, and
+    // Vite must accept its Host header for the proxy to reach us.
+    allowedHosts: ['.ts.net'],
+  },
   build: { outDir: 'dist', emptyOutDir: true },
 });
