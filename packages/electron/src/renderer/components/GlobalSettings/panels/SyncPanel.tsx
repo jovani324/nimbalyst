@@ -90,6 +90,26 @@ export function SyncPanel({ section }: { section: PersonalSyncSection }) {
   const currentEnvironment = effectiveEnvironment || 'production';
   const effectiveServerUrl = currentEnvironment === 'development' ? DEVELOPMENT_SYNC_URL : PRODUCTION_SYNC_URL;
 
+  // The URL above is re-derived from the environment setting and so misses both
+  // NIMBALYST_SYNC_URL and a custom config.serverUrl. That is fine for the
+  // enabled/disabled gating it drives, but a pairing payload carrying it sends
+  // the paired device to a relay this app is not connected to -- so ask main.
+  const [pairingServerUrl, setPairingServerUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    window.electronAPI
+      .invoke('sync:get-effective-server-url')
+      .then((url: string) => {
+        if (!cancelled && typeof url === 'string' && url) setPairingServerUrl(url);
+      })
+      .catch(() => {
+        /* fall back to the derived URL */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const [projects, setProjects] = useState<Project[]>([]);
   const [showQRModal, setShowQRModal] = useState(false);
   const [pairError, setPairError] = useState<string | null>(null);
@@ -1106,7 +1126,7 @@ export function SyncPanel({ section }: { section: PersonalSyncSection }) {
       <QRPairingModal
         isOpen={section !== 'accounts' && section !== 'devices' && showQRModal}
         onClose={() => setShowQRModal(false)}
-        serverUrl={effectiveServerUrl}
+        serverUrl={pairingServerUrl ?? effectiveServerUrl}
         preventSleepMode={config.preventSleepMode ?? (config.preventSleepWhenSyncing ? 'always' : 'off')}
         onPreventSleepModeChange={(mode) => {
           updateConfig({ preventSleepMode: mode, preventSleepWhenSyncing: undefined });

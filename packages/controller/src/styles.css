@@ -115,6 +115,19 @@ input {
   font-size: 11px;
 }
 
+.controller-pair-relay-label {
+  margin-top: 2px;
+  color: var(--controller-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.controller-pair-relay-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
 .controller-pair-error {
   color: var(--controller-error);
   line-height: 1.4;

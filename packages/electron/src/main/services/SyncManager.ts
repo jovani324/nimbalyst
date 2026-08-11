@@ -23,6 +23,7 @@ import { logger } from '../utils/logger';
 import { getCredentials } from './CredentialService';
 import { getStytchUserId, isAuthenticated, getPersonalOrgId, getPersonalUserId, resolvePersonalUserId, getPersonalSessionJwt, refreshPersonalSessionDetailed } from './StytchAuthService';
 import { describePersonalJwtFailure, type PersonalRefreshFailureReason } from './auth/personalJwtFailure';
+import { PRODUCTION_SYNC_URL, resolveSyncServerUrl } from './sync/resolveSyncServerUrl';
 import { app } from 'electron';
 import * as os from 'os';
 import { getProjectFileSyncService } from './ProjectFileSyncService';
@@ -351,29 +352,9 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
   setSleepPreventionMode(resolvePreventSleepMode(config));
 
   // Determine server URL based on environment setting
-  const PRODUCTION_SYNC_URL = 'wss://sync.nimbalyst.com';
-  const DEVELOPMENT_SYNC_URL = 'ws://localhost:8790';
-
-  // Only honor the environment config in dev builds - production builds always use production sync
   const isDevelopmentBuild = process.env.NODE_ENV !== 'production';
   const effectiveEnvironment = isDevelopmentBuild ? config.environment : undefined;
-
-  // Derive server URL from environment - don't rely on persisted serverUrl as it may be stale
-  // (e.g., user switched from dev to production but old localhost URL was persisted)
-  let serverUrl: string;
-  const envSyncUrl = process.env.NIMBALYST_SYNC_URL;
-  const customSyncUrl = config.serverUrl;
-  if (envSyncUrl && /^wss?:\/\//.test(envSyncUrl)) {
-    // Self-hosted personal-lane relay (private-sync-plan): env override wins.
-    serverUrl = envSyncUrl;
-  } else if (customSyncUrl && /^wss?:\/\//.test(customSyncUrl) && customSyncUrl !== PRODUCTION_SYNC_URL) {
-    // Explicit non-default serverUrl in the sync config also redirects sync.
-    serverUrl = customSyncUrl;
-  } else if (effectiveEnvironment === 'development') {
-    serverUrl = DEVELOPMENT_SYNC_URL;
-  } else {
-    serverUrl = PRODUCTION_SYNC_URL;
-  }
+  const serverUrl = getEffectiveSyncServerUrl();
   logger.main.info(`[SyncManager] isDevelopmentBuild=${isDevelopmentBuild}, effectiveEnvironment=${effectiveEnvironment}, serverUrl=${serverUrl}`);
 
   // Require Stytch authentication for sync
@@ -1002,6 +983,20 @@ export function isSyncProviderReady(): boolean {
 }
 
 /**
+ * The relay this app actually syncs to. The pairing payload must advertise this
+ * and not a URL re-derived from the environment setting -- see resolveSyncServerUrl.
+ */
+export function getEffectiveSyncServerUrl(): string {
+  const config = state.config ?? getSessionSyncConfig();
+  return resolveSyncServerUrl({
+    configuredUrl: config?.serverUrl,
+    environment: config?.environment,
+    envUrl: process.env.NIMBALYST_SYNC_URL,
+    isDevelopmentBuild: process.env.NODE_ENV !== 'production',
+  });
+}
+
+/**
  * Get the personal document sync config for the renderer.
  * Used by TabEditor to connect .md files to PersonalDocumentRooms.
  *
@@ -1019,15 +1014,7 @@ export function getPersonalDocSyncConfig(): {
   const personalUserId = state.config.personalUserId || getPersonalUserId() || getStytchUserId();
   if (!personalOrgId || !personalUserId) return null;
 
-  const isDev = process.env.NODE_ENV !== 'production';
-  const env = isDev ? state.config.environment : undefined;
-  const envSyncUrl = process.env.NIMBALYST_SYNC_URL;
-  const customSyncUrl = state.config.serverUrl;
-  const serverUrl =
-    envSyncUrl && /^wss?:\/\//.test(envSyncUrl) ? envSyncUrl
-    : customSyncUrl && /^wss?:\/\//.test(customSyncUrl) && customSyncUrl !== 'wss://sync.nimbalyst.com' ? customSyncUrl
-    : env === 'development' ? 'ws://localhost:8790'
-    : 'wss://sync.nimbalyst.com';
+  const serverUrl = getEffectiveSyncServerUrl();
 
   return {
     serverUrl,

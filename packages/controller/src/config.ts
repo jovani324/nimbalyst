@@ -31,20 +31,48 @@ export interface PairingPayload {
 /** 32 bytes of base64 is 43+ chars; the host enforces the same floor. */
 const MIN_SEED_LENGTH = 43;
 
-/**
- * Parse the raw JSON payload or a `nimbalyst://pair?data=<base64>` deep link.
- * Throws with a message meant to be shown in the UI.
- */
-export function parsePairingPayload(text: string): ControllerConfig {
+/** Decode the payload without validating it. Returns null on anything unparseable. */
+function decodePairingPayload(text: string): PairingPayload | null {
   const trimmed = text.trim();
-  if (!trimmed) throw new Error('Paste the pairing payload from the host first.');
-
-  let payload: PairingPayload;
+  if (!trimmed) return null;
   try {
     const link = trimmed.match(/[?&]data=([^&\s]+)/);
     const json = link ? atob(decodeURIComponent(link[1])) : trimmed;
-    payload = JSON.parse(json);
+    const parsed = JSON.parse(json);
+    return parsed && typeof parsed === 'object' ? (parsed as PairingPayload) : null;
   } catch {
+    return null;
+  }
+}
+
+/**
+ * The relay URL a payload advertises, for prefilling the override field while
+ * the user is still typing. Never throws -- a half-pasted payload is normal.
+ */
+export function peekRelayUrl(text: string): string | null {
+  const url = decodePairingPayload(text)?.serverUrl?.trim();
+  return url && /^wss?:\/\//.test(url) ? url : null;
+}
+
+/**
+ * Parse the raw JSON payload or a `nimbalyst://pair?data=<base64>` deep link.
+ * Throws with a message meant to be shown in the UI.
+ *
+ * `overrides.relayUrl` wins over the payload's `serverUrl`. That matters because
+ * the host advertises a URL derived from its *environment* setting, not from the
+ * relay it is actually connected to -- a host run against a self-hosted relay
+ * still hands out `wss://sync.nimbalyst.com`, which rejects the controller with
+ * a 401. Overriding here beats making the payload unusable.
+ */
+export function parsePairingPayload(
+  text: string,
+  overrides: { relayUrl?: string } = {}
+): ControllerConfig {
+  const trimmed = text.trim();
+  if (!trimmed) throw new Error('Paste the pairing payload from the host first.');
+
+  const payload = decodePairingPayload(trimmed);
+  if (!payload) {
     throw new Error(
       'That does not look like a pairing payload. Use the host’s Settings → Sync → Copy payload button.'
     );
@@ -71,9 +99,9 @@ export function parsePairingPayload(text: string): ControllerConfig {
     );
   }
 
-  const relayUrl = payload.serverUrl?.trim();
+  const relayUrl = overrides.relayUrl?.trim() || payload.serverUrl?.trim();
   if (!relayUrl || !/^wss?:\/\//.test(relayUrl)) {
-    throw new Error(`Payload has no usable relay URL (got ${relayUrl || 'nothing'}).`);
+    throw new Error(`Relay URL is missing or not a ws:// or wss:// URL (got ${relayUrl || 'nothing'}).`);
   }
 
   return {

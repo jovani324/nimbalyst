@@ -171,6 +171,38 @@ export class RelayClient {
     return `${this.relayUrl}/sync/${roomId}?token=${encodeURIComponent(this.token)}&platform=standalone&version=1`;
   }
 
+  /**
+   * Why the socket failed, in words the pairing screen can act on.
+   *
+   * `ws.onerror` carries no detail, and a cross-origin `fetch` cannot read the
+   * relay's status either -- a 401 and a dead host both surface as "Failed to
+   * fetch". A `no-cors` request does distinguish them: it resolves opaque when
+   * something answered and rejects when nothing did. That is the one bit of
+   * information available here, so report exactly that bit and no more.
+   */
+  private async explainFailure(): Promise<string> {
+    const httpUrl = this.relayUrl.replace(/^ws/, 'http');
+    let reachable = false;
+    try {
+      await fetch(`${httpUrl}/`, { method: 'GET', mode: 'no-cors' });
+      reachable = true;
+    } catch {
+      reachable = false;
+    }
+    if (reachable) {
+      return (
+        `${this.relayUrl} answered but refused the connection. ` +
+        'Production sync (wss://sync.nimbalyst.com) rejects the controller because it ' +
+        'requires a signed sign-in token; a self-hosted relay does not. If the host is ' +
+        'on a self-hosted relay, correct the Relay URL and pair again.'
+      );
+    }
+    return (
+      `Cannot reach ${this.relayUrl}. Check the URL, that the relay is running, ` +
+      'and that you are on the same network or VPN as the host.'
+    );
+  }
+
   private open(roomId: string, timeoutMs = 10000): Promise<WebSocket> {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(this.url(roomId));
@@ -186,12 +218,12 @@ export class RelayClient {
         clearTimeout(timer);
         resolve(ws);
       };
-      // A rejected upgrade surfaces here with no detail -- the relay destroys
-      // the socket rather than replying. Distinguish "auth refused" from
-      // "unreachable" via the relay log, not this event.
       ws.onerror = () => {
         clearTimeout(timer);
-        reject(new Error(`relay refused or unreachable: ${roomId}`));
+        this.explainFailure().then(
+          (why) => reject(new Error(why)),
+          () => reject(new Error(`relay refused or unreachable: ${this.relayUrl}`))
+        );
       };
     });
   }

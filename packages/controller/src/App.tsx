@@ -13,7 +13,14 @@ import type { TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/transcr
 
 import { deriveEncryptionKey } from './relay/crypto';
 import { RelayClient, type RelayMessage, type RelaySession, type SessionHandle } from './relay/relayClient';
-import { clearConfig, loadConfig, parsePairingPayload, saveConfig, type ControllerConfig } from './config';
+import {
+  clearConfig,
+  loadConfig,
+  parsePairingPayload,
+  peekRelayUrl,
+  saveConfig,
+  type ControllerConfig,
+} from './config';
 
 /** Turn relay messages into the raw shape the host's own projector expects. */
 function toRawMessages(messages: RelayMessage[], sessionId: string): RawMessage[] {
@@ -31,11 +38,21 @@ function toRawMessages(messages: RelayMessage[], sessionId: string): RawMessage[
 
 function PairScreen({ onPaired }: { onPaired: (c: ControllerConfig) => void }) {
   const [text, setText] = useState('');
+  const [relayUrl, setRelayUrl] = useState('');
+  const [relayEdited, setRelayEdited] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Prefill from the payload, but never clobber a hand-typed value -- overriding
+  // what the host advertised is the entire point of the field.
+  useEffect(() => {
+    if (relayEdited) return;
+    const advertised = peekRelayUrl(text);
+    if (advertised) setRelayUrl(advertised);
+  }, [text, relayEdited]);
 
   const submit = () => {
     try {
-      const config = parsePairingPayload(text);
+      const config = parsePairingPayload(text, { relayUrl });
       saveConfig(config);
       onPaired(config);
     } catch (err) {
@@ -60,6 +77,25 @@ function PairScreen({ onPaired }: { onPaired: (c: ControllerConfig) => void }) {
         spellCheck={false}
         autoFocus
       />
+      <label className="controller-pair-relay-label" htmlFor="controller-relay-url">
+        Relay URL
+      </label>
+      <input
+        id="controller-relay-url"
+        className="controller-pair-relay-input"
+        value={relayUrl}
+        onChange={(e) => {
+          setRelayEdited(true);
+          setRelayUrl(e.target.value);
+          setError(null);
+        }}
+        placeholder="wss://…"
+        spellCheck={false}
+      />
+      <p className="controller-pair-hint">
+        Prefilled from the payload. A host running against a self-hosted relay still advertises the
+        production URL, which rejects the controller — correct it here.
+      </p>
       {error && <div className="controller-pair-error">{error}</div>}
       <button className="controller-pair-submit" onClick={submit} disabled={!text.trim()}>
         Pair

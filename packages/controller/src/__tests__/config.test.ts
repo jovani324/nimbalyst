@@ -10,7 +10,7 @@
  * sends you debugging the relay instead of the input.
  */
 import { describe, expect, it } from 'vitest';
-import { parsePairingPayload } from '../config';
+import { parsePairingPayload, peekRelayUrl } from '../config';
 
 const SEED = 'A'.repeat(44);
 
@@ -57,6 +57,42 @@ describe('parsePairingPayload', () => {
 
   it('rejects a payload with no usable relay URL', () => {
     const { serverUrl, ...noUrl } = validPayload;
-    expect(() => parsePairingPayload(JSON.stringify(noUrl))).toThrow(/no usable relay URL/);
+    expect(() => parsePairingPayload(JSON.stringify(noUrl))).toThrow(/Relay URL is missing/);
+  });
+
+  // A host synced to a self-hosted relay still advertises wss://sync.nimbalyst.com,
+  // which answers the controller's unsigned token with a 401. The override is the
+  // only thing that makes such a payload usable.
+  it('lets an override replace the relay URL the host advertised', () => {
+    const advertisingProd = { ...validPayload, serverUrl: 'wss://sync.nimbalyst.com' };
+    const config = parsePairingPayload(JSON.stringify(advertisingProd), {
+      relayUrl: 'wss://relay.moasfar.app',
+    });
+    expect(config.relayUrl).toBe('wss://relay.moasfar.app');
+    expect(config.seed).toBe(SEED);
+  });
+
+  it('accepts an override when the payload carries no URL at all', () => {
+    const { serverUrl, ...noUrl } = validPayload;
+    expect(
+      parsePairingPayload(JSON.stringify(noUrl), { relayUrl: 'wss://relay.moasfar.app' }).relayUrl
+    ).toBe('wss://relay.moasfar.app');
+  });
+
+  it('ignores a blank override rather than treating it as a URL', () => {
+    expect(parsePairingPayload(JSON.stringify(validPayload), { relayUrl: '  ' }).relayUrl).toBe(
+      'wss://relay.example.app'
+    );
+  });
+});
+
+describe('peekRelayUrl', () => {
+  it('reads the advertised URL for prefilling', () => {
+    expect(peekRelayUrl(JSON.stringify(validPayload))).toBe('wss://relay.example.app');
+  });
+
+  it('returns null while the payload is still half-typed', () => {
+    expect(peekRelayUrl('{"version":5,"serv')).toBeNull();
+    expect(peekRelayUrl('')).toBeNull();
   });
 });

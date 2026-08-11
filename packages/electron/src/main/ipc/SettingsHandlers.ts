@@ -53,6 +53,7 @@ import { autoUpdaterService } from '../services/autoUpdater';
 import type { OnboardingState } from '../utils/store';
 import { getCredentials, resetCredentials, generateQRPairingPayload, isUsingSecureStorage, importCredentials, type ImportedPairingPayload } from '../services/CredentialService';
 import {
+    getEffectiveSyncServerUrl,
     isSyncProviderReady,
     onSyncStatusChange,
     triggerIncrementalSync,
@@ -1030,6 +1031,12 @@ export function registerSettingsHandlers() {
     // URL and personal-org JWT. The stored config intentionally omits serverUrl
     // when production is selected, and a team JWT targets a different member.
     safeHandle('sync:get-devices', listPersonalSyncDevices);
+
+    // The relay this app is actually connected to. The pairing payload must
+    // carry this, not a URL the renderer re-derives from the environment
+    // setting -- a self-hosted host otherwise advertises production sync and
+    // the paired device is refused.
+    safeHandle('sync:get-effective-server-url', async () => getEffectiveSyncServerUrl());
 
     // Get sync status for the navigation gutter button
     safeHandle('sync:get-status', async (_event, workspacePath?: string) => {
