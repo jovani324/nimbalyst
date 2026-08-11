@@ -21,9 +21,9 @@ import * as syncModule from '@nimbalyst/runtime/sync';
 import { getSessionSyncConfig, setSessionSyncConfig, getReleaseChannel, getDefaultAIModel, getAlphaFeatures, getPreferredAgentLanguage, getAttachmentStagingConfig, isControllerMode, store, type SessionSyncConfig } from '../utils/store';
 import { logger } from '../utils/logger';
 import { getCredentials } from './CredentialService';
-import { getStytchUserId, isAuthenticated, getPersonalOrgId, getPersonalUserId, resolvePersonalUserId, getPersonalSessionJwt, refreshPersonalSessionDetailed } from './StytchAuthService';
+import { getStytchUserId, isAuthenticated, getPersonalOrgId, getPersonalUserId, resolvePersonalUserId, getPersonalSessionJwt, refreshPersonalSessionDetailed, refreshSession } from './StytchAuthService';
 import { describePersonalJwtFailure, type PersonalRefreshFailureReason } from './auth/personalJwtFailure';
-import { PRODUCTION_SYNC_URL, resolveSyncServerUrl } from './sync/resolveSyncServerUrl';
+import { PRODUCTION_SYNC_URL, resolveSyncServerUrl, shouldKeepStytchSessionAlive } from './sync/resolveSyncServerUrl';
 import { app } from 'electron';
 import * as os from 'os';
 import { getProjectFileSyncService } from './ProjectFileSyncService';
@@ -604,16 +604,18 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
     // Refresh every 30 minutes to keep the session token valid.
     if (state.sessionKeepAliveInterval) {
       clearInterval(state.sessionKeepAliveInterval);
+      state.sessionKeepAliveInterval = null;
     }
-    state.sessionKeepAliveInterval = setInterval(async () => {
-      try {
-        const { refreshSession: doRefresh } = await import('./StytchAuthService');
-        await doRefresh(serverUrl);
-      } catch {
-        // Refresh failure is non-fatal here -- just means the session token
-        // may expire if this keeps failing, but sync stays connected.
-      }
-    }, 30 * 60 * 1000);
+    if (shouldKeepStytchSessionAlive(serverUrl)) {
+      state.sessionKeepAliveInterval = setInterval(async () => {
+        try {
+          await refreshSession(serverUrl);
+        } catch {
+          // Refresh failure is non-fatal here -- just means the session token
+          // may expire if this keeps failing, but sync stays connected.
+        }
+      }, 30 * 60 * 1000);
+    }
 
     // Store state
     state.provider = provider;

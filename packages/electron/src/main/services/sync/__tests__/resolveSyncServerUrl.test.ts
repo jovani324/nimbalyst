@@ -13,6 +13,7 @@ import {
   DEVELOPMENT_SYNC_URL,
   PRODUCTION_SYNC_URL,
   resolveSyncServerUrl,
+  shouldKeepStytchSessionAlive,
 } from '../resolveSyncServerUrl';
 
 describe('resolveSyncServerUrl', () => {
@@ -57,5 +58,21 @@ describe('resolveSyncServerUrl', () => {
 
   it('defaults to production', () => {
     expect(resolveSyncServerUrl({ isDevelopmentBuild: true })).toBe(PRODUCTION_SYNC_URL);
+  });
+});
+
+/**
+ * A host on the relay logged `Session refresh failed: 426` every 30 minutes for
+ * hours: the keep-alive is an HTTP call the websocket-only relay cannot serve,
+ * and the personal JWT quietly went stale behind it.
+ */
+describe('shouldKeepStytchSessionAlive', () => {
+  it('runs against production sync, which serves the refresh endpoint', () => {
+    expect(shouldKeepStytchSessionAlive(PRODUCTION_SYNC_URL)).toBe(true);
+  });
+
+  it('does not run against a self-hosted relay, which answers it 426 forever', () => {
+    expect(shouldKeepStytchSessionAlive('wss://relay.moasfar.app')).toBe(false);
+    expect(shouldKeepStytchSessionAlive(DEVELOPMENT_SYNC_URL)).toBe(false);
   });
 });

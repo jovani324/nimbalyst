@@ -25,6 +25,21 @@ export interface SyncServerUrlInputs {
   isDevelopmentBuild: boolean;
 }
 
+/**
+ * Whether the Stytch session keep-alive should run against this server.
+ *
+ * The keep-alive is an HTTP call to the sync server's refresh endpoint. A
+ * self-hosted relay serves websockets only and answers it `426` every time, so
+ * on the relay it is a guaranteed 30-minute failure loop that logs
+ * `Session refresh failed: 426` forever. It is also pointless there: that relay
+ * authenticates on the JWT's `sub` alone and never checks signature or expiry,
+ * so there is no session to keep alive. Same reasoning as the `isSelfHostedRelay`
+ * guard on the connect path.
+ */
+export function shouldKeepStytchSessionAlive(serverUrl: string): boolean {
+  return serverUrl === PRODUCTION_SYNC_URL;
+}
+
 export function resolveSyncServerUrl({
   configuredUrl,
   environment,
