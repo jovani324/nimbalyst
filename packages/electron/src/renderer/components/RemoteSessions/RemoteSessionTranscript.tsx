@@ -11,13 +11,14 @@
  * relayed to the host as a `prompt_response` control message.
  */
 
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useAtomValue } from 'jotai';
 import { InteractivePromptWidget } from '@nimbalyst/runtime/ui/AgentTranscript/components/InteractivePromptWidget';
 import { CondensedRemoteTranscript } from './CondensedRemoteTranscript';
 import { buildSessionMarkdown } from './condensedTranscript';
 import { resolvePendingPrompt } from './pendingPrompt';
-import { prepareImage, toPayload, type ControllerImage } from './controllerImages';
+import { ComposerImageStrip, useComposerImages } from './composerImages';
+import { toPayload } from './controllerImages';
 import { useControllerPrivacy, AUTO_BLUR_IDLE_MS, type ControllerPrivacySettings } from './controllerPrivacy';
 import {
   useControllerAppearance,
@@ -42,6 +43,10 @@ import {
 
 type ViewMessages = Awaited<ReturnType<typeof projectRawMessagesToViewMessages>>;
 
+/** Borderless header action; index.css dims it until hover. Marker class first
+ *  — an arbitrary-value Tailwind class in that slot breaks jsdom's :has() parse. */
+const HEADER_ACTION_CLASS = 'remote-session-header-action text-[11px] px-1.5 py-0.5 rounded';
+
 interface RemoteSessionTranscriptProps {
   sessionId: string;
   isActive: boolean;
@@ -58,8 +63,8 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
 
   const [viewMessages, setViewMessages] = useState<ViewMessages>([]);
   const [draft, setDraft] = useState('');
-  const [images, setImages] = useState<ControllerImage[]>([]);
-  const [preparingImages, setPreparingImages] = useState(0);
+  const composerImages = useComposerImages();
+  const { images, clear: clearImages } = composerImages;
   const [sending, setSending] = useState(false);
   const [promptSubmitting, setPromptSubmitting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -184,7 +189,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
       const prompt = text || 'Take a look at this image.';
       await api.sendPrompt(sessionId, prompt, images.length ? toPayload(images) : undefined);
       setDraft('');
-      setImages([]);
+      clearImages();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to send prompt');
     } finally {
@@ -197,28 +202,6 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
     if (e.key === 'Enter' && e.shiftKey) {
       e.preventDefault();
       void handleSend();
-    }
-  };
-
-  /** Paste an image straight into the composer; it rides along with the prompt. */
-  const handleComposerPaste = async (e: ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = Array.from(e.clipboardData?.items ?? [])
-      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
-      .map((item) => item.getAsFile())
-      .filter((f): f is File => !!f);
-    if (files.length === 0) return;
-    e.preventDefault();
-    setActionError(null);
-    setPreparingImages((n) => n + files.length);
-    for (const file of files) {
-      try {
-        const image = await prepareImage(file);
-        setImages((prev) => [...prev, image]);
-      } catch (err) {
-        setActionError(err instanceof Error ? err.message : 'Failed to attach image');
-      } finally {
-        setPreparingImages((n) => Math.max(0, n - 1));
-      }
     }
   };
 
@@ -262,6 +245,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   };
 
   const isExecuting = !!session?.isExecuting;
+  const canSend = !sending && (!!draft.trim() || images.length > 0);
   // Whole-transcript blur (as opposed to per-message hover-reveal).
   const globalBlur = masked && !privacy.hoverReveal;
 
@@ -303,25 +287,29 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
 
   return (
     <div className="remote-session-transcript flex flex-col flex-1 min-h-0" data-testid="remote-session-transcript">
-      {/* Header */}
+      {/* Header. Deliberately understated: borderless ghost actions that only
+          come up to full contrast on hover, so a glance at the popover reads as
+          text rather than as a toolbar. */}
       <div
-        className="remote-session-transcript-header flex items-center justify-between px-4 h-11 border-b shrink-0"
+        className="remote-session-transcript-header flex items-center justify-between px-2 h-8 border-b shrink-0"
         style={{ borderColor: 'var(--nim-border)' }}
       >
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-sm font-semibold truncate" style={{ color: 'var(--nim-text)' }}>
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="text-[11px] truncate" style={{ color: 'var(--nim-text-muted)' }}>
             {session?.title || 'Session'}
           </span>
           {isExecuting && (
-            <span className="text-xs" style={{ color: 'var(--nim-success)' }}>
-              running…
-            </span>
+            <span
+              className="shrink-0 w-1.5 h-1.5 rounded-full animate-pulse"
+              style={{ background: 'var(--nim-success)' }}
+              title="Running"
+            />
           )}
         </div>
-        <div className="flex items-center gap-1 shrink-0 relative">
+        <div className="flex items-center shrink-0 relative">
           <button
-            className="text-xs px-2 py-1 rounded"
-            style={{ color: 'var(--nim-text-muted)', border: '1px solid var(--nim-border)' }}
+            className={HEADER_ACTION_CLASS}
+            style={{ color: 'var(--nim-text-muted)' }}
             onClick={() => void handleRefresh()}
             disabled={refreshing}
             data-testid="remote-session-refresh-button"
@@ -330,8 +318,8 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
             {refreshing ? '…' : '⟳'}
           </button>
           <button
-            className="text-xs px-2 py-1 rounded"
-            style={{ color: masked ? 'var(--nim-primary)' : 'var(--nim-text-muted)', border: '1px solid var(--nim-border)' }}
+            className={HEADER_ACTION_CLASS}
+            style={{ color: masked ? 'var(--nim-primary)' : 'var(--nim-text-muted)' }}
             onClick={() => setMasked((m) => !m)}
             data-testid="remote-session-mask-button"
             title={masked ? 'Reveal messages' : 'Blur messages for privacy'}
@@ -340,11 +328,11 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
             {masked ? '🙈' : '👁'}
           </button>
           <button
-            className="text-xs px-2 py-1 rounded"
-            style={{ color: showPrivacyMenu ? 'var(--nim-primary)' : 'var(--nim-text-muted)', border: '1px solid var(--nim-border)' }}
+            className={HEADER_ACTION_CLASS}
+            style={{ color: showPrivacyMenu ? 'var(--nim-primary)' : 'var(--nim-text-muted)' }}
             onClick={() => setShowPrivacyMenu((s) => !s)}
             data-testid="remote-session-privacy-button"
-            title="Privacy settings"
+            title="Appearance and privacy settings"
           >
             ⚙
           </button>
@@ -359,33 +347,37 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
             />
           )}
           <button
-            className="text-xs px-2 py-1 rounded"
-            style={{ color: 'var(--nim-text-muted)', border: '1px solid var(--nim-border)' }}
+            className={HEADER_ACTION_CLASS}
+            style={{ color: copiedAll ? 'var(--nim-success)' : 'var(--nim-text-muted)' }}
             onClick={() => void handleCopyMarkdown()}
             disabled={viewMessages.length === 0}
             data-testid="remote-session-copy-md-button"
             title="Copy the whole session as Markdown"
+            aria-label="Copy the whole session as Markdown"
           >
-            {copiedAll ? 'Copied' : 'Copy MD'}
+            {copiedAll ? '✓' : '⧉'}
           </button>
           <button
-            className="text-xs px-2 py-1 rounded"
-            style={{ color: 'var(--nim-text-muted)', border: '1px solid var(--nim-border)' }}
+            className={HEADER_ACTION_CLASS}
+            style={{ color: 'var(--nim-text-muted)' }}
             onClick={() => void handleOpenInEditor()}
             disabled={viewMessages.length === 0}
             data-testid="remote-session-open-editor-button"
             title="Open the session as a Markdown file in your editor"
+            aria-label="Open the session as a Markdown file in your editor"
           >
-            Open
+            ↗
           </button>
           {isExecuting && (
             <button
-              className="text-xs px-2 py-1 rounded"
-              style={{ color: 'var(--nim-error)', border: '1px solid var(--nim-border)' }}
+              className={HEADER_ACTION_CLASS}
+              style={{ color: 'var(--nim-error)' }}
               onClick={() => void handleCancel()}
               data-testid="remote-session-cancel-button"
+              title="Stop the running agent"
+              aria-label="Stop the running agent"
             >
-              Stop
+              ■
             </button>
           )}
         </div>
@@ -434,71 +426,45 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
         </div>
       )}
 
-      {actionError && (
-        <div className="px-4 py-1 text-xs shrink-0" style={{ color: 'var(--nim-error)' }}>
-          {actionError}
+      {(actionError || composerImages.error) && (
+        <div className="px-2 py-1 text-xs shrink-0" style={{ color: 'var(--nim-error)' }}>
+          {actionError ?? composerImages.error}
         </div>
       )}
 
-      {/* Composer */}
-      <div className="remote-session-composer flex flex-col gap-2 px-4 py-3 border-t shrink-0" style={{ borderColor: 'var(--nim-border)' }}>
-        {(images.length > 0 || preparingImages > 0) && (
-          <div className="remote-session-composer-images flex items-center gap-2 flex-wrap" data-testid="remote-session-composer-images">
-            {images.map((image) => (
-              <div
-                key={image.id}
-                className="remote-session-composer-image relative rounded overflow-hidden"
-                style={{ border: '1px solid var(--nim-border)' }}
-                title={`${image.name} · ${Math.max(1, Math.round(image.size / 1024))}KB`}
-              >
-                <img src={image.previewUrl} alt={image.name} style={{ height: 44, width: 'auto', display: 'block' }} />
-                <button
-                  className="remote-session-composer-image-remove absolute top-0 right-0 leading-none px-1"
-                  style={{ background: 'var(--nim-bg)', color: 'var(--nim-text-muted)', fontSize: 11 }}
-                  onClick={() => setImages((prev) => prev.filter((i) => i.id !== image.id))}
-                  title="Remove image"
-                  aria-label={`Remove ${image.name}`}
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-            {preparingImages > 0 && (
-              <span className="text-xs" style={{ color: 'var(--nim-text-muted)' }}>
-                preparing image…
-              </span>
-            )}
-          </div>
-        )}
-        <div className="flex items-end gap-2">
+      {/* Composer. Kept as quiet as the header: a single-line box, a short
+          placeholder (the full hint lives in the tooltip) and a ghost send
+          glyph instead of a filled button. */}
+      <div className="remote-session-composer flex flex-col gap-1.5 px-2 py-2 border-t shrink-0" style={{ borderColor: 'var(--nim-border)' }}>
+        <ComposerImageStrip {...composerImages} />
+        <div className="flex items-end gap-1.5">
           <textarea
-            className="flex-1 resize-none rounded px-3 py-2 text-sm outline-none"
+            className="flex-1 resize-none rounded px-2 py-1 text-[12px] outline-none"
             style={{
               background: 'var(--nim-bg-secondary)',
               color: 'var(--nim-text)',
               border: '1px solid var(--nim-border)',
               maxHeight: 160,
             }}
-            rows={2}
-            placeholder="Reply to the host…  (Shift+Enter to send, paste an image to attach)"
+            rows={1}
+            placeholder="Reply…"
+            title="Shift+Enter to send · paste an image to attach"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={handleComposerKeyDown}
-            onPaste={(e) => void handleComposerPaste(e)}
+            onPaste={(e) => void composerImages.handlePaste(e)}
             data-testid="remote-session-composer-input"
           />
           <button
-            className="text-sm px-3 py-2 rounded shrink-0"
-            style={{
-              background: 'var(--nim-primary)',
-              color: '#fff',
-              opacity: sending || (!draft.trim() && images.length === 0) ? 0.5 : 1,
-            }}
+            className="remote-session-send-button text-[13px] px-2 py-1 rounded shrink-0"
+            style={{ color: canSend ? 'var(--nim-primary)' : 'var(--nim-text-muted)' }}
             onClick={() => void handleSend()}
-            disabled={sending || (!draft.trim() && images.length === 0)}
+            disabled={!canSend}
             data-testid="remote-session-send-button"
+            title="Send (Shift+Enter)"
+            aria-label="Send"
           >
-            Send
+            ↵
           </button>
         </div>
       </div>
@@ -573,6 +539,20 @@ function ControllerSettingsMenu({
               {o}%
             </button>
           ))}
+        </div>
+        {/* The popover is resizable by dragging its edges; this is the way back
+            to the stock dimensions when a drag leaves it an odd shape. */}
+        <div className="flex items-center gap-2 px-2 pb-1">
+          <span style={{ color: 'var(--nim-text-muted)' }}>Size</span>
+          <button
+            className="controller-reset-size px-2 py-0.5 rounded"
+            style={{ border: '1px solid var(--nim-border)', color: 'var(--nim-text)' }}
+            onClick={() => void window.electronAPI?.invoke?.('controller-popover:reset-size')}
+            data-testid="controller-reset-size-button"
+            title="Back to the default popover size"
+          >
+            Reset to default
+          </button>
         </div>
         <div className="my-1 h-px" style={{ background: 'var(--nim-border)' }} />
         {heading('Privacy')}

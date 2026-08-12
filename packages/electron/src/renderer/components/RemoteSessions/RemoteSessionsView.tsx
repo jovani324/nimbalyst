@@ -149,7 +149,7 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
           style={{ borderColor: 'var(--nim-border)', background: 'var(--nim-bg-secondary)' }}
         >
           <button
-            className="h-11 w-9 flex items-center justify-center text-base"
+            className="h-8 w-9 flex items-center justify-center text-sm"
             style={{ color: 'var(--nim-text-muted)' }}
             onClick={() => setListCollapsed(false)}
             data-testid="remote-sessions-expand-button"
@@ -170,12 +170,12 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
         }}
       >
         <div
-          className="remote-sessions-list-header flex items-center justify-between px-3 h-11 border-b shrink-0"
+          className="remote-sessions-list-header flex items-center justify-between px-2 h-8 border-b shrink-0"
           style={{ borderColor: 'var(--nim-border)' }}
         >
-          <div className="flex items-center gap-2 min-w-0">
+          <div className="flex items-center gap-1.5 min-w-0">
             <button
-              className="text-base shrink-0"
+              className="text-sm shrink-0"
               style={{ color: 'var(--nim-text-muted)' }}
               onClick={() => setListCollapsed(true)}
               data-testid="remote-sessions-collapse-button"
@@ -183,22 +183,23 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
             >
               ☰
             </button>
-            <span className="text-sm font-semibold truncate" style={{ color: 'var(--nim-text)' }}>
+            <span className="text-[11px] truncate" style={{ color: 'var(--nim-text-muted)' }}>
               Remote Sessions
             </span>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center">
             <button
-              className="remote-sessions-new-btn text-xs px-2 py-1 rounded hover:opacity-90"
-              style={{ background: 'var(--nim-primary)', color: '#fff' }}
+              className="remote-session-header-action text-[13px] px-1.5 py-0.5 rounded"
+              style={{ color: 'var(--nim-primary)' }}
               onClick={() => setShowNewDialog(true)}
               data-testid="remote-sessions-new-button"
               title="Start a new session on the host"
+              aria-label="Start a new session on the host"
             >
-              New
+              +
             </button>
             <button
-              className="remote-sessions-refresh-btn text-xs px-2 py-1 rounded"
+              className="remote-session-header-action text-[11px] px-1.5 py-0.5 rounded"
               style={{ color: 'var(--nim-text-muted)' }}
               onClick={() => void refresh()}
               disabled={loading}
@@ -271,7 +272,7 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
           )}
           {indexLoaded && groupOrder.length === 0 && (
             <div className="px-3 py-4 text-xs" style={{ color: 'var(--nim-text-muted)' }}>
-              {searching ? `No session matches “${query.trim()}”.` : 'No sessions on the host yet. Use “New” to start one.'}
+              {searching ? `No session matches “${query.trim()}”.` : 'No sessions on the host yet. Use “+” to start one.'}
             </div>
           )}
           {groupOrder.map((projectId) => {

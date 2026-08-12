@@ -13,6 +13,8 @@
  *   remote-sessions:archive              archive/unarchive a remote session
  *   remote-sessions:respond-prompt       answer an interactive prompt (permission/plan/question/...)
  *   remote-sessions:is-controller        whether this machine is in controller mode (gates the UI)
+ *   controller-popover:set-opacity       window transparency for the popover
+ *   controller-popover:reset-size        put the popover back to its default dimensions
  *
  * Broadcasts (main -> renderer, see REMOTE_SESSION_CHANNELS):
  *   remote-sessions:index-change         a session index entry changed
@@ -27,7 +29,10 @@ import path from 'node:path';
 import { app, shell } from 'electron';
 import { safeHandle } from '../utils/ipcRegistry';
 import { isControllerMode } from '../utils/store';
-import { setControllerPopoverOpacity } from '../window/ControllerPopoverWindow';
+import {
+  setControllerPopoverOpacity,
+  resetControllerPopoverSize,
+} from '../window/ControllerPopoverWindow';
 import {
   listRemoteSessions,
   connectRemoteSession,
@@ -50,6 +55,11 @@ export function registerRemoteSessionHandlers() {
 
   safeHandle('controller-popover:set-opacity', (_event, opacity: number) => {
     setControllerPopoverOpacity(typeof opacity === 'number' ? opacity : 1);
+    return { ok: true };
+  });
+
+  safeHandle('controller-popover:reset-size', () => {
+    resetControllerPopoverSize();
     return { ok: true };
   });
 

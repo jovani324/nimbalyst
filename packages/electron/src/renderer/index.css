@@ -589,13 +589,162 @@ body[data-dev-mode="true"] .nav-quick-access::before {
 [data-controller-popover] .remote-session-composer {
   background: var(--nim-bg-secondary);
 }
-/* A shell-prompt marker in front of the composer input. */
-[data-controller-popover] .remote-session-composer::before {
-  content: "\203A";
-  color: var(--nim-success);
-  align-self: center;
-  padding-left: 4px;
-  font-weight: 700;
+
+/* Header actions and the send glyph stay faint until pointed at, so the
+ * controller reads as a pane of text rather than a toolbar. */
+.remote-session-header-action,
+.remote-session-send-button {
+  opacity: 0.45;
+  transition: opacity 120ms ease;
+}
+.remote-session-header-action:hover:not(:disabled),
+.remote-session-send-button:hover:not(:disabled) {
+  opacity: 1;
+}
+.remote-session-header-action:disabled,
+.remote-session-send-button:disabled {
+  opacity: 0.2;
+}
+
+/* ===== Interactive prompt: AskUserQuestion =====
+ * The permission branch of InteractivePromptWidget carries Tailwind utilities;
+ * the question branch is BEM-only, and the controller is its sole consumer — so
+ * without these rules its option buttons render as bare browser chrome with no
+ * visible selection, which reads as "the buttons don't work". Everything is
+ * scoped to --question so the Tailwind-styled permission card is untouched. */
+.interactive-prompt--question,
+.interactive-prompt--question .interactive-prompt__option {
+  box-sizing: border-box;
+}
+.interactive-prompt--question {
+  background: var(--nim-bg-secondary);
+  border: 1px solid var(--nim-primary);
+  border-radius: 8px;
+  padding: 10px;
+  margin: 6px 0;
+}
+.interactive-prompt--question .interactive-prompt__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.interactive-prompt--question .interactive-prompt__icon {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--nim-primary);
+}
+.interactive-prompt--question .interactive-prompt__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--nim-text);
+}
+.interactive-prompt--question .interactive-prompt__question-card + .interactive-prompt__question-card {
+  margin-top: 10px;
+}
+.interactive-prompt--question .interactive-prompt__question-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.interactive-prompt--question .interactive-prompt__question-chip {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--nim-bg-tertiary);
+  color: var(--nim-text-muted);
+}
+.interactive-prompt--question .interactive-prompt__multi-hint {
+  font-size: 10px;
+  color: var(--nim-text-muted);
+}
+.interactive-prompt--question .interactive-prompt__question-text {
+  font-size: 12px;
+  color: var(--nim-text);
+  margin-bottom: 6px;
+}
+.interactive-prompt--question .interactive-prompt__options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.interactive-prompt--question .interactive-prompt__option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  border: 1px solid var(--nim-border);
+  border-radius: 6px;
+  background: var(--nim-bg);
+  color: var(--nim-text);
+  cursor: pointer;
+}
+.interactive-prompt--question .interactive-prompt__option:hover {
+  border-color: var(--nim-primary);
+}
+.interactive-prompt--question .interactive-prompt__option--selected {
+  border-color: var(--nim-primary);
+  background: var(--nim-bg-selected, var(--nim-bg-hover));
+}
+.interactive-prompt--question .interactive-prompt__option-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  margin-top: 1px;
+  border: 1px solid var(--nim-border);
+  border-radius: 3px;
+  color: var(--nim-primary);
+}
+.interactive-prompt--question .interactive-prompt__option-indicator--selected {
+  border-color: var(--nim-primary);
+}
+.interactive-prompt--question .interactive-prompt__option-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.interactive-prompt--question .interactive-prompt__option-label {
+  font-size: 12px;
+  color: var(--nim-text);
+}
+.interactive-prompt--question .interactive-prompt__option-description {
+  font-size: 11px;
+  color: var(--nim-text-muted);
+}
+.interactive-prompt--question .interactive-prompt__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.interactive-prompt--question .interactive-prompt__actions--centered {
+  justify-content: center;
+}
+.interactive-prompt--question .interactive-prompt__button {
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--nim-border);
+  background: var(--nim-bg-tertiary);
+  color: var(--nim-text-muted);
+  cursor: pointer;
+}
+.interactive-prompt--question .interactive-prompt__button--submit {
+  background: var(--nim-primary);
+  border-color: transparent;
+  color: #fff;
+}
+.interactive-prompt--question .interactive-prompt__button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* Chat sidebar header: on a narrow panel the session title truncates (flex-1)

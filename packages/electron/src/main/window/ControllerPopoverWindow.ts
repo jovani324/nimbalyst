@@ -24,36 +24,52 @@ import { TrayManager } from '../tray/TrayManager';
 
 const POPOVER_BOUNDS_KEY = 'controllerPopoverBounds';
 
-/** Remember where the user last dragged the popover. */
-function savePopoverPosition(win: BrowserWindow): void {
+interface SavedPopoverBounds {
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
+}
+
+/** Remember where the user last dragged / how they last sized the popover. */
+function savePopoverBounds(win: BrowserWindow): void {
   try {
-    const { x, y } = win.getBounds();
-    store.set(POPOVER_BOUNDS_KEY, { x, y });
+    const { x, y, width, height } = win.getBounds();
+    store.set(POPOVER_BOUNDS_KEY, { x, y, width, height });
   } catch {
     /* non-fatal */
   }
 }
 
-/** Restore the last-dragged position if it's still on a visible display. */
-function restorePopoverPosition(win: BrowserWindow): boolean {
+/** Restore the last position/size if the saved spot is still on a visible display. */
+function restorePopoverBounds(win: BrowserWindow): boolean {
   try {
-    const saved = store.get(POPOVER_BOUNDS_KEY) as { x: number; y: number } | undefined;
+    const saved = store.get(POPOVER_BOUNDS_KEY) as SavedPopoverBounds | undefined;
     if (!saved || typeof saved.x !== 'number' || typeof saved.y !== 'number') return false;
-    const [width, height] = win.getSize();
     // Only restore if the saved spot still lands on a real display (monitors change).
     const display = screen.getDisplayNearestPoint({ x: saved.x, y: saved.y });
     const a = display.workArea;
+    const width = clampSize(saved.width, POPOVER_MIN_WIDTH, a.width, win.getBounds().width);
+    const height = clampSize(saved.height, POPOVER_MIN_HEIGHT, a.height, win.getBounds().height);
     const x = Math.max(a.x, Math.min(saved.x, a.x + a.width - width));
     const y = Math.max(a.y, Math.min(saved.y, a.y + a.height - height));
-    win.setPosition(x, y, false);
+    win.setBounds({ x, y, width, height }, false);
     return true;
   } catch {
     return false;
   }
 }
 
+/** A stored dimension is only used when it's sane for the display it lands on. */
+function clampSize(saved: number | undefined, min: number, max: number, fallback: number): number {
+  if (typeof saved !== 'number' || !Number.isFinite(saved)) return fallback;
+  return Math.round(Math.max(min, Math.min(saved, max)));
+}
+
 const POPOVER_WIDTH = 440;
 const POPOVER_HEIGHT = 540;
+const POPOVER_MIN_WIDTH = 320;
+const POPOVER_MIN_HEIGHT = 240;
 const EDGE_PADDING = 8;
 /** Gap between the menu bar / tray icon and the popover's top edge. */
 const TRAY_GAP = 4;
@@ -93,9 +109,13 @@ export function createControllerPopover(): BrowserWindow | null {
   popoverWindow = new BrowserWindow({
     width: POPOVER_WIDTH,
     height: POPOVER_HEIGHT,
+    minWidth: POPOVER_MIN_WIDTH,
+    minHeight: POPOVER_MIN_HEIGHT,
     show: false,
     frame: false,
-    resizable: false,
+    // Drag the edges to resize; the settings menu has a "Reset size" escape hatch
+    // back to the default popover dimensions.
+    resizable: true,
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
@@ -131,9 +151,13 @@ export function createControllerPopover(): BrowserWindow | null {
     }
   });
 
-  // Remember where the user drags it so the next show reopens there.
+  // Remember where the user drags it and how they size it, so the next show
+  // reopens exactly as they left it.
   popoverWindow.on('moved', () => {
-    if (popoverWindow) savePopoverPosition(popoverWindow);
+    if (popoverWindow) savePopoverBounds(popoverWindow);
+  });
+  popoverWindow.on('resized', () => {
+    if (popoverWindow) savePopoverBounds(popoverWindow);
   });
 
   popoverWindow.on('closed', () => {
@@ -179,13 +203,34 @@ export function setControllerPopoverOpacity(opacity: number): void {
   }
 }
 
+/**
+ * Put the popover back to its default dimensions, keeping where it sits. The
+ * stored size is rewritten so the next show doesn't restore the old one.
+ */
+export function resetControllerPopoverSize(): void {
+  const win = popoverWindow;
+  if (!win || win.isDestroyed()) return;
+  const { x, y } = win.getBounds();
+  const area = screen.getDisplayNearestPoint({ x, y }).workArea;
+  win.setBounds(
+    {
+      x: Math.max(area.x, Math.min(x, area.x + area.width - POPOVER_WIDTH)),
+      y: Math.max(area.y, Math.min(y, area.y + area.height - POPOVER_HEIGHT)),
+      width: POPOVER_WIDTH,
+      height: POPOVER_HEIGHT,
+    },
+    false,
+  );
+  savePopoverBounds(win);
+}
+
 /** Show the popover under the tray and focus its composer. */
 export function showControllerPopover(): void {
   if (!isControllerMode()) return;
   const win = createControllerPopover();
   if (!win) return;
-  // Reopen where the user last dragged it; fall back to under the tray.
-  if (!restorePopoverPosition(win)) positionUnderTray(win);
+  // Reopen where the user last dragged/sized it; fall back to under the tray.
+  if (!restorePopoverBounds(win)) positionUnderTray(win);
   win.show();
   win.focus();
   win.webContents.send('controller-popover:shown');

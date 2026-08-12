@@ -10,15 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
-- Controller mode can paste an image into a reply to send it with the prompt, and search sessions by title, project, or id.
+- Controller mode can paste an image into a reply or a new session's first prompt to send it along, and search sessions by title, project, or id.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
-- Controller mode's session list is more compact, with collapsible project groups and a marker on sessions waiting for your answer.
+- Controller mode is quieter to look at — a slimmer header and composer, collapsible project groups, a marker on sessions waiting for your answer, and a popover you can resize (with a reset back to the default size).
 
 ### Fixed
 <!-- Bug fixes go here -->
-- Questions the agent asks now reach controller mode and can be answered there, including ones raised before you opened the session, without stuttering or crowding the transcript off screen.
+- Questions the agent asks now reach controller mode and can be answered there — the answer options show which one you picked — including ones raised before you opened the session, without stuttering or crowding the transcript off screen.
 - Pairing payloads now point at the sync server this app is actually connected to, so pairing a device against a self-hosted relay no longer fails to connect.
 - Sync against a self-hosted relay no longer retries a sign-in refresh every 30 minutes that could never succeed, which had been letting the session quietly go stale.
 

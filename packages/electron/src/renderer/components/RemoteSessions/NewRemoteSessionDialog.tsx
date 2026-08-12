@@ -1,10 +1,12 @@
 /**
  * NewRemoteSessionDialog — ask the host to create a new session in one of its
- * projects, optionally with an initial prompt. Thin form over
- * window.electronAPI.remoteSessions.create.
+ * projects, optionally with an initial prompt (images may be pasted into it).
+ * Thin form over window.electronAPI.remoteSessions.create.
  */
 
 import { useState } from 'react';
+import { ComposerImageStrip, useComposerImages } from './composerImages';
+import { toPayload } from './controllerImages';
 import type { RemoteProjectEntry } from '../../types/remoteSessions';
 
 interface NewRemoteSessionDialogProps {
@@ -18,6 +20,8 @@ export function NewRemoteSessionDialog({ projects, onClose, onCreated }: NewRemo
   const [prompt, setPrompt] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const composerImages = useComposerImages();
+  const { images, preparing, clear: clearImages } = composerImages;
 
   const handleCreate = async () => {
     const api = window.electronAPI?.remoteSessions;
@@ -25,15 +29,23 @@ export function NewRemoteSessionDialog({ projects, onClose, onCreated }: NewRemo
     setCreating(true);
     setError(null);
     try {
+      const text = prompt.trim();
+      // The create request carries text only — images have to travel as bytes on
+      // a prompt control message, so with attachments we create the session bare
+      // and immediately queue the prompt (which the host stages as attachments).
       const res = await api.create({
         projectId,
-        initialPrompt: prompt.trim() || undefined,
+        initialPrompt: images.length ? undefined : text || undefined,
       });
-      if (res.success) {
-        onCreated(res.sessionId);
-      } else {
+      if (!res.success) {
         setError(res.error ?? 'Host could not create the session');
+        return;
       }
+      if (images.length && res.sessionId) {
+        await api.sendPrompt(res.sessionId, text || 'Take a look at this image.', toPayload(images));
+      }
+      clearImages();
+      onCreated(res.sessionId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create session');
     } finally {
@@ -83,14 +95,17 @@ export function NewRemoteSessionDialog({ projects, onClose, onCreated }: NewRemo
             rows={3}
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            placeholder="What should the agent start on?"
+            onPaste={(e) => void composerImages.handlePaste(e)}
+            placeholder="What should the agent start on?  (paste an image to attach)"
             data-testid="remote-new-session-prompt"
           />
         </label>
 
-        {error && (
+        <ComposerImageStrip {...composerImages} />
+
+        {(error || composerImages.error) && (
           <div className="text-xs" style={{ color: 'var(--nim-error)' }}>
-            {error}
+            {error ?? composerImages.error}
           </div>
         )}
 
@@ -105,9 +120,13 @@ export function NewRemoteSessionDialog({ projects, onClose, onCreated }: NewRemo
           </button>
           <button
             className="text-sm px-3 py-1.5 rounded"
-            style={{ background: 'var(--nim-primary)', color: '#fff', opacity: creating || !projectId ? 0.5 : 1 }}
+            style={{
+              background: 'var(--nim-primary)',
+              color: '#fff',
+              opacity: creating || !projectId || preparing > 0 ? 0.5 : 1,
+            }}
             onClick={() => void handleCreate()}
-            disabled={creating || !projectId}
+            disabled={creating || !projectId || preparing > 0}
             data-testid="remote-new-session-create"
           >
             {creating ? 'Creating…' : 'Create'}
