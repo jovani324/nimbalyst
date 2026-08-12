@@ -34,6 +34,11 @@ export default defineConfig({
   base: './',
   server: {
     port: 5275,
+    // IPv4 loopback, explicitly. Vite's default binds `::1` only, and
+    // `tailscale serve` proxies to `127.0.0.1` -- so the HTTPS URL answered 502
+    // while http://localhost:5275 worked, which reads as "the server is fine,
+    // the tunnel is broken" and is really neither.
+    host: '127.0.0.1',
     // Web Crypto only exists in a secure context, so reaching this dev server
     // from another machine over plain http://<ip> makes pairing fail on
     // `crypto.subtle` being undefined. Tailscale's HTTPS proxy fixes that, and
