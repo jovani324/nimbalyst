@@ -1591,6 +1591,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       sessionType?: string;
       parentSessionId?: string;
     }) => ipcRenderer.invoke('remote-sessions:create', request),
+    createWorktree: (projectId: string) =>
+      ipcRenderer.invoke('remote-sessions:create-worktree', { projectId }),
+    terminal: (payload: {
+      sessionId: string;
+      type: 'terminal_open' | 'terminal_input' | 'terminal_resize' | 'terminal_close';
+      terminalId: string;
+      data?: string;
+      cols?: number;
+      rows?: number;
+    }) => ipcRenderer.invoke('remote-sessions:terminal', payload),
     cancel: (sessionId: string) =>
       ipcRenderer.invoke('remote-sessions:cancel', { sessionId }),
     archive: (sessionId: string, isArchived: boolean) =>
@@ -1627,6 +1637,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       const handler = (_event: unknown, response: unknown) => callback(response);
       ipcRenderer.on('remote-sessions:create-response', handler);
       return () => ipcRenderer.removeListener('remote-sessions:create-response', handler);
+    },
+    onTerminalEvent: (
+      callback: (data: { sessionId: string; type: string; payload: Record<string, unknown> }) => void,
+    ) => {
+      const handler = (
+        _event: unknown,
+        data: { sessionId: string; type: string; payload: Record<string, unknown> },
+      ) => callback(data);
+      ipcRenderer.on('remote-sessions:terminal-event', handler);
+      return () => ipcRenderer.removeListener('remote-sessions:terminal-event', handler);
     },
   },
 

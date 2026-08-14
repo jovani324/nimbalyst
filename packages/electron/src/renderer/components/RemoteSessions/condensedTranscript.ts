@@ -142,3 +142,24 @@ export function buildSessionMarkdown(
   // Collapse the run of blank lines a trailing tool list can leave.
   return `${lines.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd()}\n`;
 }
+
+/** Bare URLs in plain-text rows; markdown links are handled by MarkdownRenderer. */
+const URL_PATTERN = /\bhttps?:\/\/[^\s<>()[\]{}"']+[^\s<>()[\]{}"'.,;:!?]/g;
+
+/**
+ * Turn bare URLs into anchors. The controller renders replies as plain text
+ * (summaries, user turns), so without this a link the agent sends is something
+ * you have to retype on the other machine.
+ */
+export function linkify(text: string): Array<string | { href: string; key: string }> {
+  const out: Array<string | { href: string; key: string }> = [];
+  let last = 0;
+  for (const match of text.matchAll(URL_PATTERN)) {
+    const start = match.index ?? 0;
+    if (start > last) out.push(text.slice(last, start));
+    out.push({ href: match[0], key: `${start}-${match[0]}` });
+    last = start + match[0].length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}

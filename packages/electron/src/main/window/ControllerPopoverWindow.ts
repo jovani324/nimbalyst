@@ -204,6 +204,20 @@ export function setControllerPopoverOpacity(opacity: number): void {
 }
 
 /**
+ * Set the popover's text scale (0.8–1.5) as a window zoom factor.
+ *
+ * The popover's type sizes are Tailwind px utilities, so a root font-size only
+ * moves body copy and leaves headers, glyphs and padding at their old size.
+ * Zooming the window scales the whole layout, which is what "make the text
+ * bigger" actually means here.
+ */
+export function setControllerPopoverZoom(scale: number): void {
+  if (popoverWindow && !popoverWindow.isDestroyed()) {
+    popoverWindow.webContents.setZoomFactor(Math.max(0.8, Math.min(1.5, scale)));
+  }
+}
+
+/**
  * Put the popover back to its default dimensions, keeping where it sits. The
  * stored size is rewritten so the next show doesn't restore the old one.
  */

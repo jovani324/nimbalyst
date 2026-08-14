@@ -46,6 +46,8 @@ export type {
   DeviceInfo,
   CreateSessionRequest,
   CreateSessionResponse,
+  CreateWorktreeRequest,
+  CreateWorktreeResponse,
   VoiceToolRequest,
   VoiceToolResponse,
   SessionControlMessage,

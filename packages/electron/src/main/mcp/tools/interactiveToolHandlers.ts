@@ -297,7 +297,15 @@ export async function handleAskUserQuestion(
   // windows (the renderer handler keys by sessionId); handleAskUserQuestion only
   // runs for the MCP-routed CLI path, so SDK sessions are unaffected.
   if (isCliSession && sessionId) {
-    void setSessionPendingPrompt(sessionId, true);
+    // Carry the whole question, not just the bit. A remote device (controller /
+    // mobile) has no transcript row to fall back on when the proxy turn hasn't
+    // landed yet, so without the payload the session only shows "waiting for your
+    // answer" and the question itself never renders.
+    void setSessionPendingPrompt(sessionId, true, {
+      promptType: 'ask_user_question',
+      questionId,
+      questions: normalizedQuestions,
+    });
     for (const w of BrowserWindow.getAllWindows()) {
       if (!w.isDestroyed()) {
         w.webContents.send("ai:askUserQuestion", {
@@ -882,8 +890,18 @@ export async function handleGitCommitProposal(
 
     // Notify tray of pending prompt
     TrayManager.getInstance().onPromptCreated(targetSessionId);
-    // Persist pending-prompt bit + push to mobile
-    void setSessionPendingPrompt(targetSessionId, true);
+    // Persist pending-prompt bit + push to mobile/controller. The payload rides
+    // along so a remote device can read the message and file list and approve
+    // the commit without a local database.
+    void setSessionPendingPrompt(targetSessionId, true, {
+      promptType: 'git_commit_proposal',
+      proposalId,
+      commitMessage: proposalArgs.commitMessage,
+      // Paths only: the remote device shows them and echoes them back as the
+      // staging list, and the per-file status is local bookkeeping.
+      filesToStage: (proposalArgs.filesToStage ?? []).map((f) => (typeof f === 'string' ? f : f.path)),
+      reasoning: proposalArgs.reasoning,
+    });
   } catch (error) {
     console.error("[MCP Server] Failed to persist git commit proposal:", error);
     // Continue anyway - worst case is no durability

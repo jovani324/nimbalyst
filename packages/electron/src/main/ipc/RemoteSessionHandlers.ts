@@ -9,11 +9,14 @@
  *   remote-sessions:export-markdown      write a session transcript to a .md file and open it
  *   remote-sessions:send-prompt          queue a prompt on a remote session
  *   remote-sessions:create               ask the host to create a new session
+ *   remote-sessions:create-worktree      ask the host to cut a worktree + session
+ *   remote-sessions:terminal             drive a shell the host opened for us
  *   remote-sessions:cancel               cancel the running agent on a remote session
  *   remote-sessions:archive              archive/unarchive a remote session
  *   remote-sessions:respond-prompt       answer an interactive prompt (permission/plan/question/...)
  *   remote-sessions:is-controller        whether this machine is in controller mode (gates the UI)
  *   controller-popover:set-opacity       window transparency for the popover
+ *   controller-popover:set-zoom          text scale for the popover
  *   controller-popover:reset-size        put the popover back to its default dimensions
  *
  * Broadcasts (main -> renderer, see REMOTE_SESSION_CHANNELS):
@@ -21,6 +24,7 @@
  *   remote-sessions:transcript-change    a message/metadata change for a connected session
  *   remote-sessions:status-change        connection status changed
  *   remote-sessions:create-response      a create-session request was answered
+ *   remote-sessions:terminal-event       output/lifecycle from a host shell
  */
 
 import { promises as fs } from 'node:fs';
@@ -31,6 +35,7 @@ import { safeHandle } from '../utils/ipcRegistry';
 import { isControllerMode } from '../utils/store';
 import {
   setControllerPopoverOpacity,
+  setControllerPopoverZoom,
   resetControllerPopoverSize,
 } from '../window/ControllerPopoverWindow';
 import {
@@ -40,6 +45,8 @@ import {
   resyncRemoteSession,
   sendRemotePrompt,
   createRemoteSession,
+  createRemoteWorktreeSession,
+  sendRemoteTerminalControl,
   cancelRemoteSession,
   archiveRemoteSession,
   respondToRemotePrompt,
@@ -55,6 +62,11 @@ export function registerRemoteSessionHandlers() {
 
   safeHandle('controller-popover:set-opacity', (_event, opacity: number) => {
     setControllerPopoverOpacity(typeof opacity === 'number' ? opacity : 1);
+    return { ok: true };
+  });
+
+  safeHandle('controller-popover:set-zoom', (_event, scale: number) => {
+    setControllerPopoverZoom(typeof scale === 'number' ? scale : 1);
     return { ok: true };
   });
 
@@ -143,6 +155,39 @@ export function registerRemoteSessionHandlers() {
         throw new Error('remote-sessions:create requires projectId');
       }
       return createRemoteSession(payload);
+    },
+  );
+
+  safeHandle('remote-sessions:create-worktree', async (_event, payload: { projectId: string }) => {
+    if (!payload?.projectId) {
+      throw new Error('remote-sessions:create-worktree requires projectId');
+    }
+    return createRemoteWorktreeSession(payload.projectId);
+  });
+
+  safeHandle(
+    'remote-sessions:terminal',
+    async (
+      _event,
+      payload: {
+        sessionId: string;
+        type: 'terminal_open' | 'terminal_input' | 'terminal_resize' | 'terminal_close';
+        terminalId: string;
+        data?: string;
+        cols?: number;
+        rows?: number;
+      },
+    ) => {
+      if (!payload?.sessionId || !payload?.terminalId || !payload?.type) {
+        throw new Error('remote-sessions:terminal requires sessionId, terminalId and type');
+      }
+      await sendRemoteTerminalControl(payload.sessionId, payload.type, {
+        terminalId: payload.terminalId,
+        ...(payload.data !== undefined ? { data: payload.data } : {}),
+        ...(payload.cols !== undefined ? { cols: payload.cols } : {}),
+        ...(payload.rows !== undefined ? { rows: payload.rows } : {}),
+      });
+      return { success: true };
     },
   );
 

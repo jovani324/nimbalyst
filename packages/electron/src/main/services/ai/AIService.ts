@@ -1637,9 +1637,14 @@ export class AIService {
             }
 
             if (syncProvider.sendCreateWorktreeResponse) {
+              // The requester has no repo here, so the ids and branch travel back
+              // with the response — otherwise it can only say "something happened".
               syncProvider.sendCreateWorktreeResponse({
                 requestId: request.requestId,
                 success: true,
+                sessionId,
+                worktreeId: worktree.id,
+                branch: worktree.branch,
               });
             }
           } catch (error) {

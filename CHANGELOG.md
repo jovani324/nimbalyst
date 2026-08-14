@@ -10,15 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
-- Controller mode can paste an image into a reply or a new session's first prompt to send it along, and search sessions by title, project, or id.
+- Controller mode can paste an image into a reply or a new session's first prompt to send it along, search sessions by title, project, or id, approve the commits an agent proposes, open a shell on the host in the session's own directory, start a session that continues under the one you have open or on a fresh branch, and disguise itself as an open editor — file-path session names and a page of source until you point at the pane.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
-- Controller mode is quieter to look at — a slimmer header and composer, collapsible project groups, a marker on sessions waiting for your answer, and a popover you can resize (with a reset back to the default size).
+- Controller mode is quieter to look at and easier to live in — a slimmer header and composer, collapsible project groups, a marker on sessions waiting for your answer, a popover you can resize (with a reset back to the default size), a choice of font and text size, links that open in your browser, selectable text anywhere in the transcript, and keys to jump through a long one.
 
 ### Fixed
 <!-- Bug fixes go here -->
-- Questions the agent asks now reach controller mode and can be answered there — the answer options show which one you picked — including ones raised before you opened the session, without stuttering or crowding the transcript off screen.
+- Questions the agent asks now reach controller mode and can be answered there — the answer options show which one you picked — including questions from Claude Code CLI sessions and ones raised before you opened the session, without stuttering or crowding the transcript off screen.
 - Pairing payloads now point at the sync server this app is actually connected to, so pairing a device against a self-hosted relay no longer fails to connect.
 - Sync against a self-hosted relay no longer retries a sign-in refresh every 30 minutes that could never succeed, which had been letting the session quietly go stale.
 

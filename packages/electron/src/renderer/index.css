@@ -552,8 +552,19 @@ body[data-dev-mode="true"] .nav-quick-access::before {
 [data-controller-popover] button,
 [data-controller-popover] .remote-session-transcript,
 [data-controller-popover] .remote-sessions-view {
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco,
-    "Cascadia Code", "Roboto Mono", monospace !important;
+  /* Overridable from the settings menu (controllerAppearance sets the var on
+   * the root); the mono stack stays the default. */
+  font-family: var(
+    --nim-controller-font,
+    ui-monospace,
+    SFMono-Regular,
+    "SF Mono",
+    Menlo,
+    Monaco,
+    "Cascadia Code",
+    "Roboto Mono",
+    monospace
+  ) !important;
   font-size: 12.5px;
   letter-spacing: 0.1px;
 }

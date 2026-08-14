@@ -122,3 +122,29 @@ export interface RemotePromptResponsePayload {
   promptId: string;
   response: Record<string, unknown>;
 }
+
+/** Response to a worktree-create request (host cuts branch + session). */
+export interface RemoteWorktreeResponse {
+  requestId: string;
+  success: boolean;
+  error?: string;
+  sessionId?: string;
+  worktreeId?: string;
+  branch?: string;
+}
+
+/** Output or lifecycle news from a shell the host opened for this controller. */
+export interface RemoteTerminalEvent {
+  sessionId: string;
+  /** terminal_output | terminal_ready | terminal_exit | terminal_error */
+  type: string;
+  payload: {
+    terminalId?: string;
+    data?: string;
+    cwd?: string;
+    shell?: string;
+    error?: string;
+    exitCode?: number;
+    reason?: string;
+  };
+}

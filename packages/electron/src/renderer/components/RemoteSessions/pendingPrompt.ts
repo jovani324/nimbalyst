@@ -22,10 +22,19 @@ import type {
 import type { TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/transcript';
 import type { RemotePendingPromptData } from '../../store/atoms/remoteSessions';
 
+/** A commit the agent wants to make, rendered by the controller's own widget. */
+export interface CommitProposalContent {
+  proposalId: string;
+  commitMessage: string;
+  filesToStage: string[];
+  reasoning?: string;
+}
+
 /** The pending interactive prompt currently awaiting a response, if any. */
 export type PendingPrompt =
   | { promptType: 'permission_request'; content: PermissionRequestContent }
   | { promptType: 'ask_user_question_request'; content: AskUserQuestionRequestContent }
+  | { promptType: 'git_commit_proposal'; content: CommitProposalContent }
   | null;
 
 /**
@@ -76,7 +85,16 @@ export function findPendingPrompt(viewMessages: TranscriptViewMessage[]): Pendin
         },
       };
     }
-    // git_commit_proposal and other types aren't answerable from the controller yet.
+    if (p.promptType === 'git_commit_proposal') {
+      return {
+        promptType: 'git_commit_proposal',
+        content: {
+          proposalId: p.requestId,
+          commitMessage: p.commitMessage,
+          filesToStage: p.stagedFiles ?? [],
+        },
+      };
+    }
   }
   return null;
 }
@@ -98,6 +116,17 @@ export function syncedPendingToPrompt(synced: RemotePendingPromptData): PendingP
         warnings: synced.warnings,
         timestamp: 0,
         status: 'pending',
+      },
+    };
+  }
+  if (synced.promptType === 'git_commit_proposal') {
+    return {
+      promptType: 'git_commit_proposal',
+      content: {
+        proposalId: synced.proposalId,
+        commitMessage: synced.commitMessage,
+        filesToStage: synced.filesToStage ?? [],
+        reasoning: synced.reasoning,
       },
     };
   }

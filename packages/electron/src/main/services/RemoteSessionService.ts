@@ -36,6 +36,8 @@ import type {
   SessionControlMessage,
   CreateSessionRequest,
   CreateSessionResponse,
+  CreateWorktreeRequest,
+  CreateWorktreeResponse,
 } from '@nimbalyst/runtime/sync';
 import { getSyncProvider } from './SyncManager';
 import { isControllerMode } from '../utils/store';
@@ -53,6 +55,8 @@ export const REMOTE_SESSION_CHANNELS = {
   statusChange: 'remote-sessions:status-change',
   /** A create-session request we sent was answered by the host. */
   createResponse: 'remote-sessions:create-response',
+  /** Output/lifecycle from a shell the host opened for us. */
+  terminalEvent: 'remote-sessions:terminal-event',
 } as const;
 
 /** Prompt-response payload shapes accepted by the host (see MobileSessionControlHandler). */
@@ -74,12 +78,18 @@ interface RemoteSessionState {
   cleanupIndex?: () => void;
   /** Cleanup for the create-session-response subscription. */
   cleanupCreateResponse?: () => void;
+  /** Cleanup for the create-worktree-response subscription. */
+  cleanupWorktreeResponse?: () => void;
+  /** Cleanup for the inbound session-control subscription (terminal relay). */
+  cleanupControlMessages?: () => void;
   /** Per-session transcript subscription cleanups, keyed by sessionId. */
   transcriptCleanups: Map<string, () => void>;
   /** Debounced disconnect timers, keyed by sessionId (StrictMode-safe teardown). */
   pendingDisconnects: Map<string, ReturnType<typeof setTimeout>>;
   /** Pending create-session requests awaiting a response, keyed by requestId. */
   pendingCreates: Map<string, (response: CreateSessionResponse) => void>;
+  /** Pending create-worktree requests awaiting a response, keyed by requestId. */
+  pendingWorktrees: Map<string, (response: CreateWorktreeResponse) => void>;
 }
 
 const state: RemoteSessionState = {
@@ -87,6 +97,7 @@ const state: RemoteSessionState = {
   transcriptCleanups: new Map(),
   pendingDisconnects: new Map(),
   pendingCreates: new Map(),
+  pendingWorktrees: new Map(),
 };
 
 function broadcast(channel: string, payload: unknown): void {
@@ -138,8 +149,33 @@ export function ensureRemoteSubscriptions(): boolean {
     });
   }
 
+  if (provider.onCreateWorktreeResponse) {
+    state.cleanupWorktreeResponse = provider.onCreateWorktreeResponse((response) => {
+      const resolver = state.pendingWorktrees.get(response.requestId);
+      if (resolver) {
+        state.pendingWorktrees.delete(response.requestId);
+        resolver(response);
+      }
+    });
+  }
+
+  // Terminal bytes travel back on the same generic control channel the
+  // controller uses to drive the host. Only the host's own messages matter here
+  // — our outbound ones are never echoed to us, but the guard keeps the intent
+  // obvious and survives a relay that starts echoing.
+  if (provider.onSessionControlMessage) {
+    state.cleanupControlMessages = provider.onSessionControlMessage((message) => {
+      if (message.sentBy !== 'desktop' || !message.type.startsWith('terminal_')) return;
+      broadcast(REMOTE_SESSION_CHANNELS.terminalEvent, {
+        sessionId: message.sessionId,
+        type: message.type,
+        payload: message.payload ?? {},
+      });
+    });
+  }
+
   state.indexSubscribed = true;
-  log.info('[RemoteSessionService] Index + create-response subscriptions wired');
+  log.info('[RemoteSessionService] Index + create-response + control subscriptions wired');
   return true;
 }
 
@@ -378,6 +414,48 @@ export async function createRemoteSession(request: {
   return response;
 }
 
+/**
+ * Ask the host to cut a git worktree (a new branch) and open a session on it.
+ * The host owns the whole operation — branch naming, dedupe, session creation —
+ * and answers with the ids so the controller can jump straight to the session.
+ */
+export async function createRemoteWorktreeSession(projectId: string): Promise<CreateWorktreeResponse> {
+  const provider = requireProvider();
+  ensureRemoteSubscriptions();
+  if (!provider.sendCreateWorktreeRequest) {
+    throw new Error('Sync provider does not support worktree creation requests');
+  }
+
+  const requestId = randomUUID();
+  const payload: CreateWorktreeRequest = { requestId, projectId, timestamp: Date.now() };
+
+  const response = new Promise<CreateWorktreeResponse>((resolve, reject) => {
+    // Cutting a worktree copies a checkout, so it gets a longer leash than a
+    // plain session create.
+    const timer = setTimeout(() => {
+      state.pendingWorktrees.delete(requestId);
+      reject(new Error('Timed out waiting for host to create the worktree'));
+    }, 120_000);
+    state.pendingWorktrees.set(requestId, (res) => {
+      clearTimeout(timer);
+      resolve(res);
+    });
+  });
+
+  await provider.sendCreateWorktreeRequest(payload);
+  log.info('[RemoteSessionService] Sent create-worktree request', { requestId, projectId });
+  return response;
+}
+
+/** Drive a shell the host opened for us (open / input / resize / close). */
+export async function sendRemoteTerminalControl(
+  sessionId: string,
+  type: 'terminal_open' | 'terminal_input' | 'terminal_resize' | 'terminal_close',
+  payload: Record<string, unknown>,
+): Promise<void> {
+  await sendControl({ sessionId, type, payload });
+}
+
 /** Send a raw session-control message to the host (internal helper). */
 async function sendControl(message: Omit<SessionControlMessage, 'timestamp' | 'sentBy'>): Promise<void> {
   const provider = requireProvider();
@@ -433,6 +511,11 @@ export function shutdownRemoteSessionService(): void {
   for (const cleanup of state.transcriptCleanups.values()) cleanup();
   state.transcriptCleanups.clear();
   state.pendingCreates.clear();
+  state.pendingWorktrees.clear();
+  state.cleanupWorktreeResponse?.();
+  state.cleanupWorktreeResponse = undefined;
+  state.cleanupControlMessages?.();
+  state.cleanupControlMessages = undefined;
   state.indexSubscribed = false;
   log.info('[RemoteSessionService] Shut down');
 }

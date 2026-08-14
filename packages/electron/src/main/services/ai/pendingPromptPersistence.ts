@@ -46,10 +46,26 @@ export interface SyncedQuestionPromptData {
 }
 
 /**
+ * A git commit proposal. The proposal row is persisted to the transcript, but a
+ * remote device reads no local database, so the message and file list have to
+ * travel with the pending-prompt payload for it to be reviewable there.
+ */
+export interface SyncedCommitProposalPromptData {
+  promptType: 'git_commit_proposal';
+  proposalId: string;
+  commitMessage: string;
+  filesToStage: string[];
+  reasoning?: string;
+}
+
+/**
  * Full prompt payload synced to remote devices so they can render the answer UI
  * and respond (controller / mobile). Additive; other clients ignore it.
  */
-export type SyncedPendingPromptData = SyncedPermissionPromptData | SyncedQuestionPromptData;
+export type SyncedPendingPromptData =
+  | SyncedPermissionPromptData
+  | SyncedQuestionPromptData
+  | SyncedCommitProposalPromptData;
 
 /**
  * Coerce a provider's loosely-typed question list into the synced shape.

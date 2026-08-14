@@ -11,12 +11,27 @@ import type { RemoteProjectEntry } from '../../types/remoteSessions';
 
 interface NewRemoteSessionDialogProps {
   projects: RemoteProjectEntry[];
+  /** The session that is open, offered as a parent for the new one. */
+  activeSession?: { sessionId: string; title: string; projectId: string };
   onClose: () => void;
   onCreated: (sessionId?: string) => void;
 }
 
-export function NewRemoteSessionDialog({ projects, onClose, onCreated }: NewRemoteSessionDialogProps) {
-  const [projectId, setProjectId] = useState(projects[0]?.projectId ?? '');
+export function NewRemoteSessionDialog({
+  projects,
+  activeSession,
+  onClose,
+  onCreated,
+}: NewRemoteSessionDialogProps) {
+  // Following the open session means inheriting its project too, so the picker
+  // is pinned there for as long as the parent is selected.
+  const [underParent, setUnderParent] = useState(false);
+  // A worktree session is cut by the host (branch + checkout + session), so it
+  // takes a different request and can't also hang off a parent session.
+  const [inWorktree, setInWorktree] = useState(false);
+  const [projectId, setProjectId] = useState(
+    activeSession?.projectId || projects[0]?.projectId || '',
+  );
   const [prompt, setPrompt] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -28,14 +43,35 @@ export function NewRemoteSessionDialog({ projects, onClose, onCreated }: NewRemo
     if (!api || !projectId) return;
     setCreating(true);
     setError(null);
+    const parent = underParent && !inWorktree ? activeSession : undefined;
     try {
       const text = prompt.trim();
+
+      if (inWorktree) {
+        const wt = await api.createWorktree(projectId);
+        if (!wt.success || !wt.sessionId) {
+          setError(wt.error ?? 'Host could not create the worktree');
+          return;
+        }
+        if (text || images.length) {
+          await api.sendPrompt(
+            wt.sessionId,
+            text || 'Take a look at this image.',
+            images.length ? toPayload(images) : undefined,
+          );
+        }
+        clearImages();
+        onCreated(wt.sessionId);
+        return;
+      }
+
       // The create request carries text only — images have to travel as bytes on
       // a prompt control message, so with attachments we create the session bare
       // and immediately queue the prompt (which the host stages as attachments).
       const res = await api.create({
-        projectId,
+        projectId: parent ? parent.projectId : projectId,
         initialPrompt: images.length ? undefined : text || undefined,
+        parentSessionId: parent?.sessionId,
       });
       if (!res.success) {
         setError(res.error ?? 'Host could not create the session');
@@ -69,13 +105,42 @@ export function NewRemoteSessionDialog({ projects, onClose, onCreated }: NewRemo
           New session on host
         </div>
 
+        <label
+          className="remote-new-session-worktree flex items-center gap-2 text-xs"
+          style={{ color: 'var(--nim-text-muted)' }}
+        >
+          <input
+            type="checkbox"
+            checked={inWorktree}
+            onChange={(e) => setInWorktree(e.target.checked)}
+            data-testid="remote-new-session-worktree"
+          />
+          <span className="truncate">On a new branch (git worktree)</span>
+        </label>
+
+        {activeSession && !inWorktree && (
+          <label
+            className="remote-new-session-parent flex items-center gap-2 text-xs"
+            style={{ color: 'var(--nim-text-muted)' }}
+          >
+            <input
+              type="checkbox"
+              checked={underParent}
+              onChange={(e) => setUnderParent(e.target.checked)}
+              data-testid="remote-new-session-parent"
+            />
+            <span className="truncate">Continue under “{activeSession.title || 'the open session'}”</span>
+          </label>
+        )}
+
         <label className="flex flex-col gap-1 text-xs" style={{ color: 'var(--nim-text-muted)' }}>
           Project
           <select
             className="rounded px-2 py-1.5 text-sm outline-none"
             style={{ background: 'var(--nim-bg-secondary)', color: 'var(--nim-text)', border: '1px solid var(--nim-border)' }}
-            value={projectId}
+            value={underParent && activeSession ? activeSession.projectId : projectId}
             onChange={(e) => setProjectId(e.target.value)}
+            disabled={underParent}
             data-testid="remote-new-session-project"
           >
             {projects.length === 0 && <option value="">No projects available</option>}

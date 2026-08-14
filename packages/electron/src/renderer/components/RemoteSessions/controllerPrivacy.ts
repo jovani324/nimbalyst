@@ -15,12 +15,18 @@ export interface ControllerPrivacySettings {
   hoverReveal: boolean;
   /** Mask token/key/email-looking strings even when the transcript is not blurred. */
   redactSecrets: boolean;
+  /** Show session titles as plausible file paths; the real title on hover. */
+  disguiseTitles: boolean;
+  /** Show a page of source in place of the transcript until you point at it. */
+  disguiseTranscript: boolean;
 }
 
 export const DEFAULT_PRIVACY: ControllerPrivacySettings = {
   autoBlurOnUnfocus: true,
   hoverReveal: true,
   redactSecrets: true,
+  disguiseTitles: false,
+  disguiseTranscript: false,
 };
 
 const PRIVACY_KEY = 'controllerPrivacy';
@@ -71,29 +77,48 @@ async function saveControllerPrivacy(settings: ControllerPrivacySettings): Promi
   }
 }
 
+/**
+ * One shared copy of the settings for the whole window.
+ *
+ * Both panes read these — the transcript owns the settings menu, the session
+ * list needs `disguiseTitles` — so per-component state would let you toggle
+ * "disguise titles" and watch the list ignore it. Module state plus a listener
+ * set keeps every hook instance on the same value without pulling privacy
+ * settings into the global atom store.
+ */
+let current: ControllerPrivacySettings = DEFAULT_PRIVACY;
+let loaded = false;
+const listeners = new Set<(s: ControllerPrivacySettings) => void>();
+
+function publish(next: ControllerPrivacySettings): void {
+  current = next;
+  for (const listener of listeners) listener(next);
+}
+
 /** React hook: persisted privacy settings + a per-key toggle. */
 export function useControllerPrivacy(): {
   settings: ControllerPrivacySettings;
   toggle: (key: keyof ControllerPrivacySettings) => void;
 } {
-  const [settings, setSettings] = useState<ControllerPrivacySettings>(DEFAULT_PRIVACY);
+  const [settings, setSettings] = useState<ControllerPrivacySettings>(current);
 
   useEffect(() => {
-    let live = true;
-    void loadControllerPrivacy().then((s) => {
-      if (live) setSettings(s);
-    });
+    listeners.add(setSettings);
+    if (!loaded) {
+      loaded = true;
+      void loadControllerPrivacy().then(publish);
+    } else {
+      setSettings(current);
+    }
     return () => {
-      live = false;
+      listeners.delete(setSettings);
     };
   }, []);
 
   const toggle = useCallback((key: keyof ControllerPrivacySettings) => {
-    setSettings((prev) => {
-      const next = { ...prev, [key]: !prev[key] };
-      void saveControllerPrivacy(next);
-      return next;
-    });
+    const next = { ...current, [key]: !current[key] };
+    void saveControllerPrivacy(next);
+    publish(next);
   }, []);
 
   return { settings, toggle };

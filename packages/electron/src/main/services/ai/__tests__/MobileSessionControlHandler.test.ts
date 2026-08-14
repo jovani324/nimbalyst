@@ -55,6 +55,14 @@ vi.mock('@nimbalyst/runtime', () => ({
   },
 }));
 
+// The real module reaches SyncManager (and from there the extension SDK) for
+// its relay send path; this suite is about control dispatch, not terminals.
+// `false` = "not mine, keep dispatching", which is what every case here needs.
+vi.mock('../../RemoteTerminalService', () => ({
+  handleRemoteTerminalControl: () => false,
+  closeAllRemoteTerminals: () => {},
+}));
+
 vi.mock('../../../utils/logger', () => ({
   logger: {
     ai: {

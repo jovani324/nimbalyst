@@ -1670,6 +1670,9 @@ export interface SessionSyncConfig {
   // settings-sync-to-mobile. The device also registers as type 'mobile' so the
   // host treats it exactly like a phone (settings pushes, model lists, etc.).
   controllerMode?: boolean;
+  // Whether a paired controller/mobile device may open a shell on this host.
+  // Defaults to on; set false to refuse terminal control messages outright.
+  remoteTerminalEnabled?: boolean;
 }
 
 // Stytch Auth Configuration (stored separately from session sync)
@@ -1698,6 +1701,15 @@ export function setSessionSyncConfig(config: SessionSyncConfig | undefined): voi
  */
 export function isControllerMode(): boolean {
   return getSessionSyncConfig()?.controllerMode === true;
+}
+
+/**
+ * Whether a paired device may open a shell on this host. Defaults to true —
+ * a paired controller can already drive agents that run arbitrary commands —
+ * but it is a separate switch so it can be turned off on its own.
+ */
+export function isRemoteTerminalEnabled(): boolean {
+  return getSessionSyncConfig()?.remoteTerminalEnabled !== false;
 }
 
 // Stytch Auth Configuration

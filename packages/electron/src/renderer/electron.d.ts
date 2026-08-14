@@ -763,6 +763,17 @@ interface ElectronAPI {
       sessionType?: string;
       parentSessionId?: string;
     }) => Promise<import('./types/remoteSessions').RemoteCreateResponse>;
+    createWorktree: (
+      projectId: string,
+    ) => Promise<import('./types/remoteSessions').RemoteWorktreeResponse>;
+    terminal: (payload: {
+      sessionId: string;
+      type: 'terminal_open' | 'terminal_input' | 'terminal_resize' | 'terminal_close';
+      terminalId: string;
+      data?: string;
+      cols?: number;
+      rows?: number;
+    }) => Promise<{ success: boolean }>;
     cancel: (sessionId: string) => Promise<{ success: boolean }>;
     archive: (sessionId: string, isArchived: boolean) => Promise<{ success: boolean }>;
     respondPrompt: (
@@ -780,6 +791,9 @@ interface ElectronAPI {
     ) => () => void;
     onCreateResponse: (
       callback: (response: import('./types/remoteSessions').RemoteCreateResponse) => void,
+    ) => () => void;
+    onTerminalEvent: (
+      callback: (data: import('./types/remoteSessions').RemoteTerminalEvent) => void,
     ) => () => void;
   };
 

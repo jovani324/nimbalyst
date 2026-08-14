@@ -21,6 +21,8 @@ import type { RemoteSessionIndexEntry } from '../../types/remoteSessions';
 import { RemoteSessionTranscript } from './RemoteSessionTranscript';
 import { NewRemoteSessionDialog } from './NewRemoteSessionDialog';
 import { filterSessionsByProject } from './sessionSearch';
+import { disguisedName } from './controllerDisguise';
+import { useControllerPrivacy } from './controllerPrivacy';
 
 interface RemoteSessionsViewProps {
   isActive: boolean;
@@ -41,6 +43,7 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
   const [query, setQuery] = useState('');
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
   const searchRef = useRef<HTMLInputElement>(null);
+  const { settings: privacy } = useControllerPrivacy();
 
   const refresh = useCallback(async () => {
     if (!window.electronAPI?.remoteSessions) return;
@@ -71,6 +74,17 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
     },
     [projects],
   );
+
+  // Offered as the parent for a new session, so a follow-up can hang off the
+  // session you are looking at instead of starting loose in the project.
+  const activeSessionEntry = useMemo(() => {
+    if (!activeSessionId) return undefined;
+    for (const list of allSessionsByProject.values()) {
+      const hit = list.find((s) => s.sessionId === activeSessionId);
+      if (hit) return { sessionId: hit.sessionId, title: hit.title, projectId: hit.projectId };
+    }
+    return undefined;
+  }, [allSessionsByProject, activeSessionId]);
 
   const searching = query.trim().length > 0;
   const sessionsByProject = useMemo(
@@ -302,6 +316,7 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
                       key={session.sessionId}
                       session={session}
                       selected={session.sessionId === activeSessionId}
+                      disguise={privacy.disguiseTitles}
                       onSelect={() => setActiveSessionId(session.sessionId)}
                     />
                   ))}
@@ -325,6 +340,7 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
       {showNewDialog && (
         <NewRemoteSessionDialog
           projects={projects}
+          activeSession={activeSessionEntry}
           onClose={() => setShowNewDialog(false)}
           onCreated={(sessionId) => {
             setShowNewDialog(false);
@@ -340,10 +356,17 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
 interface RemoteSessionRowProps {
   session: RemoteSessionIndexEntry;
   selected: boolean;
+  /** Show a stand-in file path until the row is hovered. */
+  disguise: boolean;
   onSelect: () => void;
 }
 
-function RemoteSessionRow({ session, selected, onSelect }: RemoteSessionRowProps) {
+function RemoteSessionRow({ session, selected, disguise, onSelect }: RemoteSessionRowProps) {
+  const [hovered, setHovered] = useState(false);
+  const real = session.title || 'Untitled';
+  // Disguised rows show a file path until pointed at, so an idle list reads as
+  // an editor's file tree instead of a column of what you are working on.
+  const label = disguise && !hovered ? disguisedName(session.sessionId) : real;
   return (
     <button
       className="remote-session-row flex items-center gap-1.5 w-full text-left px-3 py-0.5 text-[12px] leading-5"
@@ -352,11 +375,13 @@ function RemoteSessionRow({ session, selected, onSelect }: RemoteSessionRowProps
         color: 'var(--nim-text)',
       }}
       onClick={onSelect}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       data-testid="remote-session-row"
       data-session-id={session.sessionId}
-      title={session.title || 'Untitled'}
+      title={disguise && !hovered ? undefined : real}
     >
-      <span className="flex-1 truncate">{session.title || 'Untitled'}</span>
+      <span className="flex-1 truncate">{label}</span>
       {/* A blocked session is the one you actually have to open — it outranks
           "running" and "queued", which resolve on their own. */}
       {session.hasPendingPrompt && (

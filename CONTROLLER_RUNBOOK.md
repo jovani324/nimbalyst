@@ -88,6 +88,20 @@ Two windows come up (host + controller popover; Alt+Space toggles the popover).
   the transcript, send a reply, and approve a tool prompt.
 - In the popover: pick a **disguise theme**, turn on **auto-blur on unfocus** and
   **secret redaction** (⚙ menu). Set the **boss-key** if you want a different one.
+- Also in ⚙: **font**, **text size**, **reset the popover size**, **titles as file
+  paths** and **transcript as source until hovered** — the last two make an idle
+  popover read as an open editor rather than a blurred chat.
+
+### 4b. The remote shell
+The `>_` button in a session's header opens a **real shell on the host**, in that
+session's working directory (its worktree, for worktree sessions). It runs there,
+not here — the popover only relays keystrokes and prints the output with escape
+codes stripped, so full-screen programs (vim, htop) will look like noise.
+
+The shell dies when you close the pane, and after 30 minutes with no input. This
+is on by default because a paired controller can already drive agents that run
+commands; to refuse it outright, set `sessionSync.remoteTerminalEnabled` to
+`false` in the **host's** app settings.
 
 ### 5. Shut down for the night
 ```

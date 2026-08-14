@@ -10,6 +10,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type M
 import { MarkdownRenderer } from '@nimbalyst/runtime/ui/AgentTranscript/components/MarkdownRenderer';
 import type { TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/transcript';
 import {
+  linkify,
   toCondensedBlocks,
   summarizeAssistant,
   summarizeToolGroup,
@@ -17,6 +18,38 @@ import {
   toolChipLabel,
 } from './condensedTranscript';
 import { redactSecrets } from './controllerPrivacy';
+
+/** Plain text with its URLs rendered as anchors. */
+function LinkedText({ text }: { text: string }) {
+  return (
+    <>
+      {linkify(text).map((part, i) =>
+        typeof part === 'string' ? (
+          part
+        ) : (
+          <a key={`${part.key}-${i}`} href={part.href} style={{ color: 'var(--nim-primary)' }}>
+            {part.href}
+          </a>
+        ),
+      )}
+    </>
+  );
+}
+
+/**
+ * Send link clicks to the OS browser.
+ *
+ * A plain anchor click navigates the popover itself away from the app — the
+ * window has no chrome to get back with, so the controller would simply become
+ * a web page until it is restarted.
+ */
+function openLinksExternally(e: MouseEvent) {
+  const anchor = (e.target as HTMLElement | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+  const href = anchor?.getAttribute('href');
+  if (!href || !/^https?:\/\//i.test(href)) return;
+  e.preventDefault();
+  void window.electronAPI?.openExternal?.(href);
+}
 
 /** Provides the active text transform (identity, or secret-redaction) to rows. */
 const RedactContext = createContext<(s: string) => string>((s) => s);
@@ -73,7 +106,8 @@ export function CondensedRemoteTranscript({ messages, isProcessing, redact, perM
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="condensed-transcript flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-2"
+        onClick={openLinksExternally}
+        className="condensed-transcript flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-2 select-text"
         data-testid="condensed-remote-transcript"
       >
         {blocks.map((block, i) => {
@@ -123,7 +157,7 @@ function UserRow({ message }: { message: TranscriptViewMessage }) {
         className="mt-1 text-sm whitespace-pre-wrap break-words select-text leading-snug"
         style={{ color: 'var(--nim-text)' }}
       >
-        {redact(message.text?.trim() ?? '')}
+        <LinkedText text={redact(message.text?.trim() ?? '')} />
       </div>
     </div>
   );
@@ -154,7 +188,12 @@ function AssistantRow({
     <div className="condensed-assistant rounded px-1 py-0.5">
       <div
         className="flex gap-2 items-baseline cursor-pointer group"
-        onClick={onToggle}
+        // Selecting text inside the row ends in a click; without this, dragging
+        // across a summary to copy it collapses the message you were reading.
+        onClick={() => {
+          if (window.getSelection()?.toString()) return;
+          onToggle();
+        }}
         data-testid="condensed-assistant-row"
       >
         <span className="shrink-0 text-[11px] select-none" style={{ color: 'var(--nim-text-muted)', width: 10 }}>

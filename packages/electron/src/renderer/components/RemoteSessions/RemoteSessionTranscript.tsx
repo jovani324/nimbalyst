@@ -17,14 +17,20 @@ import { InteractivePromptWidget } from '@nimbalyst/runtime/ui/AgentTranscript/c
 import { CondensedRemoteTranscript } from './CondensedRemoteTranscript';
 import { buildSessionMarkdown } from './condensedTranscript';
 import { resolvePendingPrompt } from './pendingPrompt';
+import { RemoteCommitProposal, type CommitProposalResponse } from './RemoteCommitProposal';
 import { ComposerImageStrip, useComposerImages } from './composerImages';
+import { disguisedCode, disguisedName } from './controllerDisguise';
+import { RemoteTerminalPane } from './RemoteTerminalPane';
 import { toPayload } from './controllerImages';
 import { useControllerPrivacy, AUTO_BLUR_IDLE_MS, type ControllerPrivacySettings } from './controllerPrivacy';
 import {
   useControllerAppearance,
   THEMES,
+  FONTS,
   OPACITY_STEPS,
+  TEXT_SCALE_STEPS,
   type ControllerAppearance,
+  type ControllerFont,
   type ControllerTheme,
 } from './controllerAppearance';
 import {
@@ -72,8 +78,11 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   const [masked, setMasked] = useState(false);
   const [showPrivacyMenu, setShowPrivacyMenu] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [paneHovered, setPaneHovered] = useState(false);
+  const [showTerminal, setShowTerminal] = useState(false);
+  const transcriptPaneRef = useRef<HTMLDivElement>(null);
   const { settings: privacy, toggle: togglePrivacy } = useControllerPrivacy();
-  const { appearance, setTheme, setOpacity } = useControllerAppearance();
+  const { appearance, setTheme, setOpacity, setFont, setTextScale } = useControllerAppearance();
 
   // Auto-blur when you look away: mask on window blur, on the popover hiding, and
   // after an idle stretch. Any keypress/click/scroll resets the idle timer.
@@ -99,6 +108,39 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
       window.removeEventListener('wheel', bump);
     };
   }, [privacy.autoBlurOnUnfocus]);
+
+  // Move through a long transcript without reaching for the trackpad. The
+  // scroller lives inside CondensedRemoteTranscript, so it's found by class
+  // rather than threaded out as a ref. Cmd/Ctrl+Up/Down jump to the ends;
+  // PageUp/PageDown move a screen. Typing in the composer is left alone —
+  // except for the jumps, which have no meaning in a one-line box.
+  useEffect(() => {
+    if (!isActive) return;
+    const onKeyDown = (e: globalThis.KeyboardEvent) => {
+      const el = transcriptPaneRef.current?.querySelector('.condensed-transcript') as HTMLElement | null;
+      if (!el) return;
+      const jump = e.metaKey || e.ctrlKey;
+      const target = e.target as HTMLElement | null;
+      const typing = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA';
+      const page = Math.max(80, el.clientHeight - 40);
+
+      if (jump && (e.key === 'ArrowUp' || e.key === 'Home')) {
+        e.preventDefault();
+        el.scrollTo({ top: 0, behavior: 'smooth' });
+      } else if (jump && (e.key === 'ArrowDown' || e.key === 'End')) {
+        e.preventDefault();
+        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+      } else if (!typing && e.key === 'PageUp') {
+        e.preventDefault();
+        el.scrollBy({ top: -page, behavior: 'smooth' });
+      } else if (!typing && e.key === 'PageDown') {
+        e.preventDefault();
+        el.scrollBy({ top: page, behavior: 'smooth' });
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isActive]);
 
   // Connect on mount / session change; disconnect on unmount. The component is
   // keyed by sessionId in the parent, so this maps 1:1 to the open session.
@@ -244,10 +286,34 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
     }
   };
 
+  const handleCommitResponse = async (proposalId: string, response: CommitProposalResponse) => {
+    const api = window.electronAPI?.remoteSessions;
+    if (!api) return;
+    setPromptSubmitting(true);
+    setActionError(null);
+    try {
+      await api.respondPrompt(sessionId, {
+        promptType: 'git_commit',
+        promptId: proposalId,
+        response: { ...response },
+      });
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to answer the commit proposal');
+    } finally {
+      setPromptSubmitting(false);
+    }
+  };
+
   const isExecuting = !!session?.isExecuting;
   const canSend = !sending && (!!draft.trim() || images.length > 0);
   // Whole-transcript blur (as opposed to per-message hover-reveal).
   const globalBlur = masked && !privacy.hoverReveal;
+  // The disguise is the quieter cousin of the blur: a pane of plausible source
+  // instead of an obviously-smeared one, dropped the moment you point at it.
+  const disguised = privacy.disguiseTranscript && !paneHovered;
+  const headerTitle = privacy.disguiseTitles
+    ? disguisedName(sessionId)
+    : session?.title || 'Session';
 
   // Force a fresh pull of this session's latest state (transcript + queued/pending
   // status): reconnect + full resync so the host re-broadcasts everything.
@@ -295,8 +361,12 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
         style={{ borderColor: 'var(--nim-border)' }}
       >
         <div className="flex items-center gap-1.5 min-w-0">
-          <span className="text-[11px] truncate" style={{ color: 'var(--nim-text-muted)' }}>
-            {session?.title || 'Session'}
+          <span
+            className="text-[11px] truncate"
+            style={{ color: 'var(--nim-text-muted)' }}
+            data-testid="remote-session-header-title"
+          >
+            {headerTitle}
           </span>
           {isExecuting && (
             <span
@@ -329,6 +399,17 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
           </button>
           <button
             className={HEADER_ACTION_CLASS}
+            style={{ color: showTerminal ? 'var(--nim-primary)' : 'var(--nim-text-muted)' }}
+            onClick={() => setShowTerminal((t) => !t)}
+            data-testid="remote-session-terminal-button"
+            title="Open a shell on the host, in this session's directory"
+            aria-label="Open a shell on the host"
+            aria-pressed={showTerminal}
+          >
+            {'>_'}
+          </button>
+          <button
+            className={HEADER_ACTION_CLASS}
             style={{ color: showPrivacyMenu ? 'var(--nim-primary)' : 'var(--nim-text-muted)' }}
             onClick={() => setShowPrivacyMenu((s) => !s)}
             data-testid="remote-session-privacy-button"
@@ -343,6 +424,8 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
               appearance={appearance}
               onTheme={setTheme}
               onOpacity={setOpacity}
+              onFont={setFont}
+              onTextScale={setTextScale}
               onClose={() => setShowPrivacyMenu(false)}
             />
           )}
@@ -388,6 +471,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
           and reveal on hover, otherwise the whole transcript blurs and a click
           reveals it. Secret-looking strings are redacted independently. */}
       <div
+        ref={transcriptPaneRef}
         className="flex-1 min-h-0 flex flex-col"
         style={{
           filter: globalBlur ? 'blur(7px)' : undefined,
@@ -395,15 +479,25 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
           cursor: globalBlur ? 'pointer' : undefined,
         }}
         onClick={globalBlur ? () => setMasked(false) : undefined}
+        onMouseEnter={() => setPaneHovered(true)}
+        onMouseLeave={() => setPaneHovered(false)}
         title={globalBlur ? 'Click to reveal' : undefined}
       >
-        <CondensedRemoteTranscript
-          messages={viewMessages}
-          isProcessing={isExecuting}
-          redact={privacy.redactSecrets}
-          perMessageBlur={masked && privacy.hoverReveal}
-        />
+        {disguised ? (
+          <DisguisedSource sessionId={sessionId} />
+        ) : (
+          <CondensedRemoteTranscript
+            messages={viewMessages}
+            isProcessing={isExecuting}
+            redact={privacy.redactSecrets}
+            perMessageBlur={masked && privacy.hoverReveal}
+          />
+        )}
       </div>
+
+      {showTerminal && (
+        <RemoteTerminalPane sessionId={sessionId} onClose={() => setShowTerminal(false)} />
+      )}
 
       {/* Pending interactive prompt. InteractivePromptWidget is sized for the
           desktop's full-height transcript pane; a question with several options
@@ -416,13 +510,34 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
           style={{ borderColor: 'var(--nim-border)' }}
           data-testid="remote-session-pending-prompt"
         >
-          <InteractivePromptWidget
-            promptType={pendingPrompt.promptType}
-            content={pendingPrompt.content}
-            onSubmitResponse={(r) => void handlePromptResponse(r)}
-            onCancelQuestion={(r) => void handlePromptResponse(r)}
-            isSubmitting={promptSubmitting}
-          />
+          {pendingPrompt.promptType === 'git_commit_proposal' ? (
+            <RemoteCommitProposal
+              content={pendingPrompt.content}
+              isSubmitting={promptSubmitting}
+              onRespond={(r) => void handleCommitResponse(pendingPrompt.content.proposalId, r)}
+            />
+          ) : (
+            <InteractivePromptWidget
+              promptType={pendingPrompt.promptType}
+              content={pendingPrompt.content}
+              onSubmitResponse={(r) => void handlePromptResponse(r)}
+              onCancelQuestion={(r) => void handlePromptResponse(r)}
+              isSubmitting={promptSubmitting}
+            />
+          )}
+        </div>
+      )}
+
+      {/* The host says a prompt is open but nothing renderable reached us — an
+          older host build, or a prompt type the controller can't answer. Say so
+          instead of showing a session that silently refuses to move. */}
+      {!pendingPrompt && session?.hasPendingPrompt && (
+        <div
+          className="remote-session-prompt-unavailable px-2 py-1 text-[11px] border-t shrink-0"
+          style={{ borderColor: 'var(--nim-border)', color: 'var(--nim-warning)' }}
+          data-testid="remote-session-prompt-unavailable"
+        >
+          Waiting for an answer the host didn't send over — answer it there, or ⟳ to re-check.
         </div>
       )}
 
@@ -472,6 +587,32 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   );
 }
 
+/**
+ * The transcript's stand-in while the pointer is elsewhere: a numbered page of
+ * source. Rendered in place of the real thing rather than over it, so nothing
+ * real is in the DOM to leak through a screenshot or a stray scroll.
+ */
+function DisguisedSource({ sessionId }: { sessionId: string }) {
+  const lines = useMemo(() => disguisedCode(sessionId), [sessionId]);
+  return (
+    <div
+      className="remote-session-disguise flex-1 min-h-0 overflow-hidden px-3 py-3 text-[12px] leading-[1.5] select-none"
+      style={{ color: 'var(--nim-text-muted)' }}
+      data-testid="remote-session-disguise"
+      aria-hidden="true"
+    >
+      {lines.map((line, i) => (
+        <div key={i} className="flex gap-3">
+          <span className="shrink-0 text-right" style={{ width: 22, opacity: 0.5 }}>
+            {i + 1}
+          </span>
+          <span className="whitespace-pre">{line}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** Dropdown: appearance (theme + transparency) and privacy toggles. */
 function ControllerSettingsMenu({
   settings,
@@ -479,6 +620,8 @@ function ControllerSettingsMenu({
   appearance,
   onTheme,
   onOpacity,
+  onFont,
+  onTextScale,
   onClose,
 }: {
   settings: ControllerPrivacySettings;
@@ -486,12 +629,16 @@ function ControllerSettingsMenu({
   appearance: ControllerAppearance;
   onTheme: (theme: ControllerTheme) => void;
   onOpacity: (opacity: number) => void;
+  onFont: (font: ControllerFont) => void;
+  onTextScale: (scale: number) => void;
   onClose: () => void;
 }) {
   const rows: Array<{ key: keyof ControllerPrivacySettings; label: string }> = [
     { key: 'autoBlurOnUnfocus', label: 'Auto-blur when idle / unfocused' },
     { key: 'hoverReveal', label: 'Hover to reveal (per message)' },
     { key: 'redactSecrets', label: 'Redact secrets (keys, emails…)' },
+    { key: 'disguiseTitles', label: 'Titles as file paths' },
+    { key: 'disguiseTranscript', label: 'Transcript as source until hovered' },
   ];
   const heading = (text: string) => (
     <div className="px-2 pt-2 pb-1 text-[10px] uppercase tracking-wide" style={{ color: 'var(--nim-text-muted)' }}>
@@ -520,6 +667,42 @@ function ControllerSettingsMenu({
               onClick={() => onTheme(t.id)}
             >
               {t.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-1 px-2 pb-1">
+          <span style={{ color: 'var(--nim-text-muted)' }}>Font</span>
+          {FONTS.map((f) => (
+            <button
+              key={f.id}
+              className="controller-font-option px-2 py-0.5 rounded"
+              style={{
+                border: '1px solid var(--nim-border)',
+                background: appearance.font === f.id ? 'var(--nim-bg-selected)' : 'transparent',
+                color: appearance.font === f.id ? 'var(--nim-primary)' : 'var(--nim-text)',
+                fontFamily: f.stack,
+              }}
+              onClick={() => onFont(f.id)}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-1 px-2 pb-1">
+          <span style={{ color: 'var(--nim-text-muted)' }}>Text</span>
+          {TEXT_SCALE_STEPS.map((s) => (
+            <button
+              key={s}
+              className="controller-text-scale-option px-1.5 py-0.5 rounded"
+              style={{
+                border: '1px solid var(--nim-border)',
+                background: appearance.textScale === s ? 'var(--nim-bg-selected)' : 'transparent',
+                color: appearance.textScale === s ? 'var(--nim-primary)' : 'var(--nim-text)',
+              }}
+              onClick={() => onTextScale(s)}
+              title={`Scale the whole popover to ${s}%`}
+            >
+              {s}%
             </button>
           ))}
         </div>

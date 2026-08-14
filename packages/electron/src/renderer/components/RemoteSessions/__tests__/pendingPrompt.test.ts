@@ -81,4 +81,38 @@ describe('resolvePendingPrompt', () => {
   it('returns nothing when neither source has a pending prompt', () => {
     expect(resolvePendingPrompt([], null)).toBeNull();
   });
+
+  it('renders a commit proposal synced through session metadata', () => {
+    const prompt = resolvePendingPrompt([], {
+      promptType: 'git_commit_proposal',
+      proposalId: 'p-1',
+      commitMessage: 'Fix the parser',
+      filesToStage: ['src/parser.ts'],
+    });
+
+    expect(prompt).toEqual({
+      promptType: 'git_commit_proposal',
+      content: expect.objectContaining({ proposalId: 'p-1', filesToStage: ['src/parser.ts'] }),
+    });
+  });
+
+  it('renders a commit proposal from the transcript, whose files come from stagedFiles', () => {
+    // The projected payload names the list `stagedFiles`, the synced one
+    // `filesToStage`; a mismatch here renders an empty, unreviewable file list.
+    const proposal = {
+      type: 'interactive_prompt',
+      interactivePrompt: {
+        promptType: 'git_commit_proposal',
+        requestId: 'p-2',
+        status: 'pending',
+        commitMessage: 'Bump deps',
+        stagedFiles: ['package.json'],
+      },
+    } as unknown as TranscriptViewMessage;
+
+    expect(resolvePendingPrompt([proposal], null)?.content).toMatchObject({
+      proposalId: 'p-2',
+      filesToStage: ['package.json'],
+    });
+  });
 });

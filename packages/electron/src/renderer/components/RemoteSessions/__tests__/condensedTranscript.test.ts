@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import type { TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/transcript';
 import {
+  linkify,
   toCondensedBlocks,
   summarizeAssistant,
   toolChipLabel,
@@ -120,5 +121,26 @@ describe('buildSessionMarkdown', () => {
     expect(md).toContain('- `Edit · auth.ts`');
     expect(md).toContain('- `Bash` [error]');
     expect(md.endsWith('\n')).toBe(true);
+  });
+});
+
+describe('linkify', () => {
+  it('splits a bare URL out of surrounding prose', () => {
+    expect(linkify('see https://example.com/a_b for details')).toEqual([
+      'see ',
+      { href: 'https://example.com/a_b', key: expect.any(String) },
+      ' for details',
+    ]);
+  });
+
+  it('leaves sentence punctuation outside the link', () => {
+    // A trailing period swallowed into the href produces a 404 on click.
+    const parts = linkify('go to https://example.com/docs.');
+    expect(parts[1]).toMatchObject({ href: 'https://example.com/docs' });
+    expect(parts[2]).toBe('.');
+  });
+
+  it('returns plain text untouched', () => {
+    expect(linkify('no links here')).toEqual(['no links here']);
   });
 });

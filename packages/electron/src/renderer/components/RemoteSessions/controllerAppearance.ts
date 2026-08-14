@@ -9,11 +9,20 @@
 import { useCallback, useEffect, useState } from 'react';
 
 export type ControllerTheme = 'midnight' | 'terminal' | 'editor' | 'paper';
+export type ControllerFont = 'mono' | 'system' | 'serif';
 
 export interface ControllerAppearance {
   theme: ControllerTheme;
   /** Window opacity as a percent, 60–100. */
   opacity: number;
+  font: ControllerFont;
+  /**
+   * Text scale as a percent, 80–150. Applied as the window's zoom factor rather
+   * than a font-size: the popover's type sizes are Tailwind px utilities, so a
+   * root font-size would move the body text and leave every header, glyph and
+   * padding behind. Zoom scales the whole layout, titles included.
+   */
+  textScale: number;
 }
 
 export const THEMES: Array<{ id: ControllerTheme; label: string }> = [
@@ -23,9 +32,30 @@ export const THEMES: Array<{ id: ControllerTheme; label: string }> = [
   { id: 'paper', label: 'Paper' },
 ];
 
-export const OPACITY_STEPS = [100, 92, 85, 75] as const;
+export const FONTS: Array<{ id: ControllerFont; label: string; stack: string }> = [
+  {
+    id: 'mono',
+    label: 'Mono',
+    stack:
+      'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, "Cascadia Code", "Roboto Mono", monospace',
+  },
+  {
+    id: 'system',
+    label: 'System',
+    stack: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+  },
+  { id: 'serif', label: 'Serif', stack: 'ui-serif, Georgia, "Iowan Old Style", "Times New Roman", serif' },
+];
 
-export const DEFAULT_APPEARANCE: ControllerAppearance = { theme: 'midnight', opacity: 100 };
+export const OPACITY_STEPS = [100, 92, 85, 75] as const;
+export const TEXT_SCALE_STEPS = [90, 100, 115, 130] as const;
+
+export const DEFAULT_APPEARANCE: ControllerAppearance = {
+  theme: 'midnight',
+  opacity: 100,
+  font: 'mono',
+  textScale: 100,
+};
 
 /**
  * Theme palettes applied as inline `--nim-*` vars. They MUST be set inline with
@@ -100,6 +130,13 @@ export function applyControllerTheme(theme: ControllerTheme): void {
   for (const [k, v] of Object.entries(palette)) root.style.setProperty(k, v, 'important');
 }
 
+/** Apply the chosen font stack; index.css reads it through --nim-controller-font. */
+export function applyControllerFont(font: ControllerFont): void {
+  if (typeof document === 'undefined') return;
+  const stack = (FONTS.find((f) => f.id === font) ?? FONTS[0]).stack;
+  document.documentElement.style.setProperty('--nim-controller-font', stack, 'important');
+}
+
 const KEY = 'controllerAppearance';
 
 function isPopover(): boolean {
@@ -130,6 +167,8 @@ export function useControllerAppearance(): {
   appearance: ControllerAppearance;
   setTheme: (theme: ControllerTheme) => void;
   setOpacity: (opacity: number) => void;
+  setFont: (font: ControllerFont) => void;
+  setTextScale: (textScale: number) => void;
 } {
   const [appearance, setAppearance] = useState<ControllerAppearance>(DEFAULT_APPEARANCE);
 
@@ -149,24 +188,24 @@ export function useControllerAppearance(): {
   useEffect(() => {
     if (!isPopover()) return;
     applyControllerTheme(appearance.theme);
+    applyControllerFont(appearance.font);
     void window.electronAPI?.invoke?.('controller-popover:set-opacity', appearance.opacity / 100);
-  }, [appearance.theme, appearance.opacity]);
+    void window.electronAPI?.invoke?.('controller-popover:set-zoom', appearance.textScale / 100);
+  }, [appearance.theme, appearance.opacity, appearance.font, appearance.textScale]);
 
-  const setTheme = useCallback((theme: ControllerTheme) => {
+  // One setter shape for every field: merge, persist, return.
+  const update = useCallback((patch: Partial<ControllerAppearance>) => {
     setAppearance((prev) => {
-      const next = { ...prev, theme };
+      const next = { ...prev, ...patch };
       void save(next);
       return next;
     });
   }, []);
 
-  const setOpacity = useCallback((opacity: number) => {
-    setAppearance((prev) => {
-      const next = { ...prev, opacity };
-      void save(next);
-      return next;
-    });
-  }, []);
+  const setTheme = useCallback((theme: ControllerTheme) => update({ theme }), [update]);
+  const setOpacity = useCallback((opacity: number) => update({ opacity }), [update]);
+  const setFont = useCallback((font: ControllerFont) => update({ font }), [update]);
+  const setTextScale = useCallback((textScale: number) => update({ textScale }), [update]);
 
-  return { appearance, setTheme, setOpacity };
+  return { appearance, setTheme, setOpacity, setFont, setTextScale };
 }

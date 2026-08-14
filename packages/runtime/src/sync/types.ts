@@ -292,8 +292,14 @@ export interface SyncProvider {
   /** Subscribe to worktree creation requests from other devices (e.g., mobile) */
   onCreateWorktreeRequest?(callback: (request: CreateWorktreeRequest) => void): () => void;
 
+  /** Ask the desktop to cut a worktree (and its session) — controller / mobile side. */
+  sendCreateWorktreeRequest?(request: CreateWorktreeRequest): Promise<void>;
+
   /** Send a response to a worktree creation request */
   sendCreateWorktreeResponse?(response: CreateWorktreeResponse): Promise<void>;
+
+  /** Subscribe to worktree creation responses (the requesting device's side). */
+  onCreateWorktreeResponse?(callback: (response: CreateWorktreeResponse) => void): () => void;
 
   /** Send a generic session control message (cross-device via IndexRoom) */
   sendSessionControlMessage?(message: SessionControlMessage): Promise<void>;
@@ -507,6 +513,13 @@ export type SyncedPendingPrompt =
         options: Array<{ label: string; description: string }>;
         multiSelect: boolean;
       }>;
+    }
+  | {
+      promptType: 'git_commit_proposal';
+      proposalId: string;
+      commitMessage: string;
+      filesToStage: string[];
+      reasoning?: string;
     };
 
 /** Session metadata that gets synced */
@@ -765,6 +778,12 @@ export interface CreateWorktreeResponse {
   success: boolean;
   /** Error message if creation failed */
   error?: string;
+  /** Session created for the new worktree, so the requester can open it. */
+  sessionId?: string;
+  /** The worktree that was cut. */
+  worktreeId?: string;
+  /** Branch the worktree checked out — the requester has no repo to look it up in. */
+  branch?: string;
 }
 
 /**

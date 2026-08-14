@@ -244,11 +244,20 @@ interface EncryptedCreateWorktreeRequest {
   timestamp: number;
 }
 
-/** Encrypted worktree creation response for wire protocol */
+/**
+ * Worktree creation response for the wire.
+ *
+ * The ids are opaque UUIDs and the branch name is derived from them, so nothing
+ * here reveals project content and the payload stays plaintext like the request
+ * ids around it.
+ */
 interface EncryptedCreateWorktreeResponse {
   requestId: string;
   success: boolean;
   error?: string;
+  sessionId?: string;
+  worktreeId?: string;
+  branch?: string;
 }
 
 /** Encrypted voice-tool request for wire protocol (toolName/args carry project knowledge). */
@@ -1190,6 +1199,7 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
   // Listeners for worktree creation requests (from mobile)
   const createWorktreeRequestListeners = new Set<(request: CreateWorktreeRequest) => void>();
+  const createWorktreeResponseListeners = new Set<(response: CreateWorktreeResponse) => void>();
 
   // Listeners for voice-tool requests (from mobile; desktop runs the tool)
   const voiceToolRequestListeners = new Set<(request: VoiceToolRequest) => void>();
@@ -2585,8 +2595,21 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
           }
 
           case 'createWorktreeResponseBroadcast': {
-            // Response to worktree creation - just log for now (iOS doesn't need callback)
             console.log('[CollabV3] Received createWorktreeResponse:', message.response.requestId, 'success:', message.response.success);
+            createWorktreeResponseListeners.forEach((callback) => {
+              try {
+                callback({
+                  requestId: message.response.requestId,
+                  success: message.response.success,
+                  error: message.response.error,
+                  sessionId: message.response.sessionId,
+                  worktreeId: message.response.worktreeId,
+                  branch: message.response.branch,
+                });
+              } catch (err) {
+                console.error('[CollabV3] Error in create worktree response listener:', err);
+              }
+            });
             break;
           }
 
@@ -4016,6 +4039,43 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       };
     },
 
+    /** Ask the desktop to cut a worktree (controller / mobile side of the pair). */
+    async sendCreateWorktreeRequest(request: CreateWorktreeRequest): Promise<void> {
+      if (!indexWs || !indexConnected) {
+        try {
+          await connectToIndex();
+        } catch (err) {
+          console.error('[CollabV3] Failed to connect to index before sending create worktree request:', err);
+          return;
+        }
+      }
+      if (!indexWs || !indexConnected) {
+        console.error('[CollabV3] Cannot send create worktree request - failed to establish connection');
+        return;
+      }
+      if (!config.encryptionKey) {
+        console.error('[CollabV3] Cannot send create worktree request - no encryption key');
+        return;
+      }
+
+      const { encryptedProjectId, projectIdIv } = await encryptProjectId(request.projectId, config.encryptionKey);
+      const wireRequest: EncryptedCreateWorktreeRequest = {
+        requestId: request.requestId,
+        encryptedProjectId,
+        projectIdIv,
+        timestamp: request.timestamp,
+      };
+      indexWs.send(JSON.stringify({ type: 'createWorktreeRequest', request: wireRequest } as ClientMessage));
+    },
+
+    /** Subscribe to worktree creation responses (the requesting device's side). */
+    onCreateWorktreeResponse(callback: (response: CreateWorktreeResponse) => void): () => void {
+      createWorktreeResponseListeners.add(callback);
+      return () => {
+        createWorktreeResponseListeners.delete(callback);
+      };
+    },
+
     /** Send a response to a worktree creation request */
     async sendCreateWorktreeResponse(response: CreateWorktreeResponse): Promise<void> {
       if (!indexWs || !indexConnected) {
@@ -4027,6 +4087,9 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         requestId: response.requestId,
         success: response.success,
         error: response.error,
+        sessionId: response.sessionId,
+        worktreeId: response.worktreeId,
+        branch: response.branch,
       };
 
       const msg: ClientMessage = { type: 'createWorktreeResponse', response: wireResponse };

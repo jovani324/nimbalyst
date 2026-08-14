@@ -29,6 +29,7 @@ import {
   resolveGitCommitProposalPromptId,
 } from './gitCommitProposalPromptUtils';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
+import { handleRemoteTerminalControl, closeAllRemoteTerminals } from '../RemoteTerminalService';
 import { getGitSubprocessEnv } from '../gitEnv';
 import { findWindowByWorkspace } from '../../window/WindowManager';
 import { getDatabase } from '../../database/initialize';
@@ -168,9 +169,16 @@ export function initMobileSessionControlHandler(
     handleControlMessage(message, findWindowByWorkspace, callbacks);
   });
 
+  // Shells opened by a paired device outlive their pane if nothing kills them
+  // when the control channel goes away.
+  const cleanupAll = () => {
+    cleanup();
+    closeAllRemoteTerminals();
+  };
+
   // log.info('Mobile session control handler initialized');
 
-  return cleanup;
+  return cleanupAll;
 }
 
 /**
@@ -182,6 +190,10 @@ function handleControlMessage(
   callbacks: MobileSessionControlCallbacks
 ): void {
   log.info('Received control message:', message.type, 'for session:', message.sessionId);
+
+  // A paired device can open a shell here; that path owns every `terminal_*`
+  // type, including the ones this host echoes back to it.
+  if (handleRemoteTerminalControl(message)) return;
 
   switch (message.type) {
     case 'cancel':

@@ -68,6 +68,13 @@ export type RemotePendingPromptData =
         multiSelect: boolean;
       }>;
     }
+  | {
+      promptType: 'git_commit_proposal';
+      proposalId: string;
+      commitMessage: string;
+      filesToStage: string[];
+      reasoning?: string;
+    }
   | null;
 
 export const remotePendingPromptAtomFamily = atomFamily((_sessionId: string) =>
