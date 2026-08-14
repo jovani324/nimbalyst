@@ -18,6 +18,8 @@
  *   controller-popover:set-opacity       window transparency for the popover
  *   controller-popover:set-zoom          text scale for the popover
  *   controller-popover:reset-size        put the popover back to its default dimensions
+ *   controller-popover:get-pinned        whether the popover stays open when focus leaves
+ *   controller-popover:set-pinned        keep the popover open when focus leaves
  *
  * Broadcasts (main -> renderer, see REMOTE_SESSION_CHANNELS):
  *   remote-sessions:index-change         a session index entry changed
@@ -37,6 +39,8 @@ import {
   setControllerPopoverOpacity,
   setControllerPopoverZoom,
   resetControllerPopoverSize,
+  isControllerPopoverPinned,
+  setControllerPopoverPinned,
 } from '../window/ControllerPopoverWindow';
 import {
   listRemoteSessions,
@@ -73,6 +77,15 @@ export function registerRemoteSessionHandlers() {
   safeHandle('controller-popover:reset-size', () => {
     resetControllerPopoverSize();
     return { ok: true };
+  });
+
+  safeHandle('controller-popover:get-pinned', () => {
+    return { pinned: isControllerPopoverPinned() };
+  });
+
+  safeHandle('controller-popover:set-pinned', (_event, pinned: boolean) => {
+    setControllerPopoverPinned(pinned === true);
+    return { pinned: isControllerPopoverPinned() };
   });
 
   safeHandle('remote-sessions:list', async () => {

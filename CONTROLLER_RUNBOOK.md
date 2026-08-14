@@ -91,6 +91,10 @@ Two windows come up (host + controller popover; Alt+Space toggles the popover).
 - Also in ⚙: **font**, **text size**, **reset the popover size**, **titles as file
   paths** and **transcript as source until hovered** — the last two make an idle
   popover read as an open editor rather than a blurred chat.
+- The **◌ pin** in the header keeps the popover on screen when you click away
+  (normally it hides on blur, which gives the disguise nothing to do) and stops it
+  floating above every other window. The boss-key still hides it instantly. The pin
+  survives a restart.
 
 ### 4b. The remote shell
 The `>_` button in a session's header opens a **real shell on the host**, in that

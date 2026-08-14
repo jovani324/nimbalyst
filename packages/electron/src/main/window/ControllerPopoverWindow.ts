@@ -23,6 +23,21 @@ import { logger } from '../utils/logger';
 import { TrayManager } from '../tray/TrayManager';
 
 const POPOVER_BOUNDS_KEY = 'controllerPopoverBounds';
+const POPOVER_PINNED_KEY = 'controllerPopoverPinned';
+
+/**
+ * Pinned: stay on screen when focus moves elsewhere.
+ *
+ * The popover normally hides on blur, which is right for a menu-bar utility and
+ * wrong for the editor disguise — a window that vanishes the instant you click
+ * away is never seen by anyone, so the camouflage has nothing to do. Pinning
+ * also drops always-on-top: a pane that floats above every other window is
+ * itself a tell, and the disguise is meant to look like an ordinary editor.
+ *
+ * Read from the store at startup so a pin survives a restart. The boss-key still
+ * hides it instantly.
+ */
+let pinned = store.get(POPOVER_PINNED_KEY) === true;
 
 interface SavedPopoverBounds {
   x: number;
@@ -132,21 +147,23 @@ export function createControllerPopover(): BrowserWindow | null {
     },
   });
 
-  // Float above full-screen apps so the boss-key works from anywhere.
+  // Float above full-screen apps so the boss-key works from anywhere — except
+  // when pinned, where behaving like an ordinary window is the whole point.
   popoverWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  popoverWindow.setAlwaysOnTop(true, 'floating');
+  popoverWindow.setAlwaysOnTop(!pinned, 'floating');
 
   loadPopoverContent(popoverWindow);
 
   // Hide (never destroy) on blur so the boss-key can re-show instantly, and so
   // alt-tabbing away dismisses it. Guard against the transient blur during show.
   popoverWindow.on('blur', () => {
-    if (popoverWindow?.isVisible()) hideControllerPopover();
+    if (!pinned && popoverWindow?.isVisible()) hideControllerPopover();
   });
 
-  // Esc hides the popover.
+  // Esc hides the popover — unless it is pinned, where dismissing on a stray
+  // keypress would defeat the point. The boss-key still hides it.
   popoverWindow.webContents.on('before-input-event', (_event, input) => {
-    if (input.type === 'keyDown' && input.key === 'Escape') {
+    if (!pinned && input.type === 'keyDown' && input.key === 'Escape') {
       hideControllerPopover();
     }
   });
@@ -194,6 +211,29 @@ function positionUnderTray(win: BrowserWindow): void {
   const x = area.x + area.width - width - EDGE_PADDING;
   const y = area.y + EDGE_PADDING;
   win.setPosition(x, y, false);
+}
+
+/** Whether the popover is currently pinned open. */
+export function isControllerPopoverPinned(): boolean {
+  return pinned;
+}
+
+/**
+ * Pin (or unpin) the popover. Pinned it survives blur and Esc and stops floating
+ * above other windows; unpinned it goes back to menu-bar behaviour and dismisses
+ * itself as soon as focus leaves.
+ */
+export function setControllerPopoverPinned(next: boolean): void {
+  pinned = next;
+  try {
+    store.set(POPOVER_PINNED_KEY, next);
+  } catch {
+    /* non-fatal — the pin just won't survive a restart */
+  }
+  const win = popoverWindow;
+  if (win && !win.isDestroyed()) {
+    win.setAlwaysOnTop(!next, 'floating');
+  }
 }
 
 /** Set the popover's window opacity (0.4–1) for the appearance transparency control. */

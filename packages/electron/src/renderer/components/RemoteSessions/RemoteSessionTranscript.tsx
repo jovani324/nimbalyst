@@ -80,6 +80,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   const [refreshing, setRefreshing] = useState(false);
   const [paneHovered, setPaneHovered] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
+  const [pinned, setPinned] = useState(false);
   const transcriptPaneRef = useRef<HTMLDivElement>(null);
   const { settings: privacy, toggle: togglePrivacy } = useControllerPrivacy();
   const { appearance, setTheme, setOpacity, setFont, setTextScale } = useControllerAppearance();
@@ -141,6 +142,28 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [isActive]);
+
+  // The pin lives in the main process (it changes how the window answers blur
+  // and Esc) and persists across restarts, so the button reflects that state
+  // rather than owning it.
+  useEffect(() => {
+    let live = true;
+    void window.electronAPI?.invoke?.('controller-popover:get-pinned').then((res: unknown) => {
+      if (live) setPinned((res as { pinned?: boolean } | undefined)?.pinned === true);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const togglePinned = async () => {
+    const next = !pinned;
+    setPinned(next);
+    const res = (await window.electronAPI?.invoke?.('controller-popover:set-pinned', next)) as
+      | { pinned?: boolean }
+      | undefined;
+    if (res && typeof res.pinned === 'boolean') setPinned(res.pinned);
+  };
 
   // Connect on mount / session change; disconnect on unmount. The component is
   // keyed by sessionId in the parent, so this maps 1:1 to the open session.
@@ -396,6 +419,21 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
             aria-pressed={masked}
           >
             {masked ? '🙈' : '👁'}
+          </button>
+          <button
+            className={HEADER_ACTION_CLASS}
+            style={{ color: pinned ? 'var(--nim-primary)' : 'var(--nim-text-muted)' }}
+            onClick={() => void togglePinned()}
+            data-testid="remote-session-pin-button"
+            title={
+              pinned
+                ? 'Pinned — stays open when you click away. The boss-key still hides it.'
+                : 'Pin open — stop the popover hiding when focus leaves'
+            }
+            aria-label="Pin the popover open"
+            aria-pressed={pinned}
+          >
+            {pinned ? '\u25C9' : '\u25CB'}
           </button>
           <button
             className={HEADER_ACTION_CLASS}
