@@ -376,16 +376,14 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
 
   return (
     <div className="remote-session-transcript flex flex-col flex-1 min-h-0" data-testid="remote-session-transcript">
-      {/* Header. Deliberately understated: borderless ghost actions that only
-          come up to full contrast on hover, so a glance at the popover reads as
-          text rather than as a toolbar. */}
-      <div
-        className="remote-session-transcript-header flex items-center justify-between px-2 h-8 border-b shrink-0"
-        style={{ borderColor: 'var(--nim-border)' }}
-      >
+      {/* Header. Deliberately understated: no bar of its own — no fill, no rule
+          under it — and ghost actions plus a ghost title that only come up to
+          full contrast on hover, so a glance at the popover reads as text
+          rather than as a titlebar over a document. */}
+      <div className="remote-session-transcript-header flex items-center justify-between px-2 h-8 shrink-0">
         <div className="flex items-center gap-1.5 min-w-0">
           <span
-            className="text-[11px] truncate"
+            className="remote-session-header-title text-[11px] truncate"
             style={{ color: 'var(--nim-text-muted)' }}
             data-testid="remote-session-header-title"
           >

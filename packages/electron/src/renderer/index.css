@@ -617,6 +617,22 @@ body[data-dev-mode="true"] .nav-quick-access::before {
   opacity: 0.2;
 }
 
+/* The transcript header must not read as a titlebar: no fill of its own, and a
+ * title that stays as faint as the actions until the header is pointed at. A
+ * tinted strip with a rule under it is the single most app-like thing on
+ * screen, which is exactly what the disguise is trying not to be. */
+[data-controller-popover] .remote-session-transcript-header {
+  background: transparent;
+  border-bottom: none;
+}
+[data-controller-popover] .remote-session-header-title {
+  opacity: 0.4;
+  transition: opacity 120ms ease;
+}
+[data-controller-popover] .remote-session-transcript-header:hover .remote-session-header-title {
+  opacity: 1;
+}
+
 /* ===== Interactive prompt: AskUserQuestion =====
  * The permission branch of InteractivePromptWidget carries Tailwind utilities;
  * the question branch is BEM-only, and the controller is its sole consumer — so
