@@ -63,7 +63,7 @@ const terminals = new Map<string, RemoteTerminal>();
  * opened on one has to land in the worktree or every command it runs is against
  * the wrong checkout.
  */
-async function resolveSessionCwd(sessionId: string): Promise<string> {
+export async function resolveSessionCwd(sessionId: string): Promise<string> {
   try {
     const session = (await AISessionsRepository.get(sessionId)) as
       | { workspacePath?: string | null; worktreeId?: string | null; worktreePath?: string | null }

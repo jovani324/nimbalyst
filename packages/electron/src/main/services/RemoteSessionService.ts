@@ -90,7 +90,14 @@ interface RemoteSessionState {
   pendingCreates: Map<string, (response: CreateSessionResponse) => void>;
   /** Pending create-worktree requests awaiting a response, keyed by requestId. */
   pendingWorktrees: Map<string, (response: CreateWorktreeResponse) => void>;
+  /** Pending file reads awaiting the host's answer, keyed by requestId. */
+  pendingFileReads: Map<string, (response: RemoteFileResponse) => void>;
 }
+
+/** What the host sends back for a file the controller asked to see. */
+export type RemoteFileResponse =
+  | { success: true; path: string; text: string; truncated: boolean }
+  | { success: false; error: string };
 
 const state: RemoteSessionState = {
   indexSubscribed: false,
@@ -98,6 +105,7 @@ const state: RemoteSessionState = {
   pendingDisconnects: new Map(),
   pendingCreates: new Map(),
   pendingWorktrees: new Map(),
+  pendingFileReads: new Map(),
 };
 
 function broadcast(channel: string, payload: unknown): void {
@@ -165,12 +173,31 @@ export function ensureRemoteSubscriptions(): boolean {
   // obvious and survives a relay that starts echoing.
   if (provider.onSessionControlMessage) {
     state.cleanupControlMessages = provider.onSessionControlMessage((message) => {
-      if (message.sentBy !== 'desktop' || !message.type.startsWith('terminal_')) return;
-      broadcast(REMOTE_SESSION_CHANNELS.terminalEvent, {
-        sessionId: message.sessionId,
-        type: message.type,
-        payload: message.payload ?? {},
-      });
+      if (message.sentBy !== 'desktop') return;
+      if (message.type.startsWith('terminal_')) {
+        broadcast(REMOTE_SESSION_CHANNELS.terminalEvent, {
+          sessionId: message.sessionId,
+          type: message.type,
+          payload: message.payload ?? {},
+        });
+        return;
+      }
+      if (message.type === 'file_content' || message.type === 'file_error') {
+        const payload = message.payload ?? {};
+        const resolver = state.pendingFileReads.get(String(payload.requestId ?? ''));
+        if (!resolver) return;
+        state.pendingFileReads.delete(String(payload.requestId));
+        resolver(
+          message.type === 'file_content'
+            ? {
+                success: true,
+                path: String(payload.path ?? ''),
+                text: String(payload.text ?? ''),
+                truncated: payload.truncated === true,
+              }
+            : { success: false, error: String(payload.error ?? 'The host could not read that file.') },
+        );
+      }
     });
   }
 
@@ -447,6 +474,30 @@ export async function createRemoteWorktreeSession(projectId: string): Promise<Cr
   return response;
 }
 
+/**
+ * Ask the host for the contents of a file referenced in a transcript. The path
+ * is resolved on the host, inside that session's own folder — the controller
+ * machine has no checkout to open it from.
+ */
+export async function readRemoteFile(sessionId: string, filePath: string): Promise<RemoteFileResponse> {
+  ensureRemoteSubscriptions();
+  const requestId = randomUUID();
+
+  const response = new Promise<RemoteFileResponse>((resolve) => {
+    const timer = setTimeout(() => {
+      state.pendingFileReads.delete(requestId);
+      resolve({ success: false, error: 'The host did not answer in time.' });
+    }, 20_000);
+    state.pendingFileReads.set(requestId, (res) => {
+      clearTimeout(timer);
+      resolve(res);
+    });
+  });
+
+  await sendControl({ sessionId, type: 'file_read', payload: { requestId, path: filePath } });
+  return response;
+}
+
 /** Drive a shell the host opened for us (open / input / resize / close). */
 export async function sendRemoteTerminalControl(
   sessionId: string,
@@ -512,6 +563,7 @@ export function shutdownRemoteSessionService(): void {
   state.transcriptCleanups.clear();
   state.pendingCreates.clear();
   state.pendingWorktrees.clear();
+  state.pendingFileReads.clear();
   state.cleanupWorktreeResponse?.();
   state.cleanupWorktreeResponse = undefined;
   state.cleanupControlMessages?.();

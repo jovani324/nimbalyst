@@ -147,19 +147,80 @@ export function buildSessionMarkdown(
 const URL_PATTERN = /\bhttps?:\/\/[^\s<>()[\]{}"']+[^\s<>()[\]{}"'.,;:!?]/g;
 
 /**
- * Turn bare URLs into anchors. The controller renders replies as plain text
- * (summaries, user turns), so without this a link the agent sends is something
- * you have to retype on the other machine.
+ * Extensions that make a token a file reference. A whitelist rather than "any
+ * extension" on purpose: `example.com` and `v1.2` are not files, and a bare
+ * domain turned into a dead file link is worse than plain text.
  */
-export function linkify(text: string): Array<string | { href: string; key: string }> {
-  const out: Array<string | { href: string; key: string }> = [];
+const FILE_EXTENSIONS = new Set([
+  'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'json', 'jsonc',
+  'css', 'scss', 'less', 'html', 'vue', 'svelte', 'svg',
+  'md', 'mdx', 'txt', 'rst',
+  'py', 'rb', 'go', 'rs', 'java', 'kt', 'swift', 'c', 'h', 'cc', 'cpp', 'hpp', 'cs', 'php', 'lua', 'pl',
+  'sh', 'bash', 'zsh', 'fish',
+  'yml', 'yaml', 'toml', 'ini', 'cfg', 'conf', 'env', 'lock', 'xml', 'plist',
+  'sql', 'prisma', 'graphql', 'gql', 'proto', 'gradle', 'podspec',
+]);
+
+/** A clickable piece of a plain-text row. */
+export type LinkPart =
+  | { kind: 'url'; href: string; key: string }
+  | { kind: 'file'; path: string; line?: number; text: string; key: string };
+
+/**
+ * Read a file reference out of a standalone token (`src/a.ts:42`), or null if it
+ * isn't one. Shared with the transcript's click delegation so an inline-code
+ * path in rendered Markdown opens the same way a plain-text one does.
+ */
+export function parseFileRef(token: string): { path: string; line?: number } | null {
+  const trimmed = token.trim();
+  const match = /^((?:[\w.@~-]+\/)*[\w.@-]+\.([A-Za-z][A-Za-z0-9]{0,7}))(?::(\d+))?(?::\d+)?$/.exec(trimmed);
+  if (!match) return null;
+  if (!FILE_EXTENSIONS.has(match[2].toLowerCase())) return null;
+  return { path: match[1], line: match[3] ? Number(match[3]) : undefined };
+}
+
+/**
+ * Split a stretch of text with no URLs in it into plain text and file refs.
+ *
+ * Deliberately token-at-a-time against an anchored matcher: an unanchored
+ * path pattern scanning a pasted log with no references in it backtracks
+ * quadratically, and pasted logs are exactly what lands in these rows.
+ */
+function linkifyFileRefs(text: string, offset: number): Array<string | LinkPart> {
+  const out: Array<string | LinkPart> = [];
+  let last = 0;
+  for (const match of text.matchAll(/\S+/g)) {
+    const start = match.index ?? 0;
+    // Brackets and sentence punctuation belong to the prose, not to the path.
+    const withoutLead = match[0].replace(/^[('"`[<]+/, '');
+    const token = withoutLead.replace(/[)'"`\]>,.;:!?]+$/, '');
+    const ref = parseFileRef(token);
+    if (!ref) continue;
+    const from = start + (match[0].length - withoutLead.length);
+    if (from > last) out.push(text.slice(last, from));
+    out.push({ kind: 'file', path: ref.path, line: ref.line, text: token, key: `f${offset + from}-${token}` });
+    last = from + token.length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
+/**
+ * Turn bare URLs and file references into clickable parts. The controller
+ * renders replies as plain text (summaries, user turns), so without this a link
+ * the agent sends is something you have to retype on the other machine, and a
+ * file it names is something you cannot look at at all — the checkout only
+ * exists on the host.
+ */
+export function linkify(text: string): Array<string | LinkPart> {
+  const out: Array<string | LinkPart> = [];
   let last = 0;
   for (const match of text.matchAll(URL_PATTERN)) {
     const start = match.index ?? 0;
-    if (start > last) out.push(text.slice(last, start));
-    out.push({ href: match[0], key: `${start}-${match[0]}` });
+    if (start > last) out.push(...linkifyFileRefs(text.slice(last, start), last));
+    out.push({ kind: 'url', href: match[0], key: `u${start}-${match[0]}` });
     last = start + match[0].length;
   }
-  if (last < text.length) out.push(text.slice(last));
+  if (last < text.length) out.push(...linkifyFileRefs(text.slice(last), last));
   return out;
 }

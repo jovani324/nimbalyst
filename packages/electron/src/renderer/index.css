@@ -633,6 +633,21 @@ body[data-dev-mode="true"] .nav-quick-access::before {
   opacity: 1;
 }
 
+/* File references read as part of the prose until pointed at — a transcript of
+ * underlined blue paths would be louder than the text around it. */
+.remote-file-ref {
+  font: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+.remote-file-ref:hover {
+  text-decoration: underline solid;
+}
+
 /* ===== Interactive prompt: AskUserQuestion =====
  * The permission branch of InteractivePromptWidget carries Tailwind utilities;
  * the question branch is BEM-only, and the controller is its sole consumer — so

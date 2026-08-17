@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 import type { TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/transcript';
 import {
   linkify,
+  parseFileRef,
   toCondensedBlocks,
   summarizeAssistant,
   toolChipLabel,
@@ -128,7 +129,7 @@ describe('linkify', () => {
   it('splits a bare URL out of surrounding prose', () => {
     expect(linkify('see https://example.com/a_b for details')).toEqual([
       'see ',
-      { href: 'https://example.com/a_b', key: expect.any(String) },
+      { kind: 'url', href: 'https://example.com/a_b', key: expect.any(String) },
       ' for details',
     ]);
   });
@@ -142,5 +143,39 @@ describe('linkify', () => {
 
   it('returns plain text untouched', () => {
     expect(linkify('no links here')).toEqual(['no links here']);
+  });
+
+  it('pulls out a file reference with its line number', () => {
+    expect(linkify('fixed in src/main/index.ts:42 today')).toEqual([
+      'fixed in ',
+      { kind: 'file', path: 'src/main/index.ts', line: 42, text: 'src/main/index.ts:42', key: expect.any(String) },
+      ' today',
+    ]);
+  });
+
+  it('does not turn a bare domain or a version into a file', () => {
+    // The whole point of the extension whitelist: a dead "open example.com"
+    // link is worse than leaving the text alone.
+    expect(linkify('example.com shipped v1.2 and up')).toEqual(['example.com shipped v1.2 and up']);
+  });
+
+  it('does not eat a path that lives inside a URL', () => {
+    const parts = linkify('https://example.com/a/b/index.ts:4');
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toMatchObject({ kind: 'url' });
+  });
+});
+
+describe('parseFileRef', () => {
+  it('reads a path and line out of an inline-code token', () => {
+    expect(parseFileRef(' packages/electron/src/a.tsx:12:3 ')).toEqual({
+      path: 'packages/electron/src/a.tsx',
+      line: 12,
+    });
+  });
+
+  it('rejects prose and unknown extensions', () => {
+    expect(parseFileRef('run the tests')).toBeNull();
+    expect(parseFileRef('report.docx')).toBeNull();
   });
 });

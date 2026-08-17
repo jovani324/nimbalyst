@@ -30,6 +30,7 @@ import {
 } from './gitCommitProposalPromptUtils';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
 import { handleRemoteTerminalControl, closeAllRemoteTerminals } from '../RemoteTerminalService';
+import { handleRemoteFileControl } from '../RemoteFileService';
 import { getGitSubprocessEnv } from '../gitEnv';
 import { findWindowByWorkspace } from '../../window/WindowManager';
 import { getDatabase } from '../../database/initialize';
@@ -192,8 +193,10 @@ function handleControlMessage(
   log.info('Received control message:', message.type, 'for session:', message.sessionId);
 
   // A paired device can open a shell here; that path owns every `terminal_*`
-  // type, including the ones this host echoes back to it.
+  // type, including the ones this host echoes back to it. File reads for the
+  // remote viewer arrive on the same channel.
   if (handleRemoteTerminalControl(message)) return;
+  if (handleRemoteFileControl(message)) return;
 
   switch (message.type) {
     case 'cancel':

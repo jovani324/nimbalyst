@@ -1601,6 +1601,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       cols?: number;
       rows?: number;
     }) => ipcRenderer.invoke('remote-sessions:terminal', payload),
+    readFile: (sessionId: string, path: string) =>
+      ipcRenderer.invoke('remote-sessions:read-file', { sessionId, path }),
     cancel: (sessionId: string) =>
       ipcRenderer.invoke('remote-sessions:cancel', { sessionId }),
     archive: (sessionId: string, isArchived: boolean) =>

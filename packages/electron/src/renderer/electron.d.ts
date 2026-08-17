@@ -774,6 +774,10 @@ interface ElectronAPI {
       cols?: number;
       rows?: number;
     }) => Promise<{ success: boolean }>;
+    readFile: (
+      sessionId: string,
+      path: string,
+    ) => Promise<import('./types/remoteSessions').RemoteFileResponse>;
     cancel: (sessionId: string) => Promise<{ success: boolean }>;
     archive: (sessionId: string, isArchived: boolean) => Promise<{ success: boolean }>;
     respondPrompt: (

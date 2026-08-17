@@ -133,6 +133,11 @@ export interface RemoteWorktreeResponse {
   branch?: string;
 }
 
+/** A file the host read for us, because the checkout only exists over there. */
+export type RemoteFileResponse =
+  | { success: true; path: string; text: string; truncated: boolean }
+  | { success: false; error: string };
+
 /** Output or lifecycle news from a shell the host opened for this controller. */
 export interface RemoteTerminalEvent {
   sessionId: string;

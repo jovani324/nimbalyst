@@ -11,6 +11,7 @@
  *   remote-sessions:create               ask the host to create a new session
  *   remote-sessions:create-worktree      ask the host to cut a worktree + session
  *   remote-sessions:terminal             drive a shell the host opened for us
+ *   remote-sessions:read-file            read a file the transcript references, from the host
  *   remote-sessions:cancel               cancel the running agent on a remote session
  *   remote-sessions:archive              archive/unarchive a remote session
  *   remote-sessions:respond-prompt       answer an interactive prompt (permission/plan/question/...)
@@ -51,6 +52,7 @@ import {
   createRemoteSession,
   createRemoteWorktreeSession,
   sendRemoteTerminalControl,
+  readRemoteFile,
   cancelRemoteSession,
   archiveRemoteSession,
   respondToRemotePrompt,
@@ -201,6 +203,16 @@ export function registerRemoteSessionHandlers() {
         ...(payload.rows !== undefined ? { rows: payload.rows } : {}),
       });
       return { success: true };
+    },
+  );
+
+  safeHandle(
+    'remote-sessions:read-file',
+    async (_event, payload: { sessionId: string; path: string }) => {
+      if (!payload?.sessionId || !payload?.path) {
+        throw new Error('remote-sessions:read-file requires sessionId and path');
+      }
+      return readRemoteFile(payload.sessionId, payload.path);
     },
   );
 

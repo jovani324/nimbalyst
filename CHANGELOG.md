@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 <!-- Changes to existing functionality go here -->
-- Controller mode is quieter to look at and easier to live in — a slimmer header and composer, collapsible project groups, a marker on sessions waiting for your answer, a popover you can resize (with a reset back to the default size) or pin open so it stops vanishing when you click away, a choice of font and text size, links that open in your browser, selectable text anywhere in the transcript, and keys to jump through a long one.
+- Controller mode is quieter to look at and easier to live in — a slimmer header and composer, collapsible project groups, a marker on sessions waiting for your answer, a popover you can resize (with a reset back to the default size) or pin open so it stops vanishing when you click away, a choice of font and text size, links that open in your browser, file references you can tap to read the real file from the host, selectable text anywhere in the transcript, and keys to jump through a long one.
 
 ### Fixed
 <!-- Bug fixes go here -->

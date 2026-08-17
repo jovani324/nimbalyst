@@ -21,6 +21,7 @@ import { RemoteCommitProposal, type CommitProposalResponse } from './RemoteCommi
 import { ComposerImageStrip, useComposerImages } from './composerImages';
 import { disguisedCode, disguisedName } from './controllerDisguise';
 import { RemoteTerminalPane } from './RemoteTerminalPane';
+import { RemoteFileViewer } from './RemoteFileViewer';
 import { toPayload } from './controllerImages';
 import { useControllerPrivacy, AUTO_BLUR_IDLE_MS, type ControllerPrivacySettings } from './controllerPrivacy';
 import {
@@ -80,6 +81,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   const [refreshing, setRefreshing] = useState(false);
   const [paneHovered, setPaneHovered] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
+  const [openFile, setOpenFile] = useState<{ path: string; line?: number } | null>(null);
   const [pinned, setPinned] = useState(false);
   const transcriptPaneRef = useRef<HTMLDivElement>(null);
   const { settings: privacy, toggle: togglePrivacy } = useControllerPrivacy();
@@ -521,12 +523,20 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
       >
         {disguised ? (
           <DisguisedSource sessionId={sessionId} />
+        ) : openFile ? (
+          <RemoteFileViewer
+            sessionId={sessionId}
+            path={openFile.path}
+            line={openFile.line}
+            onClose={() => setOpenFile(null)}
+          />
         ) : (
           <CondensedRemoteTranscript
             messages={viewMessages}
             isProcessing={isExecuting}
             redact={privacy.redactSecrets}
             perMessageBlur={masked && privacy.hoverReveal}
+            onOpenFile={(path, line) => setOpenFile({ path, line })}
           />
         )}
       </div>

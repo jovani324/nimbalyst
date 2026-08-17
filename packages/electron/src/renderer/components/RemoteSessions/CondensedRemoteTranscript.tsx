@@ -11,6 +11,7 @@ import { MarkdownRenderer } from '@nimbalyst/runtime/ui/AgentTranscript/componen
 import type { TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/transcript';
 import {
   linkify,
+  parseFileRef,
   toCondensedBlocks,
   summarizeAssistant,
   summarizeToolGroup,
@@ -19,36 +20,68 @@ import {
 } from './condensedTranscript';
 import { redactSecrets } from './controllerPrivacy';
 
-/** Plain text with its URLs rendered as anchors. */
+/** Opens a file the host holds; null when nobody upstream can show one. */
+const FileOpenContext = createContext<((path: string, line?: number) => void) | null>(null);
+const useOpenFile = () => useContext(FileOpenContext);
+
+/** Plain text with its URLs as anchors and its file references as buttons. */
 function LinkedText({ text }: { text: string }) {
+  const openFile = useOpenFile();
   return (
     <>
-      {linkify(text).map((part, i) =>
-        typeof part === 'string' ? (
-          part
-        ) : (
-          <a key={`${part.key}-${i}`} href={part.href} style={{ color: 'var(--nim-primary)' }}>
-            {part.href}
-          </a>
-        ),
-      )}
+      {linkify(text).map((part, i) => {
+        if (typeof part === 'string') return part;
+        if (part.kind === 'url') {
+          return (
+            <a key={`${part.key}-${i}`} href={part.href} style={{ color: 'var(--nim-primary)' }}>
+              {part.href}
+            </a>
+          );
+        }
+        if (!openFile) return part.text;
+        return (
+          <button
+            key={`${part.key}-${i}`}
+            className="remote-file-ref"
+            style={{ color: 'var(--nim-primary)' }}
+            onClick={() => openFile(part.path, part.line)}
+            title={`Open ${part.path} from the host`}
+          >
+            {part.text}
+          </button>
+        );
+      })}
     </>
   );
 }
 
 /**
- * Send link clicks to the OS browser.
+ * Handle clicks inside the transcript: links go to the OS browser, and a file
+ * path in rendered Markdown (which arrives as inline `code`, not through
+ * LinkedText) opens in the remote viewer.
  *
  * A plain anchor click navigates the popover itself away from the app — the
  * window has no chrome to get back with, so the controller would simply become
  * a web page until it is restarted.
  */
-function openLinksExternally(e: MouseEvent) {
-  const anchor = (e.target as HTMLElement | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
-  const href = anchor?.getAttribute('href');
-  if (!href || !/^https?:\/\//i.test(href)) return;
-  e.preventDefault();
-  void window.electronAPI?.openExternal?.(href);
+function useTranscriptClick(openFile: ((path: string, line?: number) => void) | null) {
+  return (e: MouseEvent) => {
+    const target = e.target as HTMLElement | null;
+    const anchor = target?.closest?.('a[href]') as HTMLAnchorElement | null;
+    const href = anchor?.getAttribute('href');
+    if (href && /^https?:\/\//i.test(href)) {
+      e.preventDefault();
+      void window.electronAPI?.openExternal?.(href);
+      return;
+    }
+    const code = target?.closest?.('code') as HTMLElement | null;
+    if (!code || !openFile) return;
+    const ref = parseFileRef(code.textContent ?? '');
+    if (!ref) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openFile(ref.path, ref.line);
+  };
 }
 
 /** Provides the active text transform (identity, or secret-redaction) to rows. */
@@ -62,9 +95,18 @@ interface CondensedRemoteTranscriptProps {
   redact?: boolean;
   /** Blur each message until hovered (hover-to-reveal privacy mode). */
   perMessageBlur?: boolean;
+  /** Show a file the host holds; omitted when no viewer is mounted. */
+  onOpenFile?: (path: string, line?: number) => void;
 }
 
-export function CondensedRemoteTranscript({ messages, isProcessing, redact, perMessageBlur }: CondensedRemoteTranscriptProps) {
+export function CondensedRemoteTranscript({
+  messages,
+  isProcessing,
+  redact,
+  perMessageBlur,
+  onOpenFile,
+}: CondensedRemoteTranscriptProps) {
+  const handleClick = useTranscriptClick(onOpenFile ?? null);
   const blocks = useMemo(() => toCondensedBlocks(messages), [messages]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const toggle = (key: string) =>
@@ -103,10 +145,11 @@ export function CondensedRemoteTranscript({ messages, isProcessing, redact, perM
   const blockClass = perMessageBlur ? 'condensed-pm-blur' : undefined;
   return (
     <RedactContext.Provider value={redact ? redactSecrets : (s) => s}>
+      <FileOpenContext.Provider value={onOpenFile ?? null}>
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        onClick={openLinksExternally}
+        onClick={handleClick}
         className="condensed-transcript flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-2 select-text"
         data-testid="condensed-remote-transcript"
       >
@@ -133,6 +176,7 @@ export function CondensedRemoteTranscript({ messages, isProcessing, redact, perM
           );
         })}
       </div>
+      </FileOpenContext.Provider>
     </RedactContext.Provider>
   );
 }

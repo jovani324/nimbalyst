@@ -96,6 +96,13 @@ Two windows come up (host + controller popover; Alt+Space toggles the popover).
   floating above every other window. The boss-key still hides it instantly. The pin
   survives a restart.
 
+### 4a. File references
+A path in a reply (`packages/electron/src/main/index.ts:42`) is tappable: the
+host reads that file and the popover shows it with line numbers, scrolled to the
+line. `←` goes back to the transcript. Reads are confined to the session's own
+folder — its worktree for worktree sessions — and a symlink pointing out of it is
+refused, so a reference cannot be used to browse the rest of the host's disk.
+
 ### 4b. The remote shell
 The `>_` button in a session's header opens a **real shell on the host**, in that
 session's working directory (its worktree, for worktree sessions). It runs there,
