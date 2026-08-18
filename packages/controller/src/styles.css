@@ -307,3 +307,16 @@ input {
   border-color: var(--controller-accent);
   color: #fff;
 }
+
+.controller-composer-style {
+  align-self: flex-end;
+  min-width: 62px;
+  font-size: 11px;
+  color: var(--controller-muted);
+}
+
+.controller-composer-compact {
+  align-self: flex-end;
+  font-size: 11px;
+  color: var(--controller-muted);
+}

@@ -22,7 +22,10 @@ export interface RelayMessage {
   createdAt: number;
   source: string;
   direction: string;
+  /** The body, unwrapped from the host's `{content, metadata, hidden}` envelope. */
   content: string | null;
+  /** The host marks its own bookkeeping rows hidden; they are not transcript. */
+  hidden?: boolean;
   /** True when a key was supplied but AES-GCM authentication failed. */
   undecryptable: boolean;
 }
@@ -64,6 +67,13 @@ export const CONTROL = {
   CANCEL: 'cancel',
   PROMPT_RESPONSE: 'prompt_response',
   ARCHIVE: 'archive',
+  COMPACT: 'prompt_compact',
+} as const;
+
+/** Control verbs the host sends BACK, broadcast to every other device. */
+export const CONTROL_REPLY = {
+  COMPACTED: 'prompt_compacted',
+  COMPACT_ERROR: 'prompt_compact_error',
 } as const;
 
 function parseFrame(event: MessageEvent): any | null {
@@ -72,6 +82,32 @@ function parseFrame(event: MessageEvent): any | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Unwrap what the host actually encrypts.
+ *
+ * `encryptMessage` in CollabV3Sync encrypts `{ content, metadata, hidden }`
+ * around the body, so the decrypted string is a wrapper, not the message. Handing
+ * that to the projector renders a JSON object with a `metadata` key -- the
+ * transcript "showing JSON". Mirrors the host's own `decryptMessage`.
+ */
+export function unwrapStoredMessage(plaintext: string | null): {
+  content: string | null;
+  hidden: boolean;
+} {
+  if (typeof plaintext !== 'string' || plaintext[0] !== '{') {
+    return { content: plaintext ?? null, hidden: false };
+  }
+  try {
+    const parsed = JSON.parse(plaintext);
+    if (parsed && typeof parsed === 'object' && typeof parsed.content === 'string') {
+      return { content: parsed.content, hidden: parsed.hidden === true };
+    }
+  } catch {
+    // Not the wrapper -- treat it as the body itself.
+  }
+  return { content: plaintext, hidden: false };
 }
 
 /** One session's transcript: a decrypted backlog plus a live subscription. */
@@ -100,25 +136,27 @@ export class SessionHandle {
   /** Decrypt one wire message and append it. Also used for the backlog. */
   async ingest(raw: any): Promise<RelayMessage> {
     // Ciphertext is relayed verbatim; the relay holds no key and cannot read it.
-    let content: string | null = null;
+    let plaintext: string | null = null;
     if (this.key && raw.encryptedContent && raw.iv) {
       try {
-        content = await decrypt(raw.encryptedContent, raw.iv, this.key);
+        plaintext = await decrypt(raw.encryptedContent, raw.iv, this.key);
       } catch {
         // Wrong seed/user -> AES-GCM authentication failure. Keep the envelope
         // so a partial key mismatch is visible instead of looking like an empty
         // session.
-        content = null;
+        plaintext = null;
       }
     }
+    const unwrapped = unwrapStoredMessage(plaintext);
     const message: RelayMessage = {
       id: raw.id,
       sequence: raw.sequence,
       createdAt: raw.createdAt,
       source: raw.source,
       direction: raw.direction,
-      content,
-      undecryptable: Boolean(this.key && raw.encryptedContent && content === null),
+      content: unwrapped.content,
+      hidden: unwrapped.hidden,
+      undecryptable: Boolean(this.key && raw.encryptedContent && plaintext === null),
     };
     this.messages.push(message);
     return message;
@@ -365,6 +403,59 @@ export class RelayClient {
     const promptId = crypto.randomUUID();
     await this.sendControl(sessionId, CONTROL.PROMPT, { promptId, prompt });
     return promptId;
+  }
+
+  /**
+   * Ask the host to rewrite a draft prompt into terse shorthand and wait for
+   * the answer. The controller has no shell, so the `claude -p` run happens on
+   * the host; the reply arrives as a `sessionControlBroadcast` on the index
+   * room, matched by requestId. Resolves to the rewrite -- sending it on is the
+   * user's call, never this method's.
+   */
+  async requestCompactedPrompt(
+    sessionId: string,
+    text: string,
+    ratio?: number,
+    timeoutMs = 120000
+  ): Promise<string> {
+    const ws = await this.connect();
+    const requestId = crypto.randomUUID();
+    const reply = new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        ws.removeEventListener('message', onMessage);
+        reject(new Error('The host did not answer in time.'));
+      }, timeoutMs);
+      const onMessage = (event: MessageEvent) => {
+        const frame = parseFrame(event);
+        if (frame?.type !== 'sessionControlBroadcast') return;
+        const message = frame.message ?? {};
+        if (message.sessionId !== sessionId) return;
+        const payload = message.payload ?? {};
+        if (payload.requestId !== requestId) return;
+        if (
+          message.messageType !== CONTROL_REPLY.COMPACTED &&
+          message.messageType !== CONTROL_REPLY.COMPACT_ERROR
+        ) {
+          return;
+        }
+        clearTimeout(timer);
+        ws.removeEventListener('message', onMessage);
+        if (message.messageType === CONTROL_REPLY.COMPACT_ERROR) {
+          reject(new Error(String(payload.error ?? 'Compaction failed.')));
+          return;
+        }
+        const compacted = typeof payload.text === 'string' ? payload.text.trim() : '';
+        if (!compacted) {
+          reject(new Error('The rewrite came back empty.'));
+          return;
+        }
+        resolve(compacted);
+      };
+      ws.addEventListener('message', onMessage);
+    });
+
+    await this.sendControl(sessionId, CONTROL.COMPACT, { requestId, text, ratio });
+    return reply;
   }
 
   async cancel(sessionId: string): Promise<void> {

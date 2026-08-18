@@ -22,19 +22,30 @@ import {
   saveConfig,
   type ControllerConfig,
 } from './config';
+import {
+  applyReplyStyle,
+  loadReplyStyle,
+  nextReplyStyle,
+  REPLY_STYLE_LABELS,
+  saveReplyStyle,
+  type ReplyStyle,
+} from './replyStyle';
 
 /** Turn relay messages into the raw shape the host's own projector expects. */
 function toRawMessages(messages: RelayMessage[], sessionId: string): RawMessage[] {
-  return messages.map((m, i) => ({
-    id: Number.isFinite(Number(m.id)) ? Number(m.id) : i + 1,
-    sessionId,
-    source: m.source,
-    direction: m.direction,
-    content: m.content ?? '',
-    createdAt: m.createdAt ? new Date(m.createdAt) : new Date(0),
-    metadata: undefined,
-    hidden: false,
-  })) as RawMessage[];
+  // The host flags its own bookkeeping rows hidden; they are not transcript.
+  return messages
+    .filter((m) => !m.hidden)
+    .map((m, i) => ({
+      id: Number.isFinite(Number(m.id)) ? Number(m.id) : i + 1,
+      sessionId,
+      source: m.source,
+      direction: m.direction,
+      content: m.content ?? '',
+      createdAt: m.createdAt ? new Date(m.createdAt) : new Date(0),
+      metadata: undefined,
+      hidden: false,
+    })) as RawMessage[];
 }
 
 function PairScreen({ onPaired }: { onPaired: (c: ControllerConfig) => void }) {
@@ -223,6 +234,8 @@ function SessionView({
   const [error, setError] = useState<string | null>(null);
   const [prompt, setPrompt] = useState('');
   const [sending, setSending] = useState(false);
+  const [replyStyle, setReplyStyle] = useState<ReplyStyle>(() => loadReplyStyle());
+  const [compacting, setCompacting] = useState(false);
   const handleRef = useRef<SessionHandle | null>(null);
   // Guards against an out-of-order projection overwriting a newer one.
   const projectionToken = useRef(0);
@@ -280,12 +293,30 @@ function SessionView({
     if (!text) return;
     setSending(true);
     try {
-      await client.sendPrompt(session.sessionId, text);
+      await client.sendPrompt(session.sessionId, applyReplyStyle(text, replyStyle));
       setPrompt('');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSending(false);
+    }
+  };
+
+  /**
+   * Hand the draft to the host for a terse rewrite. The result lands back in
+   * the composer for editing -- compaction never sends.
+   */
+  const compact = async () => {
+    const text = prompt.trim();
+    if (!text || compacting) return;
+    setCompacting(true);
+    setError(null);
+    try {
+      setPrompt(await client.requestCompactedPrompt(session.sessionId, text));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCompacting(false);
     }
   };
 
@@ -334,6 +365,25 @@ function SessionView({
           placeholder="Send a prompt…  (Cmd+Enter)"
           rows={2}
         />
+        <button
+          className="controller-composer-compact"
+          onClick={() => void compact()}
+          disabled={compacting || sending || !prompt.trim()}
+          title="Rewrite this draft into terse shorthand on the host. Does not send it."
+        >
+          {compacting ? '…' : 'Compact'}
+        </button>
+        <button
+          className="controller-composer-style"
+          onClick={() => {
+            const next = nextReplyStyle(replyStyle);
+            setReplyStyle(next);
+            saveReplyStyle(next);
+          }}
+          title="How terse the agent should answer. Cycles Normal, Terse, Ultra."
+        >
+          {REPLY_STYLE_LABELS[replyStyle]}
+        </button>
         <button className="controller-composer-send" onClick={() => void send()} disabled={sending || !prompt.trim()}>
           {sending ? '…' : 'Send'}
         </button>

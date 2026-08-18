@@ -63,6 +63,7 @@ vi.mock('../../RemoteTerminalService', () => ({
   closeAllRemoteTerminals: () => {},
 }));
 vi.mock('../../RemoteFileService', () => ({ handleRemoteFileControl: () => false }));
+vi.mock('../../RemotePromptCompactService', () => ({ handleRemotePromptCompactControl: () => false }));
 
 vi.mock('../../../utils/logger', () => ({
   logger: {

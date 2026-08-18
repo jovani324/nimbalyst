@@ -1,0 +1,44 @@
+// @vitest-environment node
+/**
+ * The controller cannot reach the CLI's --append-system-prompt (it never
+ * launches sessions), so terseness rides along on each outgoing prompt. What a
+ * reader cannot see: the directive must never be appended twice, or a resend of
+ * transcript text stacks them.
+ */
+import { describe, expect, it } from 'vitest';
+import { applyReplyStyle, nextReplyStyle, REPLY_STYLES } from '../replyStyle';
+
+describe('applyReplyStyle', () => {
+  it('leaves the prompt alone on the default style', () => {
+    expect(applyReplyStyle('fix the parser', 'default')).toBe('fix the parser');
+  });
+
+  it('appends a directive after the request for terse and ultra', () => {
+    for (const style of ['terse', 'ultra'] as const) {
+      const out = applyReplyStyle('fix the parser', style);
+      expect(out.startsWith('fix the parser')).toBe(true);
+      expect(out).toContain('[reply-style]');
+    }
+  });
+
+  it('never stacks a second directive on already-styled text', () => {
+    const once = applyReplyStyle('fix the parser', 'terse');
+    expect(applyReplyStyle(once, 'ultra')).toBe(once);
+    expect(once.match(/\[reply-style\]/g)).toHaveLength(1);
+  });
+
+  it('sends nothing for whitespace-only input', () => {
+    expect(applyReplyStyle('   \n ', 'terse')).toBe('');
+  });
+
+  it('cycles through every style and wraps', () => {
+    let style = REPLY_STYLES[0];
+    const seen = [style];
+    for (let i = 0; i < REPLY_STYLES.length; i++) {
+      style = nextReplyStyle(style);
+      seen.push(style);
+    }
+    expect(new Set(seen).size).toBe(REPLY_STYLES.length);
+    expect(seen[seen.length - 1]).toBe(REPLY_STYLES[0]);
+  });
+});

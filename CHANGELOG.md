@@ -10,11 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
-- Controller mode can paste an image into a reply or a new session's first prompt to send it along, search sessions by title, project, or id, approve the commits an agent proposes, open a shell on the host in the session's own directory, start a session that continues under the one you have open or on a fresh branch, and disguise itself as an open editor — file-path session names and a page of source until you point at the pane.
+- Controller mode can paste an image into a reply or a new session's first prompt to send it along, search sessions by title, project, or id, approve the commits an agent proposes, open a shell on the host in the session's own directory, start a session that continues under the one you have open or on a fresh branch, ask for shorter agent replies, compact a long draft prompt down to shorthand before sending it, and disguise itself as an open editor — file-path session names and a page of source until you point at the pane.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
-- Controller mode is quieter to look at and easier to live in — a slimmer header and composer, collapsible project groups, a marker on sessions waiting for your answer, a popover you can resize (with a reset back to the default size) or pin open so it stops vanishing when you click away, a choice of font and text size, links that open in your browser, file references you can tap to read the real file from the host, selectable text anywhere in the transcript, and keys to jump through a long one.
+- Controller mode is quieter to look at and easier to live in — a slimmer header and composer, collapsible project groups ordered by the workspace you touched last, a marker on sessions waiting for your answer, a popover you can resize (with a reset back to the default size) or pin open so it stops vanishing when you click away, a choice of font and text size, links that open in your browser, file references you can tap to read the real file from the host, selectable text anywhere in the transcript, and keys to jump through a long one.
 
 ### Fixed
 <!-- Bug fixes go here -->
