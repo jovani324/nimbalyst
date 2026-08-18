@@ -20,6 +20,18 @@ export interface ProjectGroup {
 
 const UNGROUPED_KEY = '\u0000ungrouped';
 
+/**
+ * Strip trailing separators so one workspace is one key.
+ *
+ * Hosts store both `/a/b` and `/a/b/`. Keying on the raw path splits those into
+ * two groups carrying the *same* label, which reads as duplicated data rather
+ * than as a bug.
+ */
+function normalizePath(path: string): string {
+  // A root path is all separators, so keep it rather than normalizing it away.
+  return path.replace(/[/\\]+$/, '') || path;
+}
+
 /** Trailing slashes and Windows separators both appear in stored paths. */
 export function projectLabel(path: string): string {
   const segments = path.split(/[/\\]/).filter(Boolean);
@@ -30,7 +42,8 @@ export function groupByProject(sessions: RelaySession[]): ProjectGroup[] {
   const byPath = new Map<string, ProjectGroup>();
 
   for (const session of sessions) {
-    const path = session.projectPath?.trim() || null;
+    const raw = session.projectPath?.trim();
+    const path = raw ? normalizePath(raw) : null;
     const key = path ?? UNGROUPED_KEY;
     let group = byPath.get(key);
     if (!group) {
@@ -48,11 +61,16 @@ export function groupByProject(sessions: RelaySession[]): ProjectGroup[] {
   }
 
   const groups = [...byPath.values()];
-  // Busiest project first, but anything unidentified sinks to the bottom rather
-  // than leading the list on session count alone.
+  for (const group of groups) group.sessions.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+  // Most recently touched project first -- the relay returns the index in its
+  // own order, so ordering by session count buries the session you were in a
+  // minute ago under a busier one from last week. Anything unidentified still
+  // sinks to the bottom rather than leading the list.
+  const lastTouched = (g: ProjectGroup) =>
+    g.sessions.reduce((newest, s) => Math.max(newest, s.updatedAt ?? 0), 0);
   groups.sort((a, b) => {
     if ((a.path === null) !== (b.path === null)) return a.path === null ? 1 : -1;
-    if (b.sessions.length !== a.sessions.length) return b.sessions.length - a.sessions.length;
+    if (lastTouched(b) !== lastTouched(a)) return lastTouched(b) - lastTouched(a);
     return a.label.localeCompare(b.label);
   });
   return groups;
