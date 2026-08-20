@@ -19,6 +19,12 @@ import { buildSessionMarkdown } from './condensedTranscript';
 import { resolvePendingPrompt } from './pendingPrompt';
 import { RemoteCommitProposal, type CommitProposalResponse } from './RemoteCommitProposal';
 import { ComposerImageStrip, useComposerImages } from './composerImages';
+import {
+  applyReplyStyle,
+  nextReplyStyle,
+  REPLY_STYLE_LABELS,
+  useControllerReplyStyle,
+} from './controllerReplyStyle';
 import { disguisedCode, disguisedName } from './controllerDisguise';
 import { RemoteTerminalPane } from './RemoteTerminalPane';
 import { RemoteFileViewer } from './RemoteFileViewer';
@@ -71,6 +77,8 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   const [viewMessages, setViewMessages] = useState<ViewMessages>([]);
   const [draft, setDraft] = useState('');
   const composerImages = useComposerImages();
+  const { replyStyle, setReplyStyle } = useControllerReplyStyle();
+  const [compacting, setCompacting] = useState(false);
   const { images, clear: clearImages } = composerImages;
   const [sending, setSending] = useState(false);
   const [promptSubmitting, setPromptSubmitting] = useState(false);
@@ -254,13 +262,39 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
     try {
       // An image with no words still needs a prompt for the agent to act on.
       const prompt = text || 'Take a look at this image.';
-      await api.sendPrompt(sessionId, prompt, images.length ? toPayload(images) : undefined);
+      await api.sendPrompt(
+        sessionId,
+        applyReplyStyle(prompt, replyStyle),
+        images.length ? toPayload(images) : undefined,
+      );
       setDraft('');
       clearImages();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to send prompt');
     } finally {
       setSending(false);
+    }
+  };
+
+  /**
+   * Hand the draft to the host for a terse rewrite. The host has the `claude`
+   * CLI and the checkout; this machine may have neither. The result lands back
+   * in the composer for editing — compacting never sends.
+   */
+  const handleCompact = async () => {
+    const text = draft.trim();
+    const api = window.electronAPI?.remoteSessions;
+    if (!text || !api?.compactPrompt || compacting) return;
+    setCompacting(true);
+    setActionError(null);
+    try {
+      const result = await api.compactPrompt(sessionId, text);
+      if (result?.success) setDraft(result.text);
+      else setActionError(result?.error ?? 'Failed to compact the draft');
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to compact the draft');
+    } finally {
+      setCompacting(false);
     }
   };
 
@@ -616,6 +650,25 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
             onPaste={(e) => void composerImages.handlePaste(e)}
             data-testid="remote-session-composer-input"
           />
+          <button
+            className="remote-session-reply-style text-[11px] px-1.5 py-1 rounded shrink-0"
+            style={{ color: replyStyle === 'default' ? 'var(--nim-text-muted)' : 'var(--nim-primary)' }}
+            onClick={() => setReplyStyle(nextReplyStyle(replyStyle))}
+            data-testid="remote-session-reply-style"
+            title="How terse the agent should answer. Cycles Normal, Terse, Ultra."
+          >
+            {REPLY_STYLE_LABELS[replyStyle]}
+          </button>
+          <button
+            className="remote-session-compact-button text-[11px] px-1.5 py-1 rounded shrink-0"
+            style={{ color: 'var(--nim-text-muted)' }}
+            onClick={() => void handleCompact()}
+            disabled={compacting || sending || !draft.trim()}
+            data-testid="remote-session-compact-button"
+            title="Rewrite this draft into terse shorthand on the host. Does not send it."
+          >
+            {compacting ? '…' : 'Compact'}
+          </button>
           <button
             className="remote-session-send-button text-[13px] px-2 py-1 rounded shrink-0"
             style={{ color: canSend ? 'var(--nim-primary)' : 'var(--nim-text-muted)' }}

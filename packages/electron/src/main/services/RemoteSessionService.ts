@@ -92,11 +92,18 @@ interface RemoteSessionState {
   pendingWorktrees: Map<string, (response: CreateWorktreeResponse) => void>;
   /** Pending file reads awaiting the host's answer, keyed by requestId. */
   pendingFileReads: Map<string, (response: RemoteFileResponse) => void>;
+  /** Pending draft compactions awaiting the host's rewrite, keyed by requestId. */
+  pendingCompactions: Map<string, (response: RemoteCompactResponse) => void>;
 }
 
 /** What the host sends back for a file the controller asked to see. */
 export type RemoteFileResponse =
   | { success: true; path: string; text: string; truncated: boolean }
+  | { success: false; error: string };
+
+/** What the host sends back for a draft prompt it compacted. */
+export type RemoteCompactResponse =
+  | { success: true; text: string }
   | { success: false; error: string };
 
 const state: RemoteSessionState = {
@@ -106,6 +113,7 @@ const state: RemoteSessionState = {
   pendingCreates: new Map(),
   pendingWorktrees: new Map(),
   pendingFileReads: new Map(),
+  pendingCompactions: new Map(),
 };
 
 function broadcast(channel: string, payload: unknown): void {
@@ -196,6 +204,20 @@ export function ensureRemoteSubscriptions(): boolean {
                 truncated: payload.truncated === true,
               }
             : { success: false, error: String(payload.error ?? 'The host could not read that file.') },
+        );
+        return;
+      }
+      if (message.type === 'prompt_compacted' || message.type === 'prompt_compact_error') {
+        const payload = message.payload ?? {};
+        const requestId = String(payload.requestId ?? '');
+        const resolver = state.pendingCompactions.get(requestId);
+        if (!resolver) return;
+        state.pendingCompactions.delete(requestId);
+        const text = typeof payload.text === 'string' ? payload.text.trim() : '';
+        resolver(
+          message.type === 'prompt_compacted' && text
+            ? { success: true, text }
+            : { success: false, error: String(payload.error ?? 'The host could not compact that draft.') },
         );
       }
     });
@@ -498,6 +520,40 @@ export async function readRemoteFile(sessionId: string, filePath: string): Promi
   return response;
 }
 
+/**
+ * Ask the host to rewrite a draft prompt into terse shorthand.
+ *
+ * The controller has no checkout and no `claude` CLI of its own, so the rewrite
+ * runs over there and comes back for editing. It is never sent on: compaction
+ * hands the text back to the composer and stops.
+ *
+ * The window is wider than a file read's because this waits on a model, not a
+ * disk; the host gives up at 90s, so this outlives it by enough to report the
+ * host's own error rather than a timeout of our own.
+ */
+export async function compactRemotePrompt(
+  sessionId: string,
+  text: string,
+  ratio?: number,
+): Promise<RemoteCompactResponse> {
+  ensureRemoteSubscriptions();
+  const requestId = randomUUID();
+
+  const response = new Promise<RemoteCompactResponse>((resolve) => {
+    const timer = setTimeout(() => {
+      state.pendingCompactions.delete(requestId);
+      resolve({ success: false, error: 'The host did not answer in time.' });
+    }, 120_000);
+    state.pendingCompactions.set(requestId, (res) => {
+      clearTimeout(timer);
+      resolve(res);
+    });
+  });
+
+  await sendControl({ sessionId, type: 'prompt_compact', payload: { requestId, text, ratio } });
+  return response;
+}
+
 /** Drive a shell the host opened for us (open / input / resize / close). */
 export async function sendRemoteTerminalControl(
   sessionId: string,
@@ -564,6 +620,7 @@ export function shutdownRemoteSessionService(): void {
   state.pendingCreates.clear();
   state.pendingWorktrees.clear();
   state.pendingFileReads.clear();
+  state.pendingCompactions.clear();
   state.cleanupWorktreeResponse?.();
   state.cleanupWorktreeResponse = undefined;
   state.cleanupControlMessages?.();

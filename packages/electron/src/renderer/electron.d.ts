@@ -778,6 +778,11 @@ interface ElectronAPI {
       sessionId: string,
       path: string,
     ) => Promise<import('./types/remoteSessions').RemoteFileResponse>;
+    compactPrompt: (
+      sessionId: string,
+      text: string,
+      ratio?: number,
+    ) => Promise<import('./types/remoteSessions').RemoteCompactResponse>;
     cancel: (sessionId: string) => Promise<{ success: boolean }>;
     archive: (sessionId: string, isArchived: boolean) => Promise<{ success: boolean }>;
     respondPrompt: (

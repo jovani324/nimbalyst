@@ -138,6 +138,11 @@ export type RemoteFileResponse =
   | { success: true; path: string; text: string; truncated: boolean }
   | { success: false; error: string };
 
+/** What the host sends back for a draft prompt it compacted. */
+export type RemoteCompactResponse =
+  | { success: true; text: string }
+  | { success: false; error: string };
+
 /** Output or lifecycle news from a shell the host opened for this controller. */
 export interface RemoteTerminalEvent {
   sessionId: string;

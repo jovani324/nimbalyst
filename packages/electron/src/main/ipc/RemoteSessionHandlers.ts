@@ -53,6 +53,7 @@ import {
   createRemoteWorktreeSession,
   sendRemoteTerminalControl,
   readRemoteFile,
+  compactRemotePrompt,
   cancelRemoteSession,
   archiveRemoteSession,
   respondToRemotePrompt,
@@ -213,6 +214,16 @@ export function registerRemoteSessionHandlers() {
         throw new Error('remote-sessions:read-file requires sessionId and path');
       }
       return readRemoteFile(payload.sessionId, payload.path);
+    },
+  );
+
+  safeHandle(
+    'remote-sessions:compact-prompt',
+    async (_event, payload: { sessionId: string; text: string; ratio?: number }) => {
+      if (!payload?.sessionId || !payload?.text) {
+        throw new Error('remote-sessions:compact-prompt requires sessionId and text');
+      }
+      return compactRemotePrompt(payload.sessionId, payload.text, payload.ratio);
     },
   );
 
