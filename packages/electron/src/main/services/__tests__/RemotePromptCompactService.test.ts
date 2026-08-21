@@ -96,6 +96,41 @@ describe('runCompact', () => {
     await expect(pending).rejects.toThrow('Invalid API key · Fix external');
   });
 
+  it('retries without the modern flags when the CLI rejects them', async () => {
+    // An older `claude` on the host exits non-zero with
+    // `error: unknown option '--setting-sources'`, and the controller showed
+    // that line as if the rewrite had failed.
+    const rejecting = fakeChild();
+    const retry = fakeChild();
+    spawn.mockReturnValueOnce(rejecting).mockReturnValueOnce(retry);
+
+    const pending = runCompact('draft', { cwd: '/repo', ratio: 40 });
+    rejecting.stderr.emit('data', "error: unknown option '--setting-sources'\n");
+    rejecting.emit('close', 1);
+    await Promise.resolve();
+
+    retry.stdout.emit('data', 'draft\n');
+    retry.emit('close', 0);
+    await expect(pending).resolves.toBe('draft');
+
+    const retryArgs = spawn.mock.calls[1][1] as string[];
+    expect(retryArgs).not.toContain('--setting-sources');
+    expect(retryArgs).not.toContain('--tools');
+    expect(retryArgs).toContain('--append-system-prompt');
+  });
+
+  it('does not retry a failure that is not about our flags', async () => {
+    const child = fakeChild();
+    spawn.mockReturnValue(child);
+
+    const pending = runCompact('draft', { cwd: '/repo', ratio: 40 });
+    child.stderr.emit('data', 'Invalid API key\n');
+    child.emit('close', 1);
+
+    await expect(pending).rejects.toThrow('Invalid API key');
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
   it('kills the process and rejects once the timeout passes', async () => {
     vi.useFakeTimers();
     const child = fakeChild();

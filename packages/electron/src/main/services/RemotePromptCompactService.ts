@@ -72,6 +72,22 @@ export function buildCompactArgs(ratio: number): string[] {
   ];
 }
 
+/**
+ * What an older CLI can still run. `--setting-sources` and `--tools` are recent;
+ * a host that predates them exits non-zero with `error: unknown option
+ * '--setting-sources'`, which the controller then shows verbatim as if the
+ * rewrite itself had failed. The rewrite is slower and loads this repo's
+ * CLAUDE.md, but it is a rewrite.
+ */
+export function buildLegacyCompactArgs(ratio: number): string[] {
+  return ['-p', '--append-system-prompt', buildCompactSystemPrompt(ratio)];
+}
+
+/** Did the CLI reject one of our flags rather than fail at the task? */
+export function isUnknownOptionError(stderr: string): boolean {
+  return /unknown option/i.test(stderr) && /--setting-sources|--tools/.test(stderr);
+}
+
 export interface RunCompactOptions {
   cwd: string;
   ratio: number;
@@ -98,8 +114,21 @@ export function runCompact(text: string, options: RunCompactOptions): Promise<st
     options.executable ??
     resolveClaudeExecutablePath({ homedir: os.homedir(), pathExists: existsSync, enhancedPath: getEnhancedPath() });
 
+  return runCompactWith(text, options, executable, buildCompactArgs(options.ratio)).catch((err) => {
+    if (!(err instanceof Error) || !isUnknownOptionError(err.message)) throw err;
+    log.warn('[RemotePromptCompactService] claude rejected a flag; retrying without it:', err.message);
+    return runCompactWith(text, options, executable, buildLegacyCompactArgs(options.ratio));
+  });
+}
+
+function runCompactWith(
+  text: string,
+  options: RunCompactOptions,
+  executable: string,
+  args: string[]
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, buildCompactArgs(options.ratio), {
+    const child = spawn(executable, args, {
       cwd: options.cwd,
       env: options.env ?? { ...process.env, PATH: getEnhancedPath() || process.env.PATH },
     });
@@ -132,7 +161,9 @@ export function runCompact(text: string, options: RunCompactOptions): Promise<st
       finish(() => {
         const out = stdout.trim();
         if (code !== 0) {
-          reject(new Error(firstMeaningfulLine(stderr) || `claude exited with code ${code}.`));
+          const message = firstMeaningfulLine(stderr) || `claude exited with code ${code}.`;
+          log.warn('[RemotePromptCompactService] claude exited', code, '-', message);
+          reject(new Error(message));
           return;
         }
         if (!out) {
@@ -197,10 +228,9 @@ async function compactForDevice(
     const compacted = await runCompact(draft, { cwd, ratio });
     await send(sessionId, 'prompt_compacted', { requestId, text: compacted, original: draft });
   } catch (err) {
-    await send(sessionId, 'prompt_compact_error', {
-      requestId,
-      error: err instanceof Error ? err.message : 'Compaction failed.',
-    });
+    const error = err instanceof Error ? err.message : 'Compaction failed.';
+    log.warn('[RemotePromptCompactService] compaction failed for', sessionId, '-', error);
+    await send(sessionId, 'prompt_compact_error', { requestId, error });
   }
 }
 
