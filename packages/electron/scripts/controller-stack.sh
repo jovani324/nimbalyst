@@ -10,8 +10,14 @@
 # nushell's env-prefix quirk by exporting the sync URL itself.
 #
 # Usage:
-#   bash controller-stack.sh start [relay|host|controller]
-#   bash controller-stack.sh stop [relay|host|controller] [--force]
+#   bash controller-stack.sh start [relay] [host] [controller]
+#   bash controller-stack.sh stop [relay] [host] [controller] [--force]
+#
+# With a remote SYNC_URL (e.g. the always-on wss://relay.moasfar.app) there is
+# no local relay: `start` brings up the host and controller only, and no
+# private-sync-relay checkout is needed.
+#
+#   SYNC_URL=wss://relay.moasfar.app bash controller-stack.sh start
 #   bash controller-stack.sh status
 #   bash controller-stack.sh logs
 #
@@ -21,9 +27,12 @@
 # Env overrides:
 #   RELAY_DIR       path to private-sync-relay (default: ../../../private-sync-relay
 #                   relative to this script, i.e. a sibling of the fork checkout)
-#   SYNC_URL        sync server (default: ws://localhost:8790)
+#   SYNC_URL        sync server (default: ws://localhost:8790). A non-localhost
+#                   URL means the relay runs elsewhere, so it is not started,
+#                   stopped, or required to exist.
 #   GRACE_SECONDS   how long to wait for a graceful quit before escalating (default: 15)
 #   CONTROLLER_LOG_DIR  where logs/pidfiles live (default: packages/electron/.controller-logs)
+#   DRY_RUN         set to 1 to report what would start and launch nothing
 #   ALLOW_HEADLESS_START  set to 1 to start over SSH anyway (sync will NOT work:
 #                   no GUI session means no Keychain, so both instances come up
 #                   signed out). Start from the machine's desktop session instead.
@@ -49,6 +58,18 @@ mkdir -p "$PID_DIR"
 
 SERVICES="relay host controller"
 FORCE=0
+
+# A SYNC_URL that is not on this machine means the relay is somebody else's
+# process (the always-on wss://relay.moasfar.app service). There is then nothing
+# local to start, nothing to stop, and no reason to demand a relay checkout --
+# a fresh Mac has no ../private-sync-relay at all and must still be able to run
+# `start`.
+case "$SYNC_URL" in
+  *//localhost*|*//127.0.0.1*|*//\[::1\]*) RELAY_IS_LOCAL=1 ;;
+  *) RELAY_IS_LOCAL=0 ;;
+esac
+LOCAL_SERVICES="$SERVICES"
+[ "$RELAY_IS_LOCAL" = "1" ] || LOCAL_SERVICES="host controller"
 
 pidfile() { echo "$PID_DIR/$1.pid"; }
 
@@ -77,6 +98,12 @@ is_running() {
 start_one() {
   local name="$1"; shift
   local dir="$1"; shift
+  # A dry run reports what it would launch and touches nothing -- the only way
+  # to exercise the start guards in a test without spawning Electron.
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "  would start $name in $dir: $*"
+    return 0
+  fi
   if is_running "$name"; then
     echo "  $name already running (pid $(cat "$(pidfile "$name")"))"
     return 0
@@ -224,14 +251,17 @@ port_line() {
 # ── Argument parsing ──────────────────────────────────────────────────────────
 CMD="${1:-start}"
 shift || true
-TARGETS="$SERVICES"
+TARGETS=""
 for arg in "$@"; do
   case "$arg" in
     --force) FORCE=1 ;;
-    relay|host|controller) TARGETS="$arg" ;;
+    # Accumulate, so `start host controller` starts both. It used to assign,
+    # which silently started only the last one named.
+    relay|host|controller) case " $TARGETS " in *" $arg "*) ;; *) TARGETS="$TARGETS $arg" ;; esac ;;
     *) echo "unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
+TARGETS="${TARGETS:-$LOCAL_SERVICES}"
 
 case "$CMD" in
   start)
@@ -249,13 +279,22 @@ case "$CMD" in
       echo "    Set ALLOW_HEADLESS_START=1 to override (sync will not work)." >&2
       exit 1
     fi
-    if [ ! -d "$RELAY_DIR" ]; then
-      echo "  ! relay not found at $RELAY_DIR — set RELAY_DIR=/path/to/private-sync-relay" >&2
+    starts_relay=0
+    case " $TARGETS " in *" relay "*) starts_relay=1 ;; esac
+    if [ "$starts_relay" = "1" ] && [ "$RELAY_IS_LOCAL" != "1" ]; then
+      echo "  ! SYNC_URL is $SYNC_URL — that relay runs elsewhere, so there is nothing to start here." >&2
+      echo "    Drop the 'relay' argument, or set SYNC_URL to a localhost URL." >&2
       exit 1
     fi
-    if [ ! -d "$RELAY_DIR/node_modules" ]; then
-      echo "  relay deps missing — running npm install in $RELAY_DIR"
-      ( cd "$RELAY_DIR" && npm install >/dev/null 2>&1 )
+    if [ "$starts_relay" = "1" ]; then
+      if [ ! -d "$RELAY_DIR" ]; then
+        echo "  ! relay not found at $RELAY_DIR — set RELAY_DIR=/path/to/private-sync-relay" >&2
+        exit 1
+      fi
+      if [ ! -d "$RELAY_DIR/node_modules" ]; then
+        echo "  relay deps missing — running npm install in $RELAY_DIR"
+        ( cd "$RELAY_DIR" && npm install >/dev/null 2>&1 )
+      fi
     fi
     # A leftover relay holds port 8790, so a fresh one dies on EADDRINUSE and
     # the stack silently keeps using the stale process. Say so rather than

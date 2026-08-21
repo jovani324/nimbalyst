@@ -169,6 +169,40 @@ describe('controller-stack.sh', () => {
     expect(fs.existsSync(path.join(logDir, 'pids', 'relay.pid'))).toBe(false);
   });
 
+  it('starts without a relay checkout when SYNC_URL points at a remote relay', () => {
+    // A fresh Mac has no ../private-sync-relay and uses the always-on hosted
+    // relay. `start` used to abort on the missing directory before launching
+    // anything, so the hosted-relay path could not use the launcher at all.
+    const res = run(['start', 'host'], {
+      SYNC_URL: 'wss://relay.moasfar.app',
+      RELAY_DIR: path.join(tmpDir, 'does-not-exist'),
+      DRY_RUN: '1',
+    });
+
+    expect(res.status).toBe(0);
+    expect(res.stderr).not.toContain('relay not found');
+    expect(res.stdout).toContain('would start host');
+  });
+
+  it('starts every named target, not just the last one', () => {
+    const res = run(['start', 'host', 'controller'], {
+      SYNC_URL: 'wss://relay.moasfar.app',
+      DRY_RUN: '1',
+    });
+
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('would start host');
+    expect(res.stdout).toContain('would start controller');
+  });
+
+  it('refuses to start a relay that lives on another machine', () => {
+    const res = run(['start', 'relay'], { SYNC_URL: 'wss://relay.moasfar.app' });
+
+    expect(res.status).not.toBe(0);
+    expect(res.stderr).toContain('that relay runs elsewhere');
+    expect(fs.existsSync(path.join(logDir, 'pids', 'relay.pid'))).toBe(false);
+  });
+
   it('status reports a survivor instead of claiming a clean stop', async () => {
     expect(run(['start', 'relay']).status).toBe(0);
     const pidFile = path.join(logDir, 'pids', 'relay.pid');

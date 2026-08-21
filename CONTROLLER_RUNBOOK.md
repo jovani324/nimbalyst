@@ -30,10 +30,8 @@ node --version        # must be >= 24
 ### 1. Get the code
 ```
 # if the fork isn't cloned yet:
-git clone https://github.com/elasfarc/nimbalyst.git
+git clone -b controller-mode https://github.com/jovani324/nimbalyst.git
 cd nimbalyst
-git checkout controller-mode
-git pull
 npm install
 npm run build --prefix packages/extension-sdk     # REQUIRED prebuild
 
@@ -134,6 +132,18 @@ bash packages/electron/scripts/controller-stack.sh status    # / logs
 bash packages/electron/scripts/controller-stack.sh stop      # end of day
 ```
 Read / reply / approve from the popover; new sessions self-heal into their project.
+
+**On a machine with no `../private-sync-relay` checkout**, point it at the
+always-on hosted relay instead — nothing local to start, and the launcher no
+longer asks for the folder:
+```
+SYNC_URL=wss://relay.moasfar.app bash packages/electron/scripts/controller-stack.sh start
+SYNC_URL=wss://relay.moasfar.app bash packages/electron/scripts/controller-stack.sh stop
+```
+Needs Tailscale up — the relay is tailnet-only. Naming `relay` explicitly with a
+remote `SYNC_URL` is refused rather than silently starting a second one. A
+target can be narrowed (`start host`) or combined (`start host controller`), and
+`DRY_RUN=1` prints what would launch without launching it.
 
 ### Plan 2 — manual, if the launcher misbehaves (3 terminals)
 ```
