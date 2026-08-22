@@ -32,6 +32,7 @@ import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
 import { handleRemoteTerminalControl, closeAllRemoteTerminals } from '../RemoteTerminalService';
 import { handleRemoteFileControl } from '../RemoteFileService';
 import { handleRemotePromptCompactControl } from '../RemotePromptCompactService';
+import { handleRemoteSpeechDigestControl } from '../RemoteSpeechDigestService';
 import { getGitSubprocessEnv } from '../gitEnv';
 import { findWindowByWorkspace } from '../../window/WindowManager';
 import { getDatabase } from '../../database/initialize';
@@ -199,6 +200,7 @@ function handleControlMessage(
   if (handleRemoteTerminalControl(message)) return;
   if (handleRemoteFileControl(message)) return;
   if (handleRemotePromptCompactControl(message)) return;
+  if (handleRemoteSpeechDigestControl(message)) return;
 
   switch (message.type) {
     case 'cancel':

@@ -783,6 +783,11 @@ interface ElectronAPI {
       text: string,
       ratio?: number,
     ) => Promise<import('./types/remoteSessions').RemoteCompactResponse>;
+    speechDigest: (
+      sessionId: string,
+      messageId: string,
+      text: string,
+    ) => Promise<import('./types/remoteSessions').RemoteDigestResponse>;
     cancel: (sessionId: string) => Promise<{ success: boolean }>;
     archive: (sessionId: string, isArchived: boolean) => Promise<{ success: boolean }>;
     respondPrompt: (

@@ -26,6 +26,16 @@ import {
   useControllerReplyStyle,
 } from './controllerReplyStyle';
 import { disguisedCode, disguisedName } from './controllerDisguise';
+import {
+  applyChoiceDirective,
+  composeUtterance,
+  nextSpeechMode,
+  pickDigestTarget,
+  shouldSpeak,
+  SPEECH_MODE_LABELS,
+  useControllerSpeech,
+} from './controllerSpeech';
+import type { SpeechDigest } from '@nimbalyst/runtime/ai/prompts/speechDigest';
 import { RemoteTerminalPane } from './RemoteTerminalPane';
 import { RemoteFileViewer } from './RemoteFileViewer';
 import { toPayload } from './controllerImages';
@@ -79,6 +89,13 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   const composerImages = useComposerImages();
   const { replyStyle, setReplyStyle } = useControllerReplyStyle();
   const [compacting, setCompacting] = useState(false);
+  const speech = useControllerSpeech();
+  /** The newest digest, kept so its choices can be answered with a click. */
+  const [digest, setDigest] = useState<{ messageId: string; digest: SpeechDigest } | null>(null);
+  const digestedId = useRef<string | null>(null);
+  // Read at request time: switching the mode must not re-digest the same reply.
+  const speechModeRef = useRef(speech.mode);
+  speechModeRef.current = speech.mode;
   const { images, clear: clearImages } = composerImages;
   const [sending, setSending] = useState(false);
   const [promptSubmitting, setPromptSubmitting] = useState(false);
@@ -253,27 +270,73 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
     [viewMessages, syncedPending],
   );
 
-  const handleSend = async () => {
-    const text = draft.trim();
+  const isExecuting = !!session?.isExecuting;
+
+  // Digest the final reply of each turn on the host and say it. The request
+  // goes out whatever the mode, so a later switch to Speak has a cached digest
+  // to read; only the playback obeys the mode.
+  useEffect(() => {
     const api = window.electronAPI?.remoteSessions;
-    if ((!text && images.length === 0) || !api) return;
+    const target = pickDigestTarget(viewMessages, isExecuting);
+    if (!api?.speechDigest || !target || digestedId.current === target.id) return;
+    digestedId.current = target.id;
+    if (speechModeRef.current === 'off') return;
+    let live = true;
+    void api
+      .speechDigest(sessionId, target.id, target.text)
+      .then((result) => {
+        if (!live || !result.success) return;
+        setDigest({ messageId: result.messageId, digest: result.digest });
+        if (shouldSpeak(result.digest, speechModeRef.current)) speech.speak(composeUtterance(result.digest));
+        else if (result.digest.kind === 'done') speech.chime();
+      })
+      .catch(() => {
+        /* a reply that cannot be digested is still on screen */
+      });
+    return () => {
+      live = false;
+    };
+  }, [viewMessages, isExecuting, sessionId, speech]);
+
+  // Never keep talking into a room the user has turned away from: the popover
+  // hiding blurs the window, and switching sessions deactivates this one.
+  useEffect(() => {
+    if (isActive) return;
+    speech.hush();
+  }, [isActive, speech]);
+  useEffect(() => {
+    window.addEventListener('blur', speech.hush);
+    return () => window.removeEventListener('blur', speech.hush);
+  }, [speech]);
+
+  const sendText = async (prompt: string) => {
+    const api = window.electronAPI?.remoteSessions;
+    if (!api) return;
     setSending(true);
     setActionError(null);
+    speech.hush();
     try {
-      // An image with no words still needs a prompt for the agent to act on.
-      const prompt = text || 'Take a look at this image.';
+      const styled = applyReplyStyle(prompt, replyStyle);
       await api.sendPrompt(
         sessionId,
-        applyReplyStyle(prompt, replyStyle),
+        speech.mode === 'off' ? styled : applyChoiceDirective(styled),
         images.length ? toPayload(images) : undefined,
       );
       setDraft('');
+      setDigest(null);
       clearImages();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Failed to send prompt');
     } finally {
       setSending(false);
     }
+  };
+
+  const handleSend = async () => {
+    const text = draft.trim();
+    if (!text && images.length === 0) return;
+    // An image with no words still needs a prompt for the agent to act on.
+    await sendText(text || 'Take a look at this image.');
   };
 
   /**
@@ -363,7 +426,6 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
     }
   };
 
-  const isExecuting = !!session?.isExecuting;
   const canSend = !sending && (!!draft.trim() || images.length > 0);
   // Whole-transcript blur (as opposed to per-message hover-reveal).
   const globalBlur = masked && !privacy.hoverReveal;
@@ -632,6 +694,22 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
           glyph instead of a filled button. */}
       <div className="remote-session-composer flex flex-col gap-1.5 px-2 py-2 border-t shrink-0" style={{ borderColor: 'var(--nim-border)' }}>
         <ComposerImageStrip {...composerImages} />
+        {digest && digest.digest.choices.length > 0 && !isExecuting && (
+          <div className="remote-session-choices flex flex-wrap gap-1 px-2 pb-1" data-testid="remote-session-choices">
+            {digest.digest.choices.map((choice, i) => (
+              <button
+                key={`${digest.messageId}-${i}`}
+                className="remote-session-choice text-[11px] px-1.5 py-0.5 rounded"
+                style={{ color: 'var(--nim-primary)', border: '1px solid var(--nim-border)' }}
+                onClick={() => void sendText(choice.prompt)}
+                disabled={sending}
+                title={choice.prompt}
+              >
+                {i + 1}. {choice.label}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="flex items-end gap-1.5">
           <textarea
             className="flex-1 resize-none rounded px-2 py-1 text-[12px] outline-none"
@@ -658,6 +736,18 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
             title="How terse the agent should answer. Cycles Normal, Terse, Ultra."
           >
             {REPLY_STYLE_LABELS[replyStyle]}
+          </button>
+          <button
+            className="remote-session-speech-mode text-[11px] px-1.5 py-1 rounded shrink-0"
+            style={{ color: speech.mode === 'off' ? 'var(--nim-text-muted)' : 'var(--nim-primary)' }}
+            onClick={() => {
+              speech.hush();
+              speech.setMode(nextSpeechMode(speech.mode));
+            }}
+            data-testid="remote-session-speech-mode"
+            title="Read replies aloud. Cycles Mute, Speak when the agent needs you, Speak all."
+          >
+            {SPEECH_MODE_LABELS[speech.mode]}
           </button>
           <button
             className="remote-session-compact-button text-[11px] px-1.5 py-1 rounded shrink-0"

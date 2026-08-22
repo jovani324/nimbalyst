@@ -39,7 +39,9 @@ import type {
   CreateWorktreeRequest,
   CreateWorktreeResponse,
 } from '@nimbalyst/runtime/sync';
-import { getSyncProvider } from './SyncManager';
+import type { SpeechDigest } from '@nimbalyst/runtime/ai/prompts/speechDigest';
+import { getPersonalDocSyncConfig, getSyncProvider } from './SyncManager';
+import { decryptDigestPayload } from './RemoteSpeechDigestService';
 import { isControllerMode } from '../utils/store';
 import { logger } from '../utils/logger';
 
@@ -94,6 +96,8 @@ interface RemoteSessionState {
   pendingFileReads: Map<string, (response: RemoteFileResponse) => void>;
   /** Pending draft compactions awaiting the host's rewrite, keyed by requestId. */
   pendingCompactions: Map<string, (response: RemoteCompactResponse) => void>;
+  /** Pending speech digests awaiting the host's summary, keyed by requestId. */
+  pendingDigests: Map<string, (response: RemoteDigestResponse) => void>;
 }
 
 /** What the host sends back for a file the controller asked to see. */
@@ -106,6 +110,11 @@ export type RemoteCompactResponse =
   | { success: true; text: string }
   | { success: false; error: string };
 
+/** What the host sends back for a reply it digested for speech. */
+export type RemoteDigestResponse =
+  | { success: true; messageId: string; digest: SpeechDigest }
+  | { success: false; messageId: string; error: string };
+
 const state: RemoteSessionState = {
   indexSubscribed: false,
   transcriptCleanups: new Map(),
@@ -114,6 +123,7 @@ const state: RemoteSessionState = {
   pendingWorktrees: new Map(),
   pendingFileReads: new Map(),
   pendingCompactions: new Map(),
+  pendingDigests: new Map(),
 };
 
 function broadcast(channel: string, payload: unknown): void {
@@ -218,6 +228,29 @@ export function ensureRemoteSubscriptions(): boolean {
           message.type === 'prompt_compacted' && text
             ? { success: true, text }
             : { success: false, error: String(payload.error ?? 'The host could not compact that draft.') },
+        );
+        return;
+      }
+      if (message.type === 'speech_digested' || message.type === 'speech_digest_error') {
+        const payload = message.payload ?? {};
+        const requestId = String(payload.requestId ?? '');
+        const resolver = state.pendingDigests.get(requestId);
+        if (!resolver) return;
+        state.pendingDigests.delete(requestId);
+        const messageId = String(payload.messageId ?? '');
+        if (message.type !== 'speech_digested') {
+          resolver({ success: false, messageId, error: String(payload.error ?? 'The host could not digest that reply.') });
+          return;
+        }
+        // The digest is ciphertext on the wire; without the personal key there is nothing to speak.
+        const key = getPersonalDocSyncConfig()?.encryptionKeyRaw;
+        if (!key || typeof payload.encrypted !== 'string' || typeof payload.iv !== 'string') {
+          resolver({ success: false, messageId, error: 'The digest could not be decrypted.' });
+          return;
+        }
+        decryptDigestPayload(payload.encrypted, payload.iv, key).then(
+          (digest) => resolver({ success: true, messageId, digest }),
+          (err) => resolver({ success: false, messageId, error: err instanceof Error ? err.message : String(err) }),
         );
       }
     });
@@ -554,6 +587,34 @@ export async function compactRemotePrompt(
   return response;
 }
 
+/**
+ * Ask the host to digest an assistant reply for speech: a few sentences plus
+ * the answers a keypress can send. Same round trip as compaction; the host
+ * caches by messageId so reopening a session does not pay twice.
+ */
+export async function requestRemoteSpeechDigest(
+  sessionId: string,
+  messageId: string,
+  text: string,
+): Promise<RemoteDigestResponse> {
+  ensureRemoteSubscriptions();
+  const requestId = randomUUID();
+
+  const response = new Promise<RemoteDigestResponse>((resolve) => {
+    const timer = setTimeout(() => {
+      state.pendingDigests.delete(requestId);
+      resolve({ success: false, messageId, error: 'The host did not answer in time.' });
+    }, 120_000);
+    state.pendingDigests.set(requestId, (res) => {
+      clearTimeout(timer);
+      resolve(res);
+    });
+  });
+
+  await sendControl({ sessionId, type: 'speech_digest', payload: { requestId, messageId, text } });
+  return response;
+}
+
 /** Drive a shell the host opened for us (open / input / resize / close). */
 export async function sendRemoteTerminalControl(
   sessionId: string,
@@ -621,6 +682,7 @@ export function shutdownRemoteSessionService(): void {
   state.pendingWorktrees.clear();
   state.pendingFileReads.clear();
   state.pendingCompactions.clear();
+  state.pendingDigests.clear();
   state.cleanupWorktreeResponse?.();
   state.cleanupWorktreeResponse = undefined;
   state.cleanupControlMessages?.();

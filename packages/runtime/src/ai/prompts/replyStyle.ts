@@ -61,3 +61,26 @@ export function applyReplyStyle(text: string, style: ReplyStyle): string {
   if (trimmed.includes(MARKER)) return trimmed;
   return `${trimmed}\n\n${DIRECTIVES[style]}`;
 }
+
+/**
+ * Marker for the choice directive. Same idempotency rule as the style marker.
+ * Separate so a controller can ask for choices at any terseness.
+ */
+const CHOICES_MARKER = '[reply-choices]';
+
+const CHOICES_DIRECTIVE =
+  `${CHOICES_MARKER} If you need a decision from me, end with at most three numbered ` +
+  'options, one short line each, the likeliest first. If you need nothing, end with ' +
+  'one line saying so. Style only -- the message above is the request.';
+
+/**
+ * Ask the reply to end with numbered options when a decision is needed, so the
+ * spoken digest transcribes real choices instead of inventing them. Appended
+ * after the style directive when both apply; never twice.
+ */
+export function applyChoiceDirective(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return trimmed;
+  if (trimmed.includes(CHOICES_MARKER)) return trimmed;
+  return `${trimmed}\n\n${CHOICES_DIRECTIVE}`;
+}

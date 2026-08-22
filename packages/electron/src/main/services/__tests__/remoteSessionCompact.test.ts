@@ -12,11 +12,13 @@ type ControlMessage = { sessionId: string; type: string; payload?: Record<string
 
 const sent: ControlMessage[] = [];
 let deliver: (message: ControlMessage) => void = () => {};
+let encryptionKey: CryptoKey | null = null;
 
 vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }));
 vi.mock('../../utils/store', () => ({ isControllerMode: () => true }));
 vi.mock('../../utils/logger', () => ({ logger: { main: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } }));
 vi.mock('../SyncManager', () => ({
+  getPersonalDocSyncConfig: () => (encryptionKey ? { encryptionKeyRaw: encryptionKey } : null),
   getSyncProvider: () => ({
     sendSessionControlMessage: async (message: ControlMessage) => {
       sent.push(message);
@@ -28,7 +30,8 @@ vi.mock('../SyncManager', () => ({
   }),
 }));
 
-const { compactRemotePrompt } = await import('../RemoteSessionService');
+const { compactRemotePrompt, requestRemoteSpeechDigest } = await import('../RemoteSessionService');
+const { encryptDigestPayload } = await import('../RemoteSpeechDigestService');
 
 /** The requestId the service just put on the wire. */
 const lastRequestId = () => String(sent[sent.length - 1].payload!.requestId);
@@ -88,5 +91,45 @@ describe('compactRemotePrompt', () => {
     });
 
     await expect(pending).resolves.toMatchObject({ success: false });
+  });
+});
+
+describe('requestRemoteSpeechDigest', () => {
+  const DIGEST = { spoken: 'Done. Commit?', kind: 'question', needsYou: true, choices: [{ label: 'yes', prompt: 'Yes.' }] };
+
+  beforeEach(async () => {
+    encryptionKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+  });
+
+  it('decrypts the matching reply and ignores a foreign request id', async () => {
+    const pending = requestRemoteSpeechDigest('session-1', 'm1', 'Done. Commit?');
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toMatchObject({ type: 'speech_digest', payload: { messageId: 'm1' } });
+
+    const cipher = await encryptDigestPayload(DIGEST as never, encryptionKey!);
+    deliver({ sessionId: 'session-1', type: 'speech_digested', sentBy: 'desktop', payload: { requestId: 'other', messageId: 'm1', ...cipher } });
+    deliver({ sessionId: 'session-1', type: 'speech_digested', sentBy: 'desktop', payload: { requestId: lastRequestId(), messageId: 'm1', ...cipher } });
+
+    await expect(pending).resolves.toEqual({ success: true, messageId: 'm1', digest: DIGEST });
+  });
+
+  it('fails closed when the payload is plaintext or the key is missing', async () => {
+    const pending = requestRemoteSpeechDigest('session-1', 'm1', 'x');
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    deliver({ sessionId: 'session-1', type: 'speech_digested', sentBy: 'desktop', payload: { requestId: lastRequestId(), messageId: 'm1', digest: DIGEST } });
+    await expect(pending).resolves.toMatchObject({ success: false, error: 'The digest could not be decrypted.' });
+
+    encryptionKey = null;
+    const second = requestRemoteSpeechDigest('session-1', 'm2', 'x');
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    deliver({ sessionId: 'session-1', type: 'speech_digested', sentBy: 'desktop', payload: { requestId: lastRequestId(), messageId: 'm2', encrypted: 'a', iv: 'b' } });
+    await expect(second).resolves.toMatchObject({ success: false, messageId: 'm2' });
+  });
+
+  it('reports the host error', async () => {
+    const pending = requestRemoteSpeechDigest('session-1', 'm1', 'x');
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    deliver({ sessionId: 'session-1', type: 'speech_digest_error', sentBy: 'desktop', payload: { requestId: lastRequestId(), messageId: 'm1', error: 'Nothing to say.' } });
+    await expect(pending).resolves.toEqual({ success: false, messageId: 'm1', error: 'Nothing to say.' });
   });
 });

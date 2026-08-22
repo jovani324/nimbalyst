@@ -54,6 +54,7 @@ import {
   sendRemoteTerminalControl,
   readRemoteFile,
   compactRemotePrompt,
+  requestRemoteSpeechDigest,
   cancelRemoteSession,
   archiveRemoteSession,
   respondToRemotePrompt,
@@ -224,6 +225,16 @@ export function registerRemoteSessionHandlers() {
         throw new Error('remote-sessions:compact-prompt requires sessionId and text');
       }
       return compactRemotePrompt(payload.sessionId, payload.text, payload.ratio);
+    },
+  );
+
+  safeHandle(
+    'remote-sessions:speech-digest',
+    async (_event, payload: { sessionId: string; messageId: string; text: string }) => {
+      if (!payload?.sessionId || !payload?.messageId || !payload?.text) {
+        throw new Error('remote-sessions:speech-digest requires sessionId, messageId and text');
+      }
+      return requestRemoteSpeechDigest(payload.sessionId, payload.messageId, payload.text);
     },
   );
 

@@ -6,7 +6,7 @@
  * transcript text stacks them.
  */
 import { describe, expect, it } from 'vitest';
-import { applyReplyStyle, nextReplyStyle, REPLY_STYLES } from '../replyStyle';
+import { applyChoiceDirective, applyReplyStyle, nextReplyStyle, REPLY_STYLES } from '../replyStyle';
 
 describe('applyReplyStyle', () => {
   it('leaves the prompt alone on the default style', () => {
@@ -40,5 +40,20 @@ describe('applyReplyStyle', () => {
     }
     expect(new Set(seen).size).toBe(REPLY_STYLES.length);
     expect(seen[seen.length - 1]).toBe(REPLY_STYLES[0]);
+  });
+});
+
+describe('applyChoiceDirective', () => {
+  it('stacks once after the style directive and never twice', () => {
+    const styled = applyReplyStyle('fix the parser', 'terse');
+    const once = applyChoiceDirective(styled);
+    expect(once.startsWith(styled)).toBe(true);
+    expect(applyChoiceDirective(once)).toBe(once);
+    expect(once.match(/\[reply-choices\]/g)).toHaveLength(1);
+    expect(once.match(/\[reply-style\]/g)).toHaveLength(1);
+  });
+
+  it('sends nothing for whitespace-only input', () => {
+    expect(applyChoiceDirective('  \n')).toBe('');
   });
 });
