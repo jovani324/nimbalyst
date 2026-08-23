@@ -10,8 +10,41 @@
  * unmount, so nothing is left running on the host after you close it.
  */
 
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import { appendTerminalOutput } from './controllerTerminal';
+
+/** Smallest useful pane; below this the input and a line of output don't fit. */
+const MIN_HEIGHT = 120;
+const DEFAULT_HEIGHT = 280;
+const HEIGHT_STORAGE_KEY = 'controller.remoteTerminal.height';
+
+/**
+ * Measure one monospace cell in the log element's own font, so the PTY can be
+ * told a cols/rows that matches what the pane actually shows. Reuses a single
+ * offscreen canvas; falls back to sane defaults if the context is unavailable.
+ */
+let cellCanvas: HTMLCanvasElement | null = null;
+function measureCell(el: HTMLElement): { w: number; h: number } {
+  const cs = getComputedStyle(el);
+  cellCanvas ??= document.createElement('canvas');
+  const ctx = cellCanvas.getContext('2d');
+  let w = 6.6;
+  if (ctx) {
+    ctx.font = `${cs.fontSize} ${cs.fontFamily}`;
+    const measured = ctx.measureText('0'.repeat(10)).width / 10;
+    if (measured > 0) w = measured;
+  }
+  const lineHeight = parseFloat(cs.lineHeight);
+  const h = Number.isFinite(lineHeight) && lineHeight > 0 ? lineHeight : parseFloat(cs.fontSize) * 1.45 || 16;
+  return { w, h };
+}
 
 interface RemoteTerminalPaneProps {
   sessionId: string;
@@ -34,9 +67,19 @@ export function RemoteTerminalPane({ sessionId, onClose }: RemoteTerminalPanePro
   // Shell history, newest last; index is a position walked by Arrow Up/Down.
   const historyRef = useRef<string[]>([]);
   const historyIndexRef = useRef<number | null>(null);
+  // Drag-resizable pane height, remembered across mounts.
+  const [height, setHeight] = useState<number>(() => {
+    const saved = Number(localStorage.getItem(HEIGHT_STORAGE_KEY));
+    return Number.isFinite(saved) && saved >= MIN_HEIGHT ? saved : DEFAULT_HEIGHT;
+  });
+  const heightRef = useRef(height);
+  heightRef.current = height;
 
   const send = useCallback(
-    (type: 'terminal_open' | 'terminal_input' | 'terminal_close', extra: Record<string, unknown> = {}) => {
+    (
+      type: 'terminal_open' | 'terminal_input' | 'terminal_resize' | 'terminal_close',
+      extra: Record<string, unknown> = {},
+    ) => {
       void window.electronAPI?.remoteSessions?.terminal?.({
         sessionId,
         type,
@@ -78,6 +121,52 @@ export function RemoteTerminalPane({ sessionId, onClose }: RemoteTerminalPanePro
     const el = logRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [output]);
+
+  // Tell the host PTY the size the pane actually shows, so its own wrapping and
+  // the shell's line editor match what the reader sees.
+  const sendResize = useCallback(() => {
+    const el = logRef.current;
+    if (!el) return;
+    const cell = measureCell(el);
+    const cols = Math.max(20, Math.min(400, Math.floor(el.clientWidth / cell.w) || 80));
+    const rows = Math.max(5, Math.min(200, Math.floor(el.clientHeight / cell.h) || 24));
+    send('terminal_resize', { cols, rows });
+  }, [send]);
+
+  // Resync on ready and whenever the pane's own height changes (a drag)…
+  useEffect(() => {
+    if (status === 'ready') sendResize();
+  }, [status, height, sendResize]);
+
+  // …and when the column it lives in changes width.
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      if (status === 'ready') sendResize();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [status, sendResize]);
+
+  const onResizeStart = (e: ReactPointerEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = heightRef.current;
+    const onMove = (ev: PointerEvent) => {
+      // Drag up grows the pane; clamp so it can't swallow the whole window.
+      const next = Math.max(MIN_HEIGHT, Math.min(window.innerHeight - 100, startHeight + (startY - ev.clientY)));
+      heightRef.current = next;
+      setHeight(next);
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      localStorage.setItem(HEIGHT_STORAGE_KEY, String(Math.round(heightRef.current)));
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
 
   const run = () => {
     if (status !== 'ready') return;
@@ -122,9 +211,19 @@ export function RemoteTerminalPane({ sessionId, onClose }: RemoteTerminalPanePro
   return (
     <div
       className="remote-terminal-pane flex flex-col min-h-0 border-t"
-      style={{ borderColor: 'var(--nim-border)', background: 'var(--nim-bg)', height: '45%' }}
+      style={{ borderColor: 'var(--nim-border)', background: 'var(--nim-bg)', height: `${height}px` }}
       data-testid="remote-terminal-pane"
     >
+      <div
+        className="remote-terminal-resize-handle h-1 shrink-0 cursor-row-resize"
+        style={{ marginTop: '-1px', background: 'transparent' }}
+        onPointerDown={onResizeStart}
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize the terminal"
+        title="Drag to resize the terminal"
+        data-testid="remote-terminal-resize"
+      />
       <div
         className="remote-terminal-header flex items-center justify-between px-2 h-6 shrink-0 text-[10px]"
         style={{ color: 'var(--nim-text-muted)' }}
