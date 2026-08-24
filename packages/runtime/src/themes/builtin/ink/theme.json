@@ -1,0 +1,32 @@
+{
+  "id": "ink",
+  "name": "Ink",
+  "version": "1.0.0",
+  "author": "Nimbalyst",
+  "description": "True-black OLED dark. Pure black canvas, dim gray text, minimal accent.",
+  "isDark": true,
+  "colors": {
+    "bg": "#000000",
+    "bg-secondary": "#0a0a0a",
+    "bg-tertiary": "#141414",
+    "bg-hover": "rgba(255, 255, 255, 0.06)",
+    "bg-selected": "rgba(255, 255, 255, 0.14)",
+    "bg-active": "#1e1e1e",
+    "text": "#d0d0d0",
+    "text-muted": "#8a8a8a",
+    "text-faint": "#5e5e5e",
+    "text-disabled": "#404040",
+    "border": "#1a1a1a",
+    "border-focus": "#4a4a4a",
+    "primary": "#a8a8a8",
+    "primary-hover": "#cccccc",
+    "link": "#b8b8b8",
+    "link-hover": "#e6e6e6",
+    "success": "#6f9a72",
+    "warning": "#b39a5a",
+    "error": "#b06a6a",
+    "info": "#7a8a9a",
+    "purple": "#948aa8"
+  },
+  "tags": ["dark", "black", "oled", "minimal", "discreet"]
+}

@@ -8,7 +8,19 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 
-export type ControllerTheme = 'midnight' | 'terminal' | 'editor' | 'paper';
+export type ControllerTheme =
+  | 'midnight'
+  | 'terminal'
+  | 'editor'
+  | 'paper'
+  | 'graphite'
+  | 'chalk'
+  | 'sepia'
+  | 'dusk'
+  | 'zinc'
+  | 'sage'
+  | 'ink'
+  | 'gruvbox-soft-dark';
 export type ControllerFont = 'mono' | 'system' | 'serif';
 
 export interface ControllerAppearance {
@@ -30,6 +42,15 @@ export const THEMES: Array<{ id: ControllerTheme; label: string }> = [
   { id: 'terminal', label: 'Terminal' },
   { id: 'editor', label: 'Editor' },
   { id: 'paper', label: 'Paper' },
+  // Discreet, low-saturation skins.
+  { id: 'graphite', label: 'Graphite' },
+  { id: 'chalk', label: 'Chalk' },
+  { id: 'sepia', label: 'Sepia' },
+  { id: 'dusk', label: 'Dusk' },
+  { id: 'zinc', label: 'Zinc' },
+  { id: 'sage', label: 'Sage' },
+  { id: 'ink', label: 'Ink' },
+  { id: 'gruvbox-soft-dark', label: 'Gruvbox' },
 ];
 
 export const FONTS: Array<{ id: ControllerFont; label: string; stack: string }> = [
@@ -118,6 +139,118 @@ const THEME_PALETTES: Record<ControllerTheme, Record<string, string>> = {
     '--nim-success': '#3a7d44',
     '--nim-warning': '#b5651d',
     '--nim-error': '#b00020',
+  },
+  graphite: {
+    '--nim-bg': '#1a1a1a',
+    '--nim-bg-secondary': '#202020',
+    '--nim-bg-tertiary': '#2a2a2a',
+    '--nim-bg-hover': '#2f2f2f',
+    '--nim-bg-selected': '#383838',
+    '--nim-text': '#e0e0e0',
+    '--nim-text-muted': '#9e9e9e',
+    '--nim-border': '#333333',
+    '--nim-primary': '#b0b0b0',
+    '--nim-success': '#82a082',
+    '--nim-warning': '#c9a86a',
+    '--nim-error': '#c07a7a',
+  },
+  chalk: {
+    '--nim-bg': '#fafafa',
+    '--nim-bg-secondary': '#f0f0f0',
+    '--nim-bg-tertiary': '#e6e6e6',
+    '--nim-bg-hover': '#ececec',
+    '--nim-bg-selected': '#e0e0e0',
+    '--nim-text': '#222222',
+    '--nim-text-muted': '#5c5c5c',
+    '--nim-border': '#dcdcdc',
+    '--nim-primary': '#4a4a4a',
+    '--nim-success': '#5a7a5a',
+    '--nim-warning': '#9a7a3a',
+    '--nim-error': '#a04a4a',
+  },
+  sepia: {
+    '--nim-bg': '#f4ecd8',
+    '--nim-bg-secondary': '#ece3cc',
+    '--nim-bg-tertiary': '#e3d8bd',
+    '--nim-bg-hover': '#e6dcc0',
+    '--nim-bg-selected': '#dccdae',
+    '--nim-text': '#5b4636',
+    '--nim-text-muted': '#7a6350',
+    '--nim-border': '#ddd0b4',
+    '--nim-primary': '#a4703c',
+    '--nim-success': '#6f7a3a',
+    '--nim-warning': '#b08a3a',
+    '--nim-error': '#a85438',
+  },
+  dusk: {
+    '--nim-bg': '#23272e',
+    '--nim-bg-secondary': '#1c2027',
+    '--nim-bg-tertiary': '#2b303a',
+    '--nim-bg-hover': '#2f353f',
+    '--nim-bg-selected': '#353f4d',
+    '--nim-text': '#c5ccd6',
+    '--nim-text-muted': '#8b93a1',
+    '--nim-border': '#2f353f',
+    '--nim-primary': '#7e93ad',
+    '--nim-success': '#7f9c82',
+    '--nim-warning': '#c2a878',
+    '--nim-error': '#bf8080',
+  },
+  zinc: {
+    '--nim-bg': '#18181b',
+    '--nim-bg-secondary': '#131316',
+    '--nim-bg-tertiary': '#232327',
+    '--nim-bg-hover': '#27272a',
+    '--nim-bg-selected': '#303035',
+    '--nim-text': '#e4e4e7',
+    '--nim-text-muted': '#a1a1aa',
+    '--nim-border': '#27272a',
+    '--nim-primary': '#8a9bb0',
+    '--nim-success': '#7d9a86',
+    '--nim-warning': '#c1a877',
+    '--nim-error': '#bd8181',
+  },
+  sage: {
+    '--nim-bg': '#f3f4f0',
+    '--nim-bg-secondary': '#e9ebe4',
+    '--nim-bg-tertiary': '#dfe2d8',
+    '--nim-bg-hover': '#e4e6dd',
+    '--nim-bg-selected': '#d5d9cc',
+    '--nim-text': '#3d423a',
+    '--nim-text-muted': '#666c5f',
+    '--nim-border': '#d8dccf',
+    '--nim-primary': '#6f8a5f',
+    '--nim-success': '#5f8a4f',
+    '--nim-warning': '#9a7f3a',
+    '--nim-error': '#a05446',
+  },
+  ink: {
+    '--nim-bg': '#000000',
+    '--nim-bg-secondary': '#0a0a0a',
+    '--nim-bg-tertiary': '#141414',
+    '--nim-bg-hover': '#1a1a1a',
+    '--nim-bg-selected': '#242424',
+    '--nim-text': '#d0d0d0',
+    '--nim-text-muted': '#8a8a8a',
+    '--nim-border': '#1a1a1a',
+    '--nim-primary': '#a8a8a8',
+    '--nim-success': '#6f9a72',
+    '--nim-warning': '#b39a5a',
+    '--nim-error': '#b06a6a',
+  },
+  'gruvbox-soft-dark': {
+    '--nim-bg': '#32302f',
+    '--nim-bg-secondary': '#282828',
+    '--nim-bg-tertiary': '#3c3836',
+    '--nim-bg-hover': '#3c3836',
+    '--nim-bg-selected': '#504945',
+    '--nim-text': '#ebdbb2',
+    '--nim-text-muted': '#a89984',
+    '--nim-border': '#3c3836',
+    '--nim-primary': '#83a598',
+    '--nim-success': '#98971a',
+    '--nim-warning': '#d79921',
+    '--nim-error': '#cc241d',
   },
 };
 

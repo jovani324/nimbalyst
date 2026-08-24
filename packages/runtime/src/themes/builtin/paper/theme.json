@@ -1,0 +1,32 @@
+{
+  "id": "paper",
+  "name": "Paper",
+  "version": "1.0.0",
+  "author": "Nimbalyst",
+  "description": "Monochrome light. Off-white sheet, charcoal ink, grayscale UI.",
+  "isDark": false,
+  "colors": {
+    "bg": "#fafafa",
+    "bg-secondary": "#f0f0f0",
+    "bg-tertiary": "#e6e6e6",
+    "bg-hover": "rgba(0, 0, 0, 0.04)",
+    "bg-selected": "rgba(0, 0, 0, 0.08)",
+    "bg-active": "#dcdcdc",
+    "text": "#222222",
+    "text-muted": "#5c5c5c",
+    "text-faint": "#8a8a8a",
+    "text-disabled": "#b0b0b0",
+    "border": "#dcdcdc",
+    "border-focus": "#888888",
+    "primary": "#4a4a4a",
+    "primary-hover": "#2e2e2e",
+    "link": "#3a3a3a",
+    "link-hover": "#000000",
+    "success": "#5a7a5a",
+    "warning": "#9a7a3a",
+    "error": "#a04a4a",
+    "info": "#4a6a8a",
+    "purple": "#6a4a8a"
+  },
+  "tags": ["light", "monochrome", "grayscale", "discreet"]
+}

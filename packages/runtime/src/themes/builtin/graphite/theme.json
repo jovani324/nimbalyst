@@ -1,0 +1,32 @@
+{
+  "id": "graphite",
+  "name": "Graphite",
+  "version": "1.0.0",
+  "author": "Nimbalyst",
+  "description": "Neutral monochrome dark. Pure grays, no hue in the UI.",
+  "isDark": true,
+  "colors": {
+    "bg": "#1a1a1a",
+    "bg-secondary": "#202020",
+    "bg-tertiary": "#2a2a2a",
+    "bg-hover": "rgba(255, 255, 255, 0.05)",
+    "bg-selected": "rgba(255, 255, 255, 0.12)",
+    "bg-active": "#3a3a3a",
+    "text": "#e0e0e0",
+    "text-muted": "#9e9e9e",
+    "text-faint": "#757575",
+    "text-disabled": "#555555",
+    "border": "#333333",
+    "border-focus": "#6e6e6e",
+    "primary": "#b0b0b0",
+    "primary-hover": "#cfcfcf",
+    "link": "#c0c0c0",
+    "link-hover": "#e6e6e6",
+    "success": "#82a082",
+    "warning": "#c9a86a",
+    "error": "#c07a7a",
+    "info": "#8a9aa8",
+    "purple": "#a08aa8"
+  },
+  "tags": ["dark", "monochrome", "grayscale", "discreet"]
+}

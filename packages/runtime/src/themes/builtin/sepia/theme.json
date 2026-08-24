@@ -1,0 +1,32 @@
+{
+  "id": "sepia",
+  "name": "Sepia",
+  "version": "1.0.0",
+  "author": "Nimbalyst",
+  "description": "Warm cream paper with brown ink. Low-glare reading theme.",
+  "isDark": false,
+  "colors": {
+    "bg": "#f4ecd8",
+    "bg-secondary": "#ece3cc",
+    "bg-tertiary": "#e3d8bd",
+    "bg-hover": "rgba(90, 70, 40, 0.06)",
+    "bg-selected": "rgba(150, 110, 60, 0.15)",
+    "bg-active": "#dccdae",
+    "text": "#5b4636",
+    "text-muted": "#7a6350",
+    "text-faint": "#9a8570",
+    "text-disabled": "#b6a58f",
+    "border": "#ddd0b4",
+    "border-focus": "#a67c52",
+    "primary": "#a4703c",
+    "primary-hover": "#8a5a2c",
+    "link": "#8a5e3a",
+    "link-hover": "#6e4826",
+    "success": "#6f7a3a",
+    "warning": "#b08a3a",
+    "error": "#a85438",
+    "info": "#6a7a6a",
+    "purple": "#8a6a7a"
+  },
+  "tags": ["light", "sepia", "warm", "reading", "discreet"]
+}

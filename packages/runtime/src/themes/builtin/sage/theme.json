@@ -1,0 +1,32 @@
+{
+  "id": "sage",
+  "name": "Sage",
+  "version": "1.0.0",
+  "author": "Nimbalyst",
+  "description": "Muted green-gray light. Warm-gray sheet, desaturated sage accent.",
+  "isDark": false,
+  "colors": {
+    "bg": "#f3f4f0",
+    "bg-secondary": "#e9ebe4",
+    "bg-tertiary": "#dfe2d8",
+    "bg-hover": "rgba(60, 70, 50, 0.05)",
+    "bg-selected": "rgba(120, 140, 110, 0.16)",
+    "bg-active": "#d5d9cc",
+    "text": "#3d423a",
+    "text-muted": "#666c5f",
+    "text-faint": "#8b9184",
+    "text-disabled": "#aab0a2",
+    "border": "#d8dccf",
+    "border-focus": "#7f9471",
+    "primary": "#6f8a5f",
+    "primary-hover": "#5a7449",
+    "link": "#5f7d6a",
+    "link-hover": "#486554",
+    "success": "#5f8a4f",
+    "warning": "#9a7f3a",
+    "error": "#a05446",
+    "info": "#5f7a7f",
+    "purple": "#7a6a80"
+  },
+  "tags": ["light", "sage", "green-gray", "muted", "discreet"]
+}
