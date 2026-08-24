@@ -276,8 +276,31 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
 
         <div className="flex-1 overflow-y-auto">
           {error && (
-            <div className="px-3 py-2 text-xs" style={{ color: 'var(--nim-error)' }}>
-              {error}
+            <div
+              className="mx-2 my-1.5 flex items-start gap-2 rounded px-2.5 py-2 text-xs"
+              style={{
+                color: 'var(--nim-error)',
+                background: 'color-mix(in srgb, var(--nim-error) 8%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--nim-error) 32%, transparent)',
+              }}
+              data-testid="remote-sessions-error"
+            >
+              <span aria-hidden className="shrink-0" style={{ opacity: 0.8 }}>
+                ⚠
+              </span>
+              <span className="flex-1" title={error}>
+                Couldn’t load sessions.
+              </span>
+              <button
+                className="shrink-0"
+                style={{ color: 'var(--nim-primary)' }}
+                onClick={() => void refresh()}
+                disabled={loading}
+                data-testid="remote-sessions-error-retry"
+                title={error}
+              >
+                Retry
+              </button>
             </div>
           )}
           {!indexLoaded && loading && (

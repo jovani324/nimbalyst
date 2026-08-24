@@ -181,14 +181,6 @@ export function CondensedRemoteTranscript({
   );
 }
 
-function RoleLabel({ children, color }: { children: string; color: string }) {
-  return (
-    <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide select-none" style={{ color }}>
-      {children}
-    </span>
-  );
-}
-
 function UserRow({ message }: { message: TranscriptViewMessage }) {
   const redact = useRedact();
   return (
@@ -196,9 +188,8 @@ function UserRow({ message }: { message: TranscriptViewMessage }) {
       className="condensed-user rounded px-2.5 py-2"
       style={{ background: 'var(--nim-bg-secondary)', borderLeft: '2px solid var(--nim-primary)' }}
     >
-      <RoleLabel color="var(--nim-primary)">you</RoleLabel>
       <div
-        className="mt-1 text-sm whitespace-pre-wrap break-words select-text leading-snug"
+        className="text-sm whitespace-pre-wrap break-words select-text leading-snug"
         style={{ color: 'var(--nim-text)' }}
       >
         <LinkedText text={redact(message.text?.trim() ?? '')} />
