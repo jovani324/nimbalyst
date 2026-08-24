@@ -1409,6 +1409,23 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     reject: (error: Error) => void;
   } | null = null;
 
+  // Single in-flight index fetch, shared by concurrent callers. `pendingIndexFetch`
+  // is a single slot: two overlapping fetchIndex() calls would clobber it and
+  // orphan one promise, which then never settles — the `remote-sessions:list`
+  // invoke hangs and Electron reports "reply was never sent". Coalescing keeps one
+  // request alive at a time and hands every caller the same result.
+  let inFlightIndexFetch: Promise<{
+    sessions: DecryptedSessionIndexEntry[];
+    projects: Array<{
+      projectId: string;
+      name: string;
+      sessionCount: number;
+      lastActivityAt: number;
+      syncEnabled: boolean;
+      gitRemoteHash?: string;
+    }>;
+  }> | null = null;
+
   // Helper to announce device to the index server
   function announceDevice(): void {
     // Get current device info (prefer callback for dynamic presence, fallback to static)
@@ -3746,53 +3763,66 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     },
 
     async fetchIndex(): Promise<{ sessions: DecryptedSessionIndexEntry[]; projects: Array<{ projectId: string; name: string; sessionCount: number; lastActivityAt: number; syncEnabled: boolean; gitRemoteHash?: string }> }> {
-      // Wait for connection if not ready
-      if (!indexWs || !indexConnected) {
-        // console.log('[CollabV3] Waiting for index connection before fetching...');
-        await new Promise<void>((resolve) => {
-          const checkConnection = setInterval(() => {
-            if (indexWs && indexConnected) {
+      // Coalesce concurrent callers onto one request so the shared
+      // `pendingIndexFetch` slot is never clobbered mid-flight (see decl above).
+      if (inFlightIndexFetch) return inFlightIndexFetch;
+
+      inFlightIndexFetch = (async () => {
+        // Wait for connection if not ready
+        if (!indexWs || !indexConnected) {
+          // console.log('[CollabV3] Waiting for index connection before fetching...');
+          await new Promise<void>((resolve) => {
+            const checkConnection = setInterval(() => {
+              if (indexWs && indexConnected) {
+                clearInterval(checkConnection);
+                resolve();
+              }
+            }, 100);
+            // Timeout after 10 seconds
+            setTimeout(() => {
               clearInterval(checkConnection);
               resolve();
+            }, 10000);
+          });
+        }
+
+        if (!indexWs || !indexConnected) {
+          throw new Error('Index connection not available');
+        }
+
+        return new Promise<{ sessions: DecryptedSessionIndexEntry[]; projects: Array<{ projectId: string; name: string; sessionCount: number; lastActivityAt: number; syncEnabled: boolean; gitRemoteHash?: string }> }>((resolve, reject) => {
+          // Set timeout for response
+          const timeout = setTimeout(() => {
+            if (pendingIndexFetch) {
+              pendingIndexFetch = null;
+              reject(new Error('Timeout waiting for index response'));
             }
-          }, 100);
-          // Timeout after 10 seconds
-          setTimeout(() => {
-            clearInterval(checkConnection);
-            resolve();
-          }, 10000);
+          }, 30000);
+
+          pendingIndexFetch = {
+            resolve: (result) => {
+              clearTimeout(timeout);
+              resolve(result);
+            },
+            reject: (error) => {
+              clearTimeout(timeout);
+              reject(error);
+            },
+          };
+
+          // Send index sync request
+          const request: ClientMessage = { type: 'indexSyncRequest' };
+          indexWs!.send(JSON.stringify(request));
+          // console.log('[CollabV3] Sent index_sync_request');
         });
+      })();
+
+      try {
+        return await inFlightIndexFetch;
+      } finally {
+        // Clear so the next fetch after this one settles starts fresh.
+        inFlightIndexFetch = null;
       }
-
-      if (!indexWs || !indexConnected) {
-        throw new Error('Index connection not available');
-      }
-
-      return new Promise((resolve, reject) => {
-        // Set timeout for response
-        const timeout = setTimeout(() => {
-          if (pendingIndexFetch) {
-            pendingIndexFetch = null;
-            reject(new Error('Timeout waiting for index response'));
-          }
-        }, 30000);
-
-        pendingIndexFetch = {
-          resolve: (result) => {
-            clearTimeout(timeout);
-            resolve(result);
-          },
-          reject: (error) => {
-            clearTimeout(timeout);
-            reject(error);
-          },
-        };
-
-        // Send index sync request
-        const request: ClientMessage = { type: 'indexSyncRequest' };
-        indexWs!.send(JSON.stringify(request));
-        // console.log('[CollabV3] Sent index_sync_request');
-      });
     },
 
     onIndexChange(callback: (sessionId: string, entry: CachedSessionIndex) => void): () => void {
