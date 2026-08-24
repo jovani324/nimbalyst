@@ -28,6 +28,13 @@ export const remoteIndexLoadedAtom = atom<boolean>(false);
 /** The session currently open in the transcript pane (or null for the list view). */
 export const remoteActiveSessionIdAtom = atom<string | null>(null);
 
+/**
+ * The session whose digest is being read aloud right now, or null. Only one plays
+ * at a time, so a single id is enough. Drives the discreet "speaking" dot in the
+ * session list, so with several sessions the eye can match the voice to a row.
+ */
+export const remoteSpeakingSessionIdAtom = atom<string | null>(null);
+
 /** Per-session accumulated raw transcript messages (as delivered by sync). */
 export const remoteTranscriptAtomFamily = atomFamily((_sessionId: string) =>
   atom<RemoteAgentMessage[]>([]),

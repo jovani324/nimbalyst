@@ -78,9 +78,20 @@ export function useControllerSpeech(): {
   speak: (text: string) => void;
   chime: () => void;
   hush: () => void;
+  isSpeaking: boolean;
+  paused: boolean;
+  stop: () => void;
+  pause: () => void;
+  resume: () => void;
 } {
   const [mode, setModeState] = useState<SpeechMode>('off');
   const audioContext = useRef<AudioContext | null>(null);
+  const [isSpeaking, setSpeaking] = useState(false);
+  const [paused, setPaused] = useState(false);
+  // Bumped on every speak/stop so a playback promise that resolves late -- after
+  // a newer utterance took over, or after the user hit Stop -- cannot flip the
+  // indicator or fire a stale speechSynthesis fallback.
+  const speakGen = useRef(0);
 
   useEffect(() => {
     let live = true;
@@ -105,23 +116,103 @@ export function useControllerSpeech(): {
   }, []);
 
   const hush = useCallback(() => {
+    void window.electronAPI?.remoteSessions?.stopSpeak?.().catch(() => {
+      /* nothing was playing */
+    });
     try {
       window.speechSynthesis?.cancel();
     } catch {
       /* no synthesis in this webview */
     }
+    setSpeaking(false);
+    setPaused(false);
   }, []);
 
+  // The flat webview voice, used only when piper is not installed on the
+  // controller. `gen` ties the utterance to the speak() that asked for it, so a
+  // fallback that starts after Stop or a newer reply clears the indicator only
+  // if it is still the current one.
+  const speakWithSynthesis = useCallback((text: string, gen: number) => {
+    if (typeof SpeechSynthesisUtterance === 'undefined') {
+      if (gen === speakGen.current) setSpeaking(false);
+      return;
+    }
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1.05;
+    utterance.onend = () => {
+      if (gen === speakGen.current) {
+        setSpeaking(false);
+        setPaused(false);
+      }
+    };
+    window.speechSynthesis.speak(utterance);
+  }, []);
+
+  // Prefer piper's neural voice in the main process; fall back to speechSynthesis
+  // when piper reports it is not installed. Device-agnostic on purpose -- neither
+  // path inspects the output device, so it speaks on built-in speakers as readily
+  // as on headphones. Any "headphones only" rule belongs on the host digest.
   const speak = useCallback(
     (text: string) => {
-      if (!text.trim() || typeof SpeechSynthesisUtterance === 'undefined') return;
+      const trimmed = text.trim();
+      if (!trimmed) return;
       hush();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 1.05;
-      window.speechSynthesis.speak(utterance);
+      const gen = ++speakGen.current;
+      setSpeaking(true);
+      setPaused(false);
+      const api = window.electronAPI?.remoteSessions;
+      if (api?.speak) {
+        void api
+          .speak(trimmed)
+          .then((result) => {
+            if (gen !== speakGen.current) return; // superseded or stopped
+            if (!result?.success && result?.fallback) {
+              speakWithSynthesis(trimmed, gen);
+              return;
+            }
+            setSpeaking(false);
+            setPaused(false);
+          })
+          .catch(() => {
+            if (gen === speakGen.current) speakWithSynthesis(trimmed, gen);
+          });
+        return;
+      }
+      speakWithSynthesis(trimmed, gen);
     },
-    [hush]
+    [hush, speakWithSynthesis]
   );
+
+  // Stop bumps the generation so any in-flight playback promise is ignored, then
+  // silences whatever is playing.
+  const stop = useCallback(() => {
+    speakGen.current++;
+    hush();
+  }, [hush]);
+
+  const pause = useCallback(() => {
+    void window.electronAPI?.remoteSessions?.pauseSpeak?.().catch(() => {
+      /* nothing to pause */
+    });
+    try {
+      window.speechSynthesis?.pause();
+    } catch {
+      /* no synthesis here */
+    }
+    setPaused(true);
+  }, []);
+
+  const resume = useCallback(() => {
+    void window.electronAPI?.remoteSessions?.resumeSpeak?.().catch(() => {
+      /* nothing to resume */
+    });
+    try {
+      window.speechSynthesis?.resume();
+    } catch {
+      /* no synthesis here */
+    }
+    setPaused(false);
+  }, []);
 
   // A short two-tone blip for "done" — quieter than a sentence, louder than nothing.
   const chime = useCallback(() => {
@@ -153,5 +244,8 @@ export function useControllerSpeech(): {
   useEffect(() => hush, [hush]);
 
   // Stable identity: the component keys effects on this object.
-  return useMemo(() => ({ mode, setMode, speak, chime, hush }), [mode, setMode, speak, chime, hush]);
+  return useMemo(
+    () => ({ mode, setMode, speak, chime, hush, isSpeaking, paused, stop, pause, resume }),
+    [mode, setMode, speak, chime, hush, isSpeaking, paused, stop, pause, resume]
+  );
 }

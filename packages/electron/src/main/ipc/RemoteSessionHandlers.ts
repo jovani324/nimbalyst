@@ -62,6 +62,12 @@ import {
   type RemotePromptResponse,
   type RemotePromptImage,
 } from '../services/RemoteSessionService';
+import {
+  piperSpeak,
+  stopPiperSpeak,
+  pausePiperSpeak,
+  resumePiperSpeak,
+} from '../services/PiperSpeechService';
 
 export function registerRemoteSessionHandlers() {
   safeHandle('remote-sessions:is-controller', () => {
@@ -237,6 +243,19 @@ export function registerRemoteSessionHandlers() {
       return requestRemoteSpeechDigest(payload.sessionId, payload.messageId, payload.text);
     },
   );
+
+  // Local neural-voice playback -- the controller reads a digest with piper.
+  // No sessionId: the audio plays on this machine, not over the relay.
+  safeHandle('remote-sessions:speak', async (_event, payload: { text: string }) => {
+    if (!payload?.text) {
+      throw new Error('remote-sessions:speak requires text');
+    }
+    return piperSpeak(payload.text);
+  });
+
+  safeHandle('remote-sessions:speak-stop', async () => stopPiperSpeak());
+  safeHandle('remote-sessions:speak-pause', async () => pausePiperSpeak());
+  safeHandle('remote-sessions:speak-resume', async () => resumePiperSpeak());
 
   safeHandle('remote-sessions:cancel', async (_event, payload: { sessionId: string }) => {
     if (!payload?.sessionId) {

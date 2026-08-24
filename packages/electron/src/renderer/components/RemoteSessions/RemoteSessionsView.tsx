@@ -15,6 +15,7 @@ import {
   remoteProjectsAtom,
   remoteIndexLoadedAtom,
   remoteActiveSessionIdAtom,
+  remoteSpeakingSessionIdAtom,
   setRemoteIndexAtom,
 } from '../../store/atoms/remoteSessions';
 import type { RemoteSessionIndexEntry } from '../../types/remoteSessions';
@@ -363,6 +364,8 @@ interface RemoteSessionRowProps {
 
 function RemoteSessionRow({ session, selected, disguise, onSelect }: RemoteSessionRowProps) {
   const [hovered, setHovered] = useState(false);
+  const speakingSessionId = useAtomValue(remoteSpeakingSessionIdAtom);
+  const speaking = speakingSessionId === session.sessionId;
   const real = session.title || 'Untitled';
   // Disguised rows show a file path until pointed at, so an idle list reads as
   // an editor's file tree instead of a column of what you are working on.
@@ -382,6 +385,15 @@ function RemoteSessionRow({ session, selected, disguise, onSelect }: RemoteSessi
       title={disguise && !hovered ? undefined : real}
     >
       <span className="flex-1 truncate">{label}</span>
+      {/* A discreet dot while this session is being read aloud, so the ear and
+          eye agree on which row is talking. */}
+      {speaking && (
+        <span
+          className="remote-session-speaking shrink-0 w-1.5 h-1.5 rounded-full animate-pulse"
+          style={{ background: 'var(--nim-primary)' }}
+          title="Reading this session aloud"
+        />
+      )}
       {/* A blocked session is the one you actually have to open — it outranks
           "running" and "queued", which resolve on their own. */}
       {session.hasPendingPrompt && (

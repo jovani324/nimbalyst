@@ -1607,6 +1607,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('remote-sessions:compact-prompt', { sessionId, text, ratio }),
     speechDigest: (sessionId: string, messageId: string, text: string) =>
       ipcRenderer.invoke('remote-sessions:speech-digest', { sessionId, messageId, text }),
+    speak: (text: string) => ipcRenderer.invoke('remote-sessions:speak', { text }),
+    stopSpeak: () => ipcRenderer.invoke('remote-sessions:speak-stop'),
+    pauseSpeak: () => ipcRenderer.invoke('remote-sessions:speak-pause'),
+    resumeSpeak: () => ipcRenderer.invoke('remote-sessions:speak-resume'),
     cancel: (sessionId: string) =>
       ipcRenderer.invoke('remote-sessions:cancel', { sessionId }),
     archive: (sessionId: string, isArchived: boolean) =>

@@ -6,7 +6,13 @@
  * transcript text stacks them.
  */
 import { describe, expect, it } from 'vitest';
-import { applyChoiceDirective, applyReplyStyle, nextReplyStyle, REPLY_STYLES } from '../replyStyle';
+import {
+  applyChoiceDirective,
+  applyReplyStyle,
+  nextReplyStyle,
+  REPLY_STYLES,
+  stripReplyStyle,
+} from '../replyStyle';
 
 describe('applyReplyStyle', () => {
   it('leaves the prompt alone on the default style', () => {
@@ -55,5 +61,27 @@ describe('applyChoiceDirective', () => {
 
   it('sends nothing for whitespace-only input', () => {
     expect(applyChoiceDirective('  \n')).toBe('');
+  });
+});
+
+describe('stripReplyStyle', () => {
+  it('is the inverse of applyReplyStyle for display', () => {
+    for (const style of ['terse', 'ultra'] as const) {
+      expect(stripReplyStyle(applyReplyStyle('fix the parser', style))).toBe('fix the parser');
+    }
+  });
+
+  it('leaves a prompt without a directive untouched', () => {
+    expect(stripReplyStyle('fix the parser')).toBe('fix the parser');
+  });
+
+  it('drops the directive and the blank line that introduced it', () => {
+    const styled = applyReplyStyle('ship it', 'terse');
+    expect(styled).toContain('\n\n[reply-style]');
+    expect(stripReplyStyle(styled)).toBe('ship it');
+  });
+
+  it('returns empty when the whole message is the directive', () => {
+    expect(stripReplyStyle('[reply-style] Answer tersely')).toBe('');
   });
 });
