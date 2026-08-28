@@ -33,10 +33,17 @@ export const MAX_TERMINAL_CHARS = 60_000;
  * Carriage return without a newline means "rewrite this line" — a progress bar
  * that appends instead would fill the pane with thousands of near-identical
  * lines. Backspace deletes, because the shell echoes corrections that way.
+ *
+ * But a CR (or a run of them) immediately before a newline is a CRLF / ZLE line
+ * end, not a rewrite: an interactive zsh ends every prompt paint with a bare CR
+ * and clears the line with an escape (which stripAnsi drops), so a literal CR
+ * here would erase the very line just received and the pane would render blank.
+ * Fold `\r+\n` to `\n` first so those line ends survive; a lone mid-line CR
+ * (a real progress bar) still rewrites.
  */
 export function appendTerminalOutput(buffer: string, chunk: string): string {
   let out = buffer;
-  for (const raw of stripAnsi(chunk)) {
+  for (const raw of stripAnsi(chunk).replace(/\r+\n/g, '\n')) {
     if (raw === '\r') {
       const lineStart = out.lastIndexOf('\n') + 1;
       out = out.slice(0, lineStart);

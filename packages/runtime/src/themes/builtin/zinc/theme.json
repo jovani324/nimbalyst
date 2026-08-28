@@ -1,0 +1,32 @@
+{
+  "id": "zinc",
+  "name": "Zinc",
+  "version": "1.0.0",
+  "author": "Nimbalyst",
+  "description": "Cool charcoal dark. Blue-tinted neutral grays, muted steel accent.",
+  "isDark": true,
+  "colors": {
+    "bg": "#18181b",
+    "bg-secondary": "#131316",
+    "bg-tertiary": "#232327",
+    "bg-hover": "rgba(255, 255, 255, 0.05)",
+    "bg-selected": "rgba(160, 170, 185, 0.13)",
+    "bg-active": "#303035",
+    "text": "#e4e4e7",
+    "text-muted": "#a1a1aa",
+    "text-faint": "#71717a",
+    "text-disabled": "#52525b",
+    "border": "#27272a",
+    "border-focus": "#71717a",
+    "primary": "#8a9bb0",
+    "primary-hover": "#a6b4c6",
+    "link": "#9aa8bc",
+    "link-hover": "#b8c3d2",
+    "success": "#7d9a86",
+    "warning": "#c1a877",
+    "error": "#bd8181",
+    "info": "#8a9bb0",
+    "purple": "#9b8bb2"
+  },
+  "tags": ["dark", "charcoal", "cool", "neutral", "discreet"]
+}

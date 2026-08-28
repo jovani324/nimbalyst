@@ -788,6 +788,12 @@ interface ElectronAPI {
       messageId: string,
       text: string,
     ) => Promise<import('./types/remoteSessions').RemoteDigestResponse>;
+    speak: (
+      text: string,
+    ) => Promise<{ success: boolean; fallback?: boolean; error?: string }>;
+    stopSpeak: () => Promise<{ success: boolean }>;
+    pauseSpeak: () => Promise<{ success: boolean }>;
+    resumeSpeak: () => Promise<{ success: boolean }>;
     cancel: (sessionId: string) => Promise<{ success: boolean }>;
     archive: (sessionId: string, isArchived: boolean) => Promise<{ success: boolean }>;
     respondPrompt: (

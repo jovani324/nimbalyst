@@ -11,8 +11,8 @@
  * relayed to the host as a `prompt_response` control message.
  */
 
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { useAtomValue } from 'jotai';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useAtomValue, useSetAtom } from 'jotai';
 import { InteractivePromptWidget } from '@nimbalyst/runtime/ui/AgentTranscript/components/InteractivePromptWidget';
 import { CondensedRemoteTranscript } from './CondensedRemoteTranscript';
 import { buildSessionMarkdown } from './condensedTranscript';
@@ -22,6 +22,7 @@ import { ComposerImageStrip, useComposerImages } from './composerImages';
 import {
   applyReplyStyle,
   nextReplyStyle,
+  stripReplyStyle,
   REPLY_STYLE_LABELS,
   useControllerReplyStyle,
 } from './controllerReplyStyle';
@@ -64,6 +65,7 @@ import {
   remoteSessionsAtom,
   remoteTranscriptAtomFamily,
   remotePendingPromptAtomFamily,
+  remoteSpeakingSessionIdAtom,
 } from '../../store/atoms/remoteSessions';
 
 type ViewMessages = Awaited<ReturnType<typeof projectRawMessagesToViewMessages>>;
@@ -95,9 +97,38 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   /** The newest digest, kept so its choices can be answered with a click. */
   const [digest, setDigest] = useState<{ messageId: string; digest: SpeechDigest } | null>(null);
   const digestedId = useRef<string | null>(null);
+  // Throttle the reply-style directive: repeat it at most every N prompts, or
+  // sooner when the style changes. 'default' as the seed makes the first
+  // non-default prompt carry it.
+  const STYLE_REPEAT_EVERY = 4;
+  const styleGapRef = useRef(0);
+  const lastStyleRef = useRef<string>('default');
   // Read at request time: switching the mode must not re-digest the same reply.
   const speechModeRef = useRef(speech.mode);
   speechModeRef.current = speech.mode;
+  // Speak the session's own title before the digest so, with several sessions
+  // reading at once, the ear knows which one is talking. The title is a local
+  // label, not the host-anonymized digest, so naming it here leaks nothing.
+  const readAloud = useCallback(
+    (spoken: SpeechDigest) => {
+      const label = session?.title?.trim();
+      const body = composeUtterance(spoken);
+      speech.speak(label ? `${label}. ${body}` : body);
+    },
+    [session, speech],
+  );
+
+  // Publish which session is talking so the list can mark it. Clear only if this
+  // session still owns the flag, so a newer speaker is never wiped on cleanup.
+  const setSpeakingSession = useSetAtom(remoteSpeakingSessionIdAtom);
+  useEffect(() => {
+    if (speech.isSpeaking) {
+      setSpeakingSession(sessionId);
+      return () => setSpeakingSession((prev) => (prev === sessionId ? null : prev));
+    }
+    setSpeakingSession((prev) => (prev === sessionId ? null : prev));
+    return undefined;
+  }, [speech.isSpeaking, sessionId, setSpeakingSession]);
   const { images, clear: clearImages } = composerImages;
   const [sending, setSending] = useState(false);
   const [promptSubmitting, setPromptSubmitting] = useState(false);
@@ -258,7 +289,15 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
     }));
     void projectRawMessagesToViewMessages(raw, provider)
       .then((projected) => {
-        if (projectionToken.current === token) setViewMessages(projected);
+        // Hide the reply-style directive the composer appends to outgoing
+        // prompts. Strip it from the projected user text (not the raw
+        // `{"prompt":...}` envelope, which JSON.parse must still unwrap).
+        const cleaned = projected.map((m) =>
+          m.type === 'user_message' && typeof m.text === 'string'
+            ? { ...m, text: stripReplyStyle(m.text) }
+            : m,
+        );
+        if (projectionToken.current === token) setViewMessages(cleaned);
       })
       .catch(() => {
         /* projection failure leaves the last good render in place */
@@ -282,15 +321,16 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
     const target = pickDigestTarget(viewMessages, isExecuting);
     if (!api?.speechDigest || !target || digestedId.current === target.id) return;
     digestedId.current = target.id;
-    if (speechModeRef.current === 'off') return;
     let live = true;
     void api
       .speechDigest(sessionId, target.id, target.text)
       .then((result) => {
         if (!live || !result.success) return;
         setDigest({ messageId: result.messageId, digest: result.digest });
-        if (shouldSpeak(result.digest, speechModeRef.current)) speech.speak(composeUtterance(result.digest));
-        else if (result.digest.kind === 'done') speech.chime();
+        // Playback obeys the mode; the answer chips render whatever it is. Mute
+        // stays fully silent -- no utterance and no chime.
+        if (shouldSpeak(result.digest, speechModeRef.current)) readAloud(result.digest);
+        else if (result.digest.kind === 'done' && speechModeRef.current !== 'off') speech.chime();
       })
       .catch(() => {
         /* a reply that cannot be digested is still on screen */
@@ -298,7 +338,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
     return () => {
       live = false;
     };
-  }, [viewMessages, isExecuting, sessionId, speech]);
+  }, [viewMessages, isExecuting, sessionId, speech, readAloud]);
 
   // Never keep talking into a room the user has turned away from: the popover
   // hiding blurs the window, and switching sessions deactivates this one.
@@ -318,7 +358,20 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
     setActionError(null);
     speech.hush();
     try {
-      const styled = applyReplyStyle(prompt, replyStyle);
+      // The style directive is a per-prompt lever (a controller cannot set a
+      // system prompt), but it costs ~80 tokens and every past copy replays in
+      // history. Send it only when the style just changed or STYLE_REPEAT_EVERY
+      // prompts have passed, so drift stays low without paying every turn. The
+      // choice directive is cheap insurance at each decision, so it stays.
+      const dueForStyle =
+        replyStyle !== lastStyleRef.current || styleGapRef.current >= STYLE_REPEAT_EVERY;
+      const styled = dueForStyle ? applyReplyStyle(prompt, replyStyle) : prompt.trim();
+      if (dueForStyle) {
+        lastStyleRef.current = replyStyle;
+        styleGapRef.current = 0;
+      } else {
+        styleGapRef.current += 1;
+      }
       await api.sendPrompt(
         sessionId,
         speech.mode === 'off' ? styled : applyChoiceDirective(styled),
@@ -732,6 +785,57 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
       {!textsoap && (
       <div className="remote-session-composer flex flex-col gap-1.5 px-2 py-2 border-t shrink-0" style={{ borderColor: 'var(--nim-border)' }}>
         <ComposerImageStrip {...composerImages} />
+        {digest && (
+          <div
+            className="remote-session-speech-bar flex items-center gap-1.5 px-2 pb-1 text-[11px]"
+            data-testid="remote-session-speech-bar"
+          >
+            <span
+              className="shrink-0 font-medium"
+              style={{ color: speech.isSpeaking ? 'var(--nim-primary)' : 'var(--nim-text-muted)' }}
+            >
+              {speech.isSpeaking ? (speech.paused ? 'Paused' : 'Speaking…') : 'Ready'}
+            </span>
+            <span
+              className="flex-1 truncate"
+              style={{ color: 'var(--nim-text-muted)' }}
+              title={digest.digest.spoken}
+            >
+              {digest.digest.spoken}
+            </span>
+            <button
+              className="shrink-0 px-1.5 py-0.5 rounded"
+              style={{ color: 'var(--nim-primary)', border: '1px solid var(--nim-border)' }}
+              onClick={() => readAloud(digest.digest)}
+              title="Read this reply aloud again"
+              data-testid="remote-session-speech-replay"
+            >
+              Replay
+            </button>
+            {speech.isSpeaking && (
+              <button
+                className="shrink-0 px-1.5 py-0.5 rounded"
+                style={{ color: 'var(--nim-primary)', border: '1px solid var(--nim-border)' }}
+                onClick={() => (speech.paused ? speech.resume() : speech.pause())}
+                title={speech.paused ? 'Resume playback' : 'Pause playback'}
+                data-testid="remote-session-speech-pause"
+              >
+                {speech.paused ? 'Resume' : 'Pause'}
+              </button>
+            )}
+            {speech.isSpeaking && (
+              <button
+                className="shrink-0 px-1.5 py-0.5 rounded"
+                style={{ color: 'var(--nim-text-muted)', border: '1px solid var(--nim-border)' }}
+                onClick={() => speech.stop()}
+                title="Stop playback"
+                data-testid="remote-session-speech-stop"
+              >
+                Stop
+              </button>
+            )}
+          </div>
+        )}
         {digest && digest.digest.choices.length > 0 && !isExecuting && (
           <div className="remote-session-choices flex flex-wrap gap-1 px-2 pb-1" data-testid="remote-session-choices">
             {digest.digest.choices.map((choice, i) => (
@@ -873,6 +977,34 @@ function ControllerSettingsMenu({
       {text}
     </div>
   );
+  // Sub-label inside Privacy — separates the two families (blur vs redact/disguise).
+  const subheading = (text: string) => (
+    <div
+      className="px-2 pt-1 pb-0.5 text-[9px] uppercase tracking-wide"
+      style={{ color: 'var(--nim-text-muted)', opacity: 0.7 }}
+    >
+      {text}
+    </div>
+  );
+  // Fixed-width label gutter so every Look row's controls line up on one column.
+  const lblStyle = { color: 'var(--nim-text-muted)', flex: '0 0 68px' };
+  const blurKeys = new Set<keyof ControllerPrivacySettings>(['autoBlurOnUnfocus', 'hoverReveal']);
+  const blurRows = rows.filter((r) => blurKeys.has(r.key));
+  const maskRows = rows.filter((r) => !blurKeys.has(r.key));
+  const renderPrivacyRow = (r: { key: keyof ControllerPrivacySettings; label: string }) => (
+    <button
+      key={r.key}
+      className="flex items-center gap-2 w-full text-left px-2 py-1.5 rounded hover:opacity-90"
+      style={{ color: 'var(--nim-text)' }}
+      onClick={() => onToggle(r.key)}
+      aria-pressed={settings[r.key]}
+    >
+      <span style={{ color: settings[r.key] ? 'var(--nim-primary)' : 'var(--nim-text-muted)' }}>
+        {settings[r.key] ? '☑' : '☐'}
+      </span>
+      <span className="flex-1">{r.label}</span>
+    </button>
+  );
   return (
     <>
       <div className="privacy-menu-backdrop fixed inset-0 z-20" onClick={onClose} />
@@ -882,7 +1014,8 @@ function ControllerSettingsMenu({
         data-testid="remote-session-settings-menu"
       >
         {heading('Look')}
-        <div className="flex flex-wrap gap-1 px-2 pb-1">
+        <div className="flex flex-wrap items-center gap-1 px-2 pb-1">
+          <span style={lblStyle}>Theme</span>
           {THEMES.map((t) => (
             <button
               key={t.id}
@@ -899,7 +1032,7 @@ function ControllerSettingsMenu({
           ))}
         </div>
         <div className="flex flex-wrap items-center gap-1 px-2 pb-1">
-          <span style={{ color: 'var(--nim-text-muted)' }}>Font</span>
+          <span style={lblStyle}>Font</span>
           {FONTS.map((f) => (
             <button
               key={f.id}
@@ -917,7 +1050,7 @@ function ControllerSettingsMenu({
           ))}
         </div>
         <div className="flex items-center gap-1 px-2 pb-1">
-          <span style={{ color: 'var(--nim-text-muted)' }}>Text</span>
+          <span style={lblStyle}>Text size</span>
           {TEXT_SCALE_STEPS.map((s) => (
             <button
               key={s}
@@ -935,7 +1068,7 @@ function ControllerSettingsMenu({
           ))}
         </div>
         <div className="flex items-center gap-1 px-2 pb-1">
-          <span style={{ color: 'var(--nim-text-muted)' }}>Opacity</span>
+          <span style={lblStyle}>Opacity</span>
           {OPACITY_STEPS.map((o) => (
             <button
               key={o}
@@ -951,10 +1084,18 @@ function ControllerSettingsMenu({
             </button>
           ))}
         </div>
-        {/* The popover is resizable by dragging its edges; this is the way back
-            to the stock dimensions when a drag leaves it an odd shape. */}
-        <div className="flex items-center gap-2 px-2 pb-1">
-          <span style={{ color: 'var(--nim-text-muted)' }}>Size</span>
+        <div className="my-1 h-px" style={{ background: 'var(--nim-border)' }} />
+        {heading('Privacy')}
+        {subheading('Blur')}
+        {blurRows.map(renderPrivacyRow)}
+        {subheading('Redact / disguise')}
+        {maskRows.map(renderPrivacyRow)}
+        {/* Popover is drag-resizable; this returns it to stock dimensions. It
+            changes the window, not the skin — so it sits in its own footer, not
+            under Look next to the text-scale control. */}
+        <div className="my-1 h-px" style={{ background: 'var(--nim-border)' }} />
+        <div className="flex items-center justify-between px-2 pt-1 pb-1">
+          <span style={lblStyle}>Window</span>
           <button
             className="controller-reset-size px-2 py-0.5 rounded"
             style={{ border: '1px solid var(--nim-border)', color: 'var(--nim-text)' }}
@@ -962,25 +1103,9 @@ function ControllerSettingsMenu({
             data-testid="controller-reset-size-button"
             title="Back to the default popover size"
           >
-            Reset to default
+            Reset size
           </button>
         </div>
-        <div className="my-1 h-px" style={{ background: 'var(--nim-border)' }} />
-        {heading('Privacy')}
-        {rows.map((r) => (
-          <button
-            key={r.key}
-            className="flex items-center gap-2 w-full text-left px-2 py-1.5 rounded hover:opacity-90"
-            style={{ color: 'var(--nim-text)' }}
-            onClick={() => onToggle(r.key)}
-            aria-pressed={settings[r.key]}
-          >
-            <span style={{ color: settings[r.key] ? 'var(--nim-primary)' : 'var(--nim-text-muted)' }}>
-              {settings[r.key] ? '☑' : '☐'}
-            </span>
-            <span className="flex-1">{r.label}</span>
-          </button>
-        ))}
       </div>
     </>
   );

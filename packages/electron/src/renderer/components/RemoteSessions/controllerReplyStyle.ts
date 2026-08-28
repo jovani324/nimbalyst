@@ -11,6 +11,7 @@ import { isReplyStyle, type ReplyStyle } from '@nimbalyst/runtime/ai/prompts/rep
 export {
   applyReplyStyle,
   nextReplyStyle,
+  stripReplyStyle,
   REPLY_STYLES,
   REPLY_STYLE_LABELS,
   type ReplyStyle,

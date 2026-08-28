@@ -15,6 +15,7 @@ import {
   remoteProjectsAtom,
   remoteIndexLoadedAtom,
   remoteActiveSessionIdAtom,
+  remoteSpeakingSessionIdAtom,
   setRemoteIndexAtom,
 } from '../../store/atoms/remoteSessions';
 import type { RemoteSessionIndexEntry } from '../../types/remoteSessions';
@@ -275,8 +276,31 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
 
         <div className="flex-1 overflow-y-auto">
           {error && (
-            <div className="px-3 py-2 text-xs" style={{ color: 'var(--nim-error)' }}>
-              {error}
+            <div
+              className="mx-2 my-1.5 flex items-start gap-2 rounded px-2.5 py-2 text-xs"
+              style={{
+                color: 'var(--nim-error)',
+                background: 'color-mix(in srgb, var(--nim-error) 8%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--nim-error) 32%, transparent)',
+              }}
+              data-testid="remote-sessions-error"
+            >
+              <span aria-hidden className="shrink-0" style={{ opacity: 0.8 }}>
+                ⚠
+              </span>
+              <span className="flex-1" title={error}>
+                Couldn’t load sessions.
+              </span>
+              <button
+                className="shrink-0"
+                style={{ color: 'var(--nim-primary)' }}
+                onClick={() => void refresh()}
+                disabled={loading}
+                data-testid="remote-sessions-error-retry"
+                title={error}
+              >
+                Retry
+              </button>
             </div>
           )}
           {!indexLoaded && loading && (
@@ -363,6 +387,8 @@ interface RemoteSessionRowProps {
 
 function RemoteSessionRow({ session, selected, disguise, onSelect }: RemoteSessionRowProps) {
   const [hovered, setHovered] = useState(false);
+  const speakingSessionId = useAtomValue(remoteSpeakingSessionIdAtom);
+  const speaking = speakingSessionId === session.sessionId;
   const real = session.title || 'Untitled';
   // Disguised rows show a file path until pointed at, so an idle list reads as
   // an editor's file tree instead of a column of what you are working on.
@@ -382,6 +408,15 @@ function RemoteSessionRow({ session, selected, disguise, onSelect }: RemoteSessi
       title={disguise && !hovered ? undefined : real}
     >
       <span className="flex-1 truncate">{label}</span>
+      {/* A discreet dot while this session is being read aloud, so the ear and
+          eye agree on which row is talking. */}
+      {speaking && (
+        <span
+          className="remote-session-speaking shrink-0 w-1.5 h-1.5 rounded-full animate-pulse"
+          style={{ background: 'var(--nim-primary)' }}
+          title="Reading this session aloud"
+        />
+      )}
       {/* A blocked session is the one you actually have to open — it outranks
           "running" and "queued", which resolve on their own. */}
       {session.hasPendingPrompt && (

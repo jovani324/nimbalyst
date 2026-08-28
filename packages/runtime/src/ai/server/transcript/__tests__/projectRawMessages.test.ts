@@ -13,6 +13,7 @@ import {
 } from '../projectRawMessages';
 import type { RawMessage } from '../TranscriptTransformer';
 import { truncateContentForSync } from '../../../../sync/syncContentTruncator';
+import { applyReplyStyle, stripReplyStyle } from '../../../prompts/replyStyle';
 
 const SESSION_ID = 'test-session';
 
@@ -32,6 +33,25 @@ describe('projectRawMessagesToViewMessages', () => {
   it('returns empty array for no messages', async () => {
     const vms = await projectRawMessagesToViewMessages([], 'claude-code');
     expect(vms).toEqual([]);
+  });
+
+  // The controller appends a reply-style directive to the prompt *before* it is
+  // wrapped as `{"prompt":...}`. Projection must unwrap the envelope intact (a
+  // strip on the raw JSON string breaks JSON.parse); the directive is hidden by
+  // stripping the projected user text, which stays a clean round-trip.
+  it('unwraps a reply-style prompt envelope so the directive can be stripped from view text', async () => {
+    const typed = 'ok what to do now to test';
+    const messages: RawMessage[] = [
+      raw({
+        id: 1,
+        direction: 'input',
+        content: JSON.stringify({ prompt: applyReplyStyle(typed, 'terse') }),
+      }),
+    ];
+    const vms = await projectRawMessagesToViewMessages(messages, 'claude-code');
+    expect(vms[0].type).toBe('user_message');
+    expect(vms[0].text).toContain('[reply-style]');
+    expect(stripReplyStyle(vms[0].text ?? '')).toBe(typed);
   });
 
   describe('Codex provider', () => {

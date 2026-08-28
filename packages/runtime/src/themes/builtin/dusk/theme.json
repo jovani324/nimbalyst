@@ -1,0 +1,32 @@
+{
+  "id": "dusk",
+  "name": "Dusk",
+  "version": "1.0.0",
+  "author": "Nimbalyst",
+  "description": "Muted slate dark. Soft blue-gray, low saturation, gentle contrast.",
+  "isDark": true,
+  "colors": {
+    "bg": "#23272e",
+    "bg-secondary": "#1c2027",
+    "bg-tertiary": "#2b303a",
+    "bg-hover": "rgba(255, 255, 255, 0.05)",
+    "bg-selected": "rgba(130, 150, 180, 0.15)",
+    "bg-active": "#3a414d",
+    "text": "#c5ccd6",
+    "text-muted": "#8b93a1",
+    "text-faint": "#6a7280",
+    "text-disabled": "#4e555f",
+    "border": "#2f353f",
+    "border-focus": "#6b7f99",
+    "primary": "#7e93ad",
+    "primary-hover": "#97a9c0",
+    "link": "#8aa3bd",
+    "link-hover": "#a6bcd2",
+    "success": "#7f9c82",
+    "warning": "#c2a878",
+    "error": "#bf8080",
+    "info": "#7e93ad",
+    "purple": "#9a8bad"
+  },
+  "tags": ["dark", "slate", "muted", "low-contrast", "discreet"]
+}

@@ -20,6 +20,15 @@ See `solarized-dark/LICENSE` and `solarized-light/LICENSE` for the full license 
 
 See `monokai/LICENSE` for the full license text.
 
+## Gruvbox Soft Dark
+
+**Author**: Pavel Pertsev
+**License**: MIT License
+**Copyright**: © 2017 Pavel Pertsev
+**Homepage**: https://github.com/morhetz/gruvbox
+
+See `gruvbox-soft-dark/LICENSE` for the full license text.
+
 ## Other Themes
 
 The following themes are created by Nimbalyst and are licensed under the same license as the Nimbalyst application:
@@ -27,3 +36,10 @@ The following themes are created by Nimbalyst and are licensed under the same li
 - **Light**: Default light theme
 - **Dark**: Default dark theme
 - **Crystal Dark**: GitHub-inspired dark theme
+- **Graphite**: Neutral monochrome dark
+- **Paper**: Monochrome light
+- **Sepia**: Warm reading light
+- **Dusk**: Muted slate dark
+- **Zinc**: Cool charcoal dark
+- **Sage**: Muted green-gray light
+- **Ink**: True-black OLED dark

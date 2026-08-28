@@ -250,7 +250,11 @@ async function digestForDevice(sessionId: string, requestId: string, messageId: 
     return;
   }
 
-  const cached = cache.get(messageId);
+  // Namespace the cache by session: message ids are per-session (m.id ?? index),
+  // so two sessions share id "3" and an un-namespaced key hands one session the
+  // other's digest -- the reply you hear then belongs to a different session.
+  const cacheKey = `${sessionId}:${messageId}`;
+  const cached = cache.get(cacheKey);
   if (cached) {
     await send(sessionId, 'speech_digested', { requestId, messageId, ...(await encryptDigestPayload(cached, key)) });
     return;
@@ -281,7 +285,7 @@ async function digestForDevice(sessionId: string, requestId: string, messageId: 
   try {
     const cwd = await resolveSessionCwd(sessionId);
     const digest = await runDigest(shaped, { cwd });
-    remember(messageId, digest);
+    remember(cacheKey, digest);
     await send(sessionId, 'speech_digested', { requestId, messageId, ...(await encryptDigestPayload(digest, key)) });
   } catch (err) {
     const error = err instanceof Error ? err.message : 'Digest failed.';

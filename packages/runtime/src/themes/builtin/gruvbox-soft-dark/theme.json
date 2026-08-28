@@ -1,0 +1,33 @@
+{
+  "id": "gruvbox-soft-dark",
+  "name": "Gruvbox Soft Dark",
+  "version": "1.0.0",
+  "author": "Pavel Pertsev (adapted for Nimbalyst)",
+  "description": "Retro muted earth tones on a soft dark background. Low-glare.",
+  "license": "MIT",
+  "isDark": true,
+  "colors": {
+    "bg": "#32302f",
+    "bg-secondary": "#282828",
+    "bg-tertiary": "#3c3836",
+    "bg-hover": "rgba(235, 219, 178, 0.06)",
+    "bg-selected": "rgba(215, 153, 33, 0.18)",
+    "bg-active": "#504945",
+    "text": "#ebdbb2",
+    "text-muted": "#a89984",
+    "text-faint": "#928374",
+    "text-disabled": "#7c6f64",
+    "border": "#3c3836",
+    "border-focus": "#a89984",
+    "primary": "#83a598",
+    "primary-hover": "#9db9ac",
+    "link": "#83a598",
+    "link-hover": "#a5c9bd",
+    "success": "#98971a",
+    "warning": "#d79921",
+    "error": "#cc241d",
+    "info": "#458588",
+    "purple": "#b16286"
+  },
+  "tags": ["dark", "gruvbox", "retro", "muted", "earth"]
+}

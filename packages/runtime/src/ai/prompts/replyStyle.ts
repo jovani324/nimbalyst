@@ -84,3 +84,14 @@ export function applyChoiceDirective(text: string): string {
   if (trimmed.includes(CHOICES_MARKER)) return trimmed;
   return `${trimmed}\n\n${CHOICES_DIRECTIVE}`;
 }
+
+/**
+ * Remove a trailing style directive for display. The directive is plumbing the
+ * agent needs, not text the sender wrote, so the transcript hides it. Strips
+ * from the marker (and the blank line applyReplyStyle put before it) to the end.
+ */
+export function stripReplyStyle(text: string): string {
+  const at = text.indexOf(MARKER);
+  if (at < 0) return text;
+  return text.slice(0, at).replace(/\s+$/, '');
+}

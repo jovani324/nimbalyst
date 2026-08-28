@@ -34,6 +34,15 @@ describe('appendTerminalOutput', () => {
     expect(appendTerminalOutput('', 'first\nsecond\rthird')).toBe('first\nthird');
   });
 
+  it('treats a CR (or run of CRs) before a newline as a line end, not a rewrite', () => {
+    // A CRLF is an ordinary line end; erasing on the CR would blank the line.
+    expect(appendTerminalOutput('', 'echo hi\r\n')).toBe('echo hi\n');
+    // Interactive zsh ends a prompt paint with a run of bare CRs then LF.
+    expect(appendTerminalOutput('', 'w@m04 % \r\r\ndone')).toBe('w@m04 % \ndone');
+    // A lone mid-line CR (a real progress bar) must still rewrite.
+    expect(appendTerminalOutput('', 'aaa\rbbb')).toBe('bbb');
+  });
+
   it('applies a backspace as a delete, but not past the line start', () => {
     expect(appendTerminalOutput('', 'abc\b')).toBe('ab');
     expect(appendTerminalOutput('', 'a\n\b\b')).toBe('a\n');
