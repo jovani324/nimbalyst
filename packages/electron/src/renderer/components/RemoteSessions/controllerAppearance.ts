@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 
-export type ControllerTheme = 'midnight' | 'terminal' | 'editor' | 'paper';
+export type ControllerTheme = 'midnight' | 'terminal' | 'editor' | 'paper' | 'textsoap';
 export type ControllerFont = 'mono' | 'system' | 'serif';
 
 export interface ControllerAppearance {
@@ -30,7 +30,17 @@ export const THEMES: Array<{ id: ControllerTheme; label: string }> = [
   { id: 'terminal', label: 'Terminal' },
   { id: 'editor', label: 'Editor' },
   { id: 'paper', label: 'Paper' },
+  { id: 'textsoap', label: 'TextSoap' },
 ];
+
+/**
+ * TextSoap is the one appearance that also changes layout: the transcript renders
+ * as a text-utility document with a "cleaner" sidebar rather than the chat-style
+ * composer. Components branch on this so the disguise is opt-in and reversible.
+ */
+export function isTextSoap(theme: ControllerTheme): boolean {
+  return theme === 'textsoap';
+}
 
 export const FONTS: Array<{ id: ControllerFont; label: string; stack: string }> = [
   {
@@ -118,6 +128,23 @@ const THEME_PALETTES: Record<ControllerTheme, Record<string, string>> = {
     '--nim-success': '#3a7d44',
     '--nim-warning': '#b5651d',
     '--nim-error': '#b00020',
+  },
+  // Mirrors TextSoap's dark chrome: near-black document, muted grey ink, the
+  // signature blue selection/accent. The sidebar reads slightly lighter than the
+  // document, matching the utility's real panel split.
+  textsoap: {
+    '--nim-bg': '#1e1e1e',
+    '--nim-bg-secondary': '#252527',
+    '--nim-bg-tertiary': '#262628',
+    '--nim-bg-hover': '#303032',
+    '--nim-bg-selected': '#2f5aa8',
+    '--nim-text': '#cfcfcf',
+    '--nim-text-muted': '#6a6a6a',
+    '--nim-border': '#333333',
+    '--nim-primary': '#3b78d8',
+    '--nim-success': '#3fb950',
+    '--nim-warning': '#d29922',
+    '--nim-error': '#d05656',
   },
 };
 

@@ -42,6 +42,7 @@ import { toPayload } from './controllerImages';
 import { useControllerPrivacy, AUTO_BLUR_IDLE_MS, type ControllerPrivacySettings } from './controllerPrivacy';
 import {
   useControllerAppearance,
+  isTextSoap,
   THEMES,
   FONTS,
   OPACITY_STEPS,
@@ -50,6 +51,7 @@ import {
   type ControllerFont,
   type ControllerTheme,
 } from './controllerAppearance';
+import { TextSoapTranscript } from './TextSoapTranscript';
 import {
   type PermissionResponseContent,
   type AskUserQuestionResponseContent,
@@ -427,6 +429,10 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   };
 
   const canSend = !sending && (!!draft.trim() || images.length > 0);
+  // TextSoap appearance swaps the chat-style body + composer for a document +
+  // cleaner-sidebar layout (see TextSoapTranscript). Any other appearance keeps
+  // the normal transcript, so the disguise is fully reversible.
+  const textsoap = isTextSoap(appearance.theme);
   // Whole-transcript blur (as opposed to per-message hover-reveal).
   const globalBlur = masked && !privacy.hoverReveal;
   // The disguise is the quieter cousin of the blur: a pane of plausible source
@@ -603,39 +609,43 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
       {/* Transcript (optionally blurred for privacy — like a banking app). The
           eye toggles masking; with hover-reveal on, messages blur individually
           and reveal on hover, otherwise the whole transcript blurs and a click
-          reveals it. Secret-looking strings are redacted independently. */}
-      <div
-        ref={transcriptPaneRef}
-        className="flex-1 min-h-0 flex flex-col"
-        style={{
-          filter: globalBlur ? 'blur(7px)' : undefined,
-          transition: 'filter 120ms ease',
-          cursor: globalBlur ? 'pointer' : undefined,
-        }}
-        onClick={globalBlur ? () => setMasked(false) : undefined}
-        onMouseEnter={() => setPaneHovered(true)}
-        onMouseLeave={() => setPaneHovered(false)}
-        title={globalBlur ? 'Click to reveal' : undefined}
-      >
-        {disguised ? (
-          <DisguisedSource sessionId={sessionId} />
-        ) : openFile ? (
-          <RemoteFileViewer
-            sessionId={sessionId}
-            path={openFile.path}
-            line={openFile.line}
-            onClose={() => setOpenFile(null)}
-          />
-        ) : (
-          <CondensedRemoteTranscript
-            messages={viewMessages}
-            isProcessing={isExecuting}
-            redact={privacy.redactSecrets}
-            perMessageBlur={masked && privacy.hoverReveal}
-            onOpenFile={(path, line) => setOpenFile({ path, line })}
-          />
-        )}
-      </div>
+          reveals it. Secret-looking strings are redacted independently. In
+          TextSoap mode the body + composer are replaced by TextSoapTranscript
+          below, so this pane is skipped. */}
+      {!textsoap && (
+        <div
+          ref={transcriptPaneRef}
+          className="flex-1 min-h-0 flex flex-col"
+          style={{
+            filter: globalBlur ? 'blur(7px)' : undefined,
+            transition: 'filter 120ms ease',
+            cursor: globalBlur ? 'pointer' : undefined,
+          }}
+          onClick={globalBlur ? () => setMasked(false) : undefined}
+          onMouseEnter={() => setPaneHovered(true)}
+          onMouseLeave={() => setPaneHovered(false)}
+          title={globalBlur ? 'Click to reveal' : undefined}
+        >
+          {disguised ? (
+            <DisguisedSource sessionId={sessionId} />
+          ) : openFile ? (
+            <RemoteFileViewer
+              sessionId={sessionId}
+              path={openFile.path}
+              line={openFile.line}
+              onClose={() => setOpenFile(null)}
+            />
+          ) : (
+            <CondensedRemoteTranscript
+              messages={viewMessages}
+              isProcessing={isExecuting}
+              redact={privacy.redactSecrets}
+              perMessageBlur={masked && privacy.hoverReveal}
+              onOpenFile={(path, line) => setOpenFile({ path, line })}
+            />
+          )}
+        </div>
+      )}
 
       {showTerminal && (
         <RemoteTerminalPane sessionId={sessionId} onClose={() => setShowTerminal(false)} />
@@ -689,9 +699,37 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
         </div>
       )}
 
+      {/* TextSoap appearance: document + cleaner sidebar in place of the chat
+          composer. Reuses every send/style/speech/compact handler below. */}
+      {textsoap && (
+        <TextSoapTranscript
+          messages={viewMessages}
+          isExecuting={isExecuting}
+          draft={draft}
+          setDraft={setDraft}
+          onSend={() => void handleSend()}
+          onKeyDown={handleComposerKeyDown}
+          canSend={canSend}
+          sending={sending}
+          replyStyle={replyStyle}
+          onCycleReplyStyle={() => setReplyStyle(nextReplyStyle(replyStyle))}
+          speechMode={speech.mode}
+          onCycleSpeech={() => {
+            speech.hush();
+            speech.setMode(nextSpeechMode(speech.mode));
+          }}
+          onCompact={() => void handleCompact()}
+          compacting={compacting}
+          choices={digest && !isExecuting ? digest.digest.choices : []}
+          onChoice={(prompt) => void sendText(prompt)}
+          redact={privacy.redactSecrets}
+        />
+      )}
+
       {/* Composer. Kept as quiet as the header: a single-line box, a short
           placeholder (the full hint lives in the tooltip) and a ghost send
           glyph instead of a filled button. */}
+      {!textsoap && (
       <div className="remote-session-composer flex flex-col gap-1.5 px-2 py-2 border-t shrink-0" style={{ borderColor: 'var(--nim-border)' }}>
         <ComposerImageStrip {...composerImages} />
         {digest && digest.digest.choices.length > 0 && !isExecuting && (
@@ -772,6 +810,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
           </button>
         </div>
       </div>
+      )}
     </div>
   );
 }
