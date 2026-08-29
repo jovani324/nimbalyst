@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Images pasted into the new-session dialog can't ride on the create request —
  * that payload is text-only — so the dialog has to create the session bare and
