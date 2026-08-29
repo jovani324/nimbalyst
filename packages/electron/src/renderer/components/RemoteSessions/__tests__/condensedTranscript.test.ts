@@ -178,4 +178,20 @@ describe('parseFileRef', () => {
     expect(parseFileRef('run the tests')).toBeNull();
     expect(parseFileRef('report.docx')).toBeNull();
   });
+
+  it('marks a picture and drops the @ an attachment mention wears', () => {
+    // The @ is transcript decoration; the staged file on the host has none.
+    expect(parseFileRef('@shot.png')).toEqual({ path: 'shot.png', isImage: true });
+    expect(parseFileRef('docs/diagram.jpeg')).toEqual({ path: 'docs/diagram.jpeg', isImage: true });
+  });
+});
+
+describe('linkify image refs', () => {
+  it('flags a picture so the click goes to the default app, not the viewer', () => {
+    expect(linkify('see @shot.png here')).toEqual([
+      'see ',
+      { kind: 'file', path: 'shot.png', isImage: true, text: '@shot.png', key: expect.any(String) },
+      ' here',
+    ]);
+  });
 });

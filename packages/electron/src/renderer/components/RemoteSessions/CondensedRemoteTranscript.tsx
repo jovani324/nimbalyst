@@ -20,13 +20,18 @@ import {
 } from './condensedTranscript';
 import { redactSecrets } from './controllerPrivacy';
 
-/** Opens a file the host holds; null when nobody upstream can show one. */
+/** Opens a source file the host holds in the viewer; null when none is mounted. */
 const FileOpenContext = createContext<((path: string, line?: number) => void) | null>(null);
 const useOpenFile = () => useContext(FileOpenContext);
+
+/** Opens a picture the host holds in the OS default app; null when unavailable. */
+const FileOpenExternalContext = createContext<((path: string) => void) | null>(null);
+const useOpenExternalFile = () => useContext(FileOpenExternalContext);
 
 /** Plain text with its URLs as anchors and its file references as buttons. */
 function LinkedText({ text }: { text: string }) {
   const openFile = useOpenFile();
+  const openExternal = useOpenExternalFile();
   return (
     <>
       {linkify(text).map((part, i) => {
@@ -38,14 +43,16 @@ function LinkedText({ text }: { text: string }) {
             </a>
           );
         }
-        if (!openFile) return part.text;
+        // Pictures go to the default app; source files go to the in-app viewer.
+        const open = part.isImage ? openExternal && (() => openExternal(part.path)) : openFile && (() => openFile(part.path, part.line));
+        if (!open) return part.text;
         return (
           <button
             key={`${part.key}-${i}`}
             className="remote-file-ref"
             style={{ color: 'var(--nim-primary)' }}
-            onClick={() => openFile(part.path, part.line)}
-            title={`Open ${part.path} from the host`}
+            onClick={open}
+            title={part.isImage ? `Open ${part.path} in the default app` : `Open ${part.path} from the host`}
           >
             {part.text}
           </button>
@@ -64,7 +71,10 @@ function LinkedText({ text }: { text: string }) {
  * window has no chrome to get back with, so the controller would simply become
  * a web page until it is restarted.
  */
-function useTranscriptClick(openFile: ((path: string, line?: number) => void) | null) {
+function useTranscriptClick(
+  openFile: ((path: string, line?: number) => void) | null,
+  openExternal: ((path: string) => void) | null,
+) {
   return (e: MouseEvent) => {
     const target = e.target as HTMLElement | null;
     const anchor = target?.closest?.('a[href]') as HTMLAnchorElement | null;
@@ -75,12 +85,15 @@ function useTranscriptClick(openFile: ((path: string, line?: number) => void) | 
       return;
     }
     const code = target?.closest?.('code') as HTMLElement | null;
-    if (!code || !openFile) return;
+    if (!code) return;
     const ref = parseFileRef(code.textContent ?? '');
     if (!ref) return;
+    // A picture cannot render as source; hand it to the OS default app instead.
+    const act = ref.isImage ? openExternal && (() => openExternal(ref.path)) : openFile && (() => openFile(ref.path, ref.line));
+    if (!act) return;
     e.preventDefault();
     e.stopPropagation();
-    openFile(ref.path, ref.line);
+    act();
   };
 }
 
@@ -97,6 +110,8 @@ interface CondensedRemoteTranscriptProps {
   perMessageBlur?: boolean;
   /** Show a file the host holds; omitted when no viewer is mounted. */
   onOpenFile?: (path: string, line?: number) => void;
+  /** Open a picture the host holds in the OS default app. */
+  onOpenExternalFile?: (path: string) => void;
 }
 
 export function CondensedRemoteTranscript({
@@ -105,8 +120,9 @@ export function CondensedRemoteTranscript({
   redact,
   perMessageBlur,
   onOpenFile,
+  onOpenExternalFile,
 }: CondensedRemoteTranscriptProps) {
-  const handleClick = useTranscriptClick(onOpenFile ?? null);
+  const handleClick = useTranscriptClick(onOpenFile ?? null, onOpenExternalFile ?? null);
   const blocks = useMemo(() => toCondensedBlocks(messages), [messages]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const toggle = (key: string) =>
@@ -146,6 +162,7 @@ export function CondensedRemoteTranscript({
   return (
     <RedactContext.Provider value={redact ? redactSecrets : (s) => s}>
       <FileOpenContext.Provider value={onOpenFile ?? null}>
+      <FileOpenExternalContext.Provider value={onOpenExternalFile ?? null}>
       <div
         ref={scrollRef}
         onScroll={onScroll}
@@ -176,6 +193,7 @@ export function CondensedRemoteTranscript({
           );
         })}
       </div>
+      </FileOpenExternalContext.Provider>
       </FileOpenContext.Provider>
     </RedactContext.Provider>
   );
@@ -272,16 +290,15 @@ function ToolGroupRow({
   return (
     <div className="condensed-tools pl-5">
       <button
-        className="flex gap-1.5 items-center text-[12px] px-1.5 py-0.5 rounded"
+        className="flex gap-1 items-center text-[11px] px-1 py-0.5 rounded transition-opacity opacity-70 hover:opacity-100"
         style={{
           color: hasError ? 'var(--nim-error)' : 'var(--nim-text-muted)',
-          background: 'var(--nim-bg-secondary)',
+          background: 'transparent',
         }}
         onClick={() => onToggle(groupKey)}
         data-testid="condensed-tool-group"
       >
         <span className="select-none">{open ? '▾' : '▸'}</span>
-        <span className="select-none">⛏</span>
         <span className="truncate">{summarizeToolGroup(tools)}</span>
       </button>
       {open && (

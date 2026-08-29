@@ -16,8 +16,11 @@
 
 import path from 'path';
 import { promises as fs } from 'fs';
+import { shell } from 'electron';
 import { getSyncProvider } from './SyncManager';
 import { resolveSessionCwd } from './RemoteTerminalService';
+import { resolveSavedAttachmentDirectory, resolveWorkspaceAttachmentStagingDirectory } from './attachments/attachmentStagingRoot';
+import { AISessionsRepository } from '@nimbalyst/runtime';
 import { logger } from '../utils/logger';
 
 const log = logger.main;
@@ -121,20 +124,111 @@ async function readRemoteFile(sessionId: string, requestId: string, requested: s
 }
 
 /**
- * Handle a `file_read` session-control message from a paired device. Returns
- * false when the message isn't one of ours, so the caller keeps dispatching.
+ * Locate a staged attachment by the bare `@filename` a transcript shows. Saved
+ * attachments live at `<stagingRoot>/saved/<sessionId>/<timestamp>_<name>`, so
+ * the on-disk name carries a timestamp the reference dropped: match on that
+ * suffix, and confine the hit to the session's own attachment folder.
+ */
+export async function resolveStagedAttachment(sessionId: string, requested: string): Promise<string | null> {
+  const base = path.basename(requested);
+  // An attachment mention is a bare name; a path with directories is a repo
+  // file, which resolveInsideRoot already handled before we got here.
+  if (!base || base !== requested) return null;
+
+  let workspacePath: string | undefined;
+  try {
+    workspacePath = (await AISessionsRepository.get(sessionId))?.workspacePath;
+  } catch {
+    return null;
+  }
+  if (!workspacePath) return null;
+
+  const sessionDir = path.join(
+    resolveSavedAttachmentDirectory(resolveWorkspaceAttachmentStagingDirectory(workspacePath)),
+    sessionId,
+  );
+  let entries: string[];
+  try {
+    entries = await fs.readdir(sessionDir);
+  } catch {
+    return null;
+  }
+
+  const matches = entries.filter((name) => name === base || name.endsWith(`_${base}`));
+  // The same name can recur across turns; the newest staged copy is the one the
+  // reference most likely means.
+  let best: { name: string; mtime: number } | null = null;
+  for (const name of matches) {
+    try {
+      const stat = await fs.stat(path.join(sessionDir, name));
+      if (!best || stat.mtimeMs > best.mtime) best = { name, mtime: stat.mtimeMs };
+    } catch {
+      // A racing cleanup can remove an entry between readdir and stat; skip it.
+    }
+  }
+  if (!best) return null;
+  return resolveInsideRoot(sessionDir, best.name);
+}
+
+/**
+ * Open a picture on the HOST's default app. A repo file (including a relative
+ * image path the agent named) resolves inside the session folder; a bare
+ * `@filename` mention falls back to the session's attachment staging folder.
+ */
+async function openRemoteFile(sessionId: string, requestId: string, requested: string): Promise<void> {
+  const root = await resolveSessionCwd(sessionId);
+  let target = await resolveInsideRoot(root, requested);
+  if (!target) target = await resolveStagedAttachment(sessionId, requested);
+  if (!target) {
+    await send(sessionId, 'file_open_error', {
+      requestId,
+      error: 'That path is outside the session folder, or does not exist.',
+    });
+    return;
+  }
+
+  try {
+    if (!(await fs.stat(target)).isFile()) {
+      await send(sessionId, 'file_open_error', { requestId, error: 'Not a file.' });
+      return;
+    }
+  } catch {
+    await send(sessionId, 'file_open_error', { requestId, error: 'Could not find that file.' });
+    return;
+  }
+
+  // shell.openPath resolves to '' on success, or a message describing the failure.
+  const failure = await shell.openPath(target);
+  if (failure) {
+    await send(sessionId, 'file_open_error', { requestId, error: failure });
+    return;
+  }
+  await send(sessionId, 'file_opened', {
+    requestId,
+    path: path.relative(root, target) || path.basename(target),
+  });
+}
+
+/**
+ * Handle a `file_read` / `file_open` session-control message from a paired
+ * device. Returns false when the message isn't one of ours, so the caller keeps
+ * dispatching.
  */
 export function handleRemoteFileControl(message: {
   sessionId: string;
   type: string;
   payload?: Record<string, unknown>;
 }): boolean {
-  if (message.type !== 'file_read') return false;
+  if (message.type !== 'file_read' && message.type !== 'file_open') return false;
 
   const payload = message.payload ?? {};
   const requestId = String(payload.requestId ?? '');
   if (!requestId) return true;
 
-  void readRemoteFile(message.sessionId, requestId, String(payload.path ?? ''));
+  if (message.type === 'file_open') {
+    void openRemoteFile(message.sessionId, requestId, String(payload.path ?? ''));
+  } else {
+    void readRemoteFile(message.sessionId, requestId, String(payload.path ?? ''));
+  }
   return true;
 }

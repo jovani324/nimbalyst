@@ -140,6 +140,21 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   const [paneHovered, setPaneHovered] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
   const [openFile, setOpenFile] = useState<{ path: string; line?: number } | null>(null);
+  // A picture cannot render in the source viewer, so it opens on the host's
+  // default app. The bytes only exist over there; the popover machine may not
+  // have them, so opening is the host's job just like reading is.
+  const openExternalFile = useCallback(
+    (path: string) => {
+      setActionError(null);
+      void window.electronAPI?.remoteSessions
+        ?.openFile?.(sessionId, path)
+        .then((res) => {
+          if (res && !res.success) setActionError(res.error || 'The host could not open that file.');
+        })
+        .catch(() => setActionError('The host could not open that file.'));
+    },
+    [sessionId],
+  );
   const [pinned, setPinned] = useState(false);
   const transcriptPaneRef = useRef<HTMLDivElement>(null);
   const { settings: privacy, toggle: togglePrivacy } = useControllerPrivacy();
@@ -695,6 +710,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
               redact={privacy.redactSecrets}
               perMessageBlur={masked && privacy.hoverReveal}
               onOpenFile={(path, line) => setOpenFile({ path, line })}
+              onOpenExternalFile={openExternalFile}
             />
           )}
         </div>

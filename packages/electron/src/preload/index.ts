@@ -1603,6 +1603,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }) => ipcRenderer.invoke('remote-sessions:terminal', payload),
     readFile: (sessionId: string, path: string) =>
       ipcRenderer.invoke('remote-sessions:read-file', { sessionId, path }),
+    openFile: (sessionId: string, path: string) =>
+      ipcRenderer.invoke('remote-sessions:open-file', { sessionId, path }),
     compactPrompt: (sessionId: string, text: string, ratio?: number) =>
       ipcRenderer.invoke('remote-sessions:compact-prompt', { sessionId, text, ratio }),
     speechDigest: (sessionId: string, messageId: string, text: string) =>
