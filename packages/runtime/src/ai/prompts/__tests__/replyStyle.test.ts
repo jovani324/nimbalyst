@@ -84,4 +84,34 @@ describe('stripReplyStyle', () => {
   it('returns empty when the whole message is the directive', () => {
     expect(stripReplyStyle('[reply-style] Answer tersely')).toBe('');
   });
+
+  it('strips a choice directive that rides without a style directive', () => {
+    const withChoices = applyChoiceDirective('take a look');
+    expect(withChoices).toContain('[reply-choices]');
+    expect(stripReplyStyle(withChoices)).toBe('take a look');
+  });
+
+  it('strips both directives at once, style first', () => {
+    const both = applyChoiceDirective(applyReplyStyle('ship it', 'terse'));
+    expect(stripReplyStyle(both)).toBe('ship it');
+  });
+
+  it('keeps the attachment refs the host appends after the directive', () => {
+    const withChoices = applyChoiceDirective('this');
+    // Host joins `@filename` onto the directive line for image prompts.
+    const withImage = `${withChoices} @shot.png`;
+    expect(stripReplyStyle(withImage)).toBe('this @shot.png');
+  });
+
+  it('keeps multiple attachment refs', () => {
+    const withChoices = applyChoiceDirective('these');
+    const withImages = `${withChoices} @a.png @b.jpg`;
+    expect(stripReplyStyle(withImages)).toBe('these @a.png @b.jpg');
+  });
+
+  it('keeps an attachment ref even when the prose was empty', () => {
+    const withChoices = applyChoiceDirective('Take a look at this image.');
+    const withImage = `${withChoices} @only.png`;
+    expect(stripReplyStyle(withImage)).toBe('Take a look at this image. @only.png');
+  });
 });
