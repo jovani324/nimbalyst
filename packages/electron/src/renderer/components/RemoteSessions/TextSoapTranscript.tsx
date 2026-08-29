@@ -14,7 +14,7 @@
  * the same handler the normal composer uses, passed in as props. Nothing here
  * talks to the host directly.
  */
-import { useEffect, useMemo, useRef, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import type { TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/transcript';
 import { toParagraphs, TEXT_CLEANERS, type TextSoapPara } from './textSoapDocument';
 import { redactSecrets } from './controllerPrivacy';
@@ -73,6 +73,38 @@ export function TextSoapTranscript({
   }, [messages, redact]);
   const docRef = useRef<HTMLDivElement>(null);
 
+  // Cleaner-sidebar width — draggable, persisted in app-settings so it survives
+  // reloads. Clamped so it can't swallow the document or shrink to nothing.
+  const [sidebarWidth, setSidebarWidth] = useState(208);
+  const widthRef = useRef(208);
+  widthRef.current = sidebarWidth;
+  useEffect(() => {
+    let live = true;
+    void window.electronAPI
+      ?.invoke?.('app-settings:get', 'controllerTextSoapSidebarWidth')
+      .then((w) => {
+        if (live && typeof w === 'number' && w >= 150 && w <= 420) setSidebarWidth(w);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+  const startResize = (e: ReactPointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = widthRef.current;
+    const onMove = (ev: PointerEvent) => {
+      setSidebarWidth(Math.min(420, Math.max(150, startW - (ev.clientX - startX))));
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      void window.electronAPI?.invoke?.('app-settings:set', 'controllerTextSoapSidebarWidth', widthRef.current);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
   // Keep the composed line in view as turns arrive, like a document scrolled to
   // the caret. Runs on new turns and when the agent starts/stops.
   useEffect(() => {
@@ -124,7 +156,6 @@ export function TextSoapTranscript({
             className="textsoap-composer-input flex-1 resize-none bg-transparent outline-none text-[12.5px] leading-relaxed"
             style={{ color: 'var(--nim-text)', caretColor: 'var(--nim-primary)', maxHeight: 200, fontFamily: 'inherit' }}
             rows={1}
-            placeholder="Type here…"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onKeyDown}
@@ -133,10 +164,19 @@ export function TextSoapTranscript({
         </div>
       </div>
 
+      {/* Drag handle — resize the cleaner sidebar. */}
+      <div
+        className="textsoap-resize shrink-0"
+        style={{ width: 5, cursor: 'col-resize', background: 'var(--nim-border)', opacity: 0.5 }}
+        onPointerDown={startResize}
+        data-testid="textsoap-resize"
+        title="Drag to resize"
+      />
+
       {/* Cleaner sidebar */}
       <div
         className="textsoap-cleaners shrink-0 flex flex-col overflow-y-auto"
-        style={{ width: 208, background: 'var(--nim-bg-secondary)', borderLeft: '1px solid var(--nim-border)' }}
+        style={{ width: sidebarWidth, background: 'var(--nim-bg-secondary)', borderLeft: '1px solid var(--nim-border)' }}
       >
         <div
           className="textsoap-preset mx-3 mt-3 mb-2 rounded text-center text-[12px] py-1"

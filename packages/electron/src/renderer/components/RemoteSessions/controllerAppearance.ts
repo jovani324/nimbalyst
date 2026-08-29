@@ -151,22 +151,22 @@ const THEME_PALETTES: Record<ControllerTheme, Record<string, string>> = {
     '--nim-warning': '#b5651d',
     '--nim-error': '#b00020',
   },
-  // Mirrors TextSoap's dark chrome: near-black document, muted grey ink, the
-  // signature blue selection/accent. The sidebar reads slightly lighter than the
-  // document, matching the utility's real panel split.
+  // TextSoap's dark chrome, toned down to the discreet low-saturation family:
+  // near-black document, muted grey ink, a desaturated slate-blue accent instead
+  // of the loud signature blue, so it doesn't shout on a shared screen.
   textsoap: {
     '--nim-bg': '#1e1e1e',
     '--nim-bg-secondary': '#252527',
     '--nim-bg-tertiary': '#262628',
     '--nim-bg-hover': '#303032',
-    '--nim-bg-selected': '#2f5aa8',
+    '--nim-bg-selected': '#353f4d',
     '--nim-text': '#cfcfcf',
     '--nim-text-muted': '#6a6a6a',
     '--nim-border': '#333333',
-    '--nim-primary': '#3b78d8',
-    '--nim-success': '#3fb950',
-    '--nim-warning': '#d29922',
-    '--nim-error': '#d05656',
+    '--nim-primary': '#7e93ad',
+    '--nim-success': '#7f9c82',
+    '--nim-warning': '#c2a878',
+    '--nim-error': '#bf8080',
   },
   graphite: {
     '--nim-bg': '#1a1a1a',

@@ -965,13 +965,23 @@ function ControllerSettingsMenu({
   onTextScale: (scale: number) => void;
   onClose: () => void;
 }) {
-  const rows: Array<{ key: keyof ControllerPrivacySettings; label: string }> = [
+  const allRows: Array<{ key: keyof ControllerPrivacySettings; label: string }> = [
     { key: 'autoBlurOnUnfocus', label: 'Auto-blur when idle / unfocused' },
     { key: 'hoverReveal', label: 'Hover to reveal (per message)' },
     { key: 'redactSecrets', label: 'Redact secrets (keys, emails…)' },
     { key: 'disguiseTitles', label: 'Titles as file paths' },
     { key: 'disguiseTranscript', label: 'Transcript as source until hovered' },
   ];
+  // TextSoap is its own disguise (a document, not a transcript), so the blur /
+  // hover-reveal / source-swap toggles do nothing there — hide them to avoid
+  // offering controls that no-op. Redact and title-disguise still apply.
+  const textsoap = isTextSoap(appearance.theme);
+  const hiddenInTextSoap = new Set<keyof ControllerPrivacySettings>([
+    'autoBlurOnUnfocus',
+    'hoverReveal',
+    'disguiseTranscript',
+  ]);
+  const rows = textsoap ? allRows.filter((r) => !hiddenInTextSoap.has(r.key)) : allRows;
   const heading = (text: string) => (
     <div className="px-2 pt-2 pb-1 text-[10px] uppercase tracking-wide" style={{ color: 'var(--nim-text-muted)' }}>
       {text}
@@ -1086,9 +1096,9 @@ function ControllerSettingsMenu({
         </div>
         <div className="my-1 h-px" style={{ background: 'var(--nim-border)' }} />
         {heading('Privacy')}
-        {subheading('Blur')}
+        {blurRows.length > 0 && subheading('Blur')}
         {blurRows.map(renderPrivacyRow)}
-        {subheading('Redact / disguise')}
+        {maskRows.length > 0 && subheading('Redact / disguise')}
         {maskRows.map(renderPrivacyRow)}
         {/* Popover is drag-resizable; this returns it to stock dimensions. It
             changes the window, not the skin — so it sits in its own footer, not
