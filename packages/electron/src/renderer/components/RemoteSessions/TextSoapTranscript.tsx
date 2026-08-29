@@ -112,9 +112,23 @@ export function TextSoapTranscript({
     if (el) el.scrollTop = el.scrollHeight;
   }, [paragraphs.length, isExecuting]);
 
+  // Which tool asides are expanded to show their commands. Keyed by paragraph
+  // index; the transcript is append-only so existing indices stay stable.
+  const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
+  const toggleExpanded = (i: number) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+
   const composerLine = paragraphs.length + 1;
+  // Your own prompts sit quieter than the agent's output — less to read back, and
+  // less to catch a passing eye. Agent prose gets the normal ink; you and the tool
+  // asides stay muted.
   const inkFor = (kind: TextSoapPara['kind']) =>
-    kind === 'you' ? 'var(--nim-text)' : kind === 'assistant' ? 'var(--nim-text-muted)' : 'var(--nim-text-muted)';
+    kind === 'assistant' ? 'var(--nim-text)' : 'var(--nim-text-muted)';
 
   return (
     <div className="textsoap-transcript flex-1 min-h-0 flex" data-testid="textsoap-transcript">
@@ -124,25 +138,59 @@ export function TextSoapTranscript({
         className="textsoap-document flex-1 min-h-0 overflow-y-auto py-2 select-text"
         style={{ background: 'var(--nim-bg)', fontFamily: 'var(--nim-controller-font)' }}
       >
-        {paragraphs.map((p, i) => (
-          <div key={i} className="textsoap-para flex items-start px-1 leading-relaxed">
-            <span
-              className="textsoap-linenum shrink-0 text-right pr-3 select-none text-[11px] pt-[2px]"
-              style={{ width: 40, color: 'var(--nim-text-muted)', opacity: 0.55 }}
-            >
-              {i + 1}
-            </span>
-            <span
-              className="textsoap-paratext flex-1 text-[12.5px]"
-              style={{ color: inkFor(p.kind), whiteSpace: 'pre-wrap', fontStyle: p.kind === 'aside' ? 'italic' : undefined }}
-            >
-              {p.kind === 'aside' ? `// ${p.text}` : p.text}
-              <span className="textsoap-pilcrow" style={{ color: 'var(--nim-primary)', opacity: 0.5, marginLeft: 2 }}>
-                ¶
+        {paragraphs.map((p, i) => {
+          const canExpand = p.kind === 'aside' && !!p.details && p.details.length > 0;
+          const open = expanded.has(i);
+          return (
+            <div key={i} className="textsoap-para flex items-start px-1 leading-relaxed">
+              <span
+                className="textsoap-linenum shrink-0 text-right pr-3 select-none text-[11px] pt-[2px]"
+                style={{ width: 40, color: 'var(--nim-text-muted)', opacity: 0.55 }}
+              >
+                {i + 1}
               </span>
-            </span>
-          </div>
-        ))}
+              <span
+                className="textsoap-paratext flex-1 text-[12.5px]"
+                style={{ color: inkFor(p.kind), whiteSpace: 'pre-wrap', fontStyle: p.kind === 'aside' ? 'italic' : undefined }}
+              >
+                {p.kind === 'aside' ? `// ${p.text}` : p.text}
+                {canExpand ? (
+                  <button
+                    className="textsoap-expand align-baseline"
+                    style={{ color: 'var(--nim-primary)', marginLeft: 6, fontStyle: 'normal' }}
+                    onClick={() => toggleExpanded(i)}
+                    data-testid="textsoap-expand"
+                    title={open ? 'Hide the commands that ran' : 'Show the commands that ran'}
+                  >
+                    {open ? '◉' : '◯'}
+                  </button>
+                ) : (
+                  <span className="textsoap-pilcrow" style={{ color: 'var(--nim-primary)', opacity: 0.5, marginLeft: 2 }}>
+                    ¶
+                  </span>
+                )}
+                {canExpand && open && (
+                  <span className="textsoap-tool-detail block mt-1" style={{ fontStyle: 'normal' }}>
+                    {p.details!.map((d, di) => (
+                      <span
+                        key={di}
+                        className="block"
+                        style={{
+                          fontFamily: 'ui-monospace, Menlo, Monaco, monospace',
+                          fontSize: '11.5px',
+                          color: 'var(--nim-text-muted)',
+                          whiteSpace: 'pre-wrap',
+                        }}
+                      >
+                        {d}
+                      </span>
+                    ))}
+                  </span>
+                )}
+              </span>
+            </div>
+          );
+        })}
 
         {/* Composer — the live last paragraph */}
         <div className="textsoap-composer-para flex items-start px-1">

@@ -7,7 +7,7 @@ function msg(partial: Partial<TranscriptViewMessage> & { type: TranscriptViewMes
   return { id: 1, sequence: 1, createdAt: new Date(0), subagentId: null, ...partial } as TranscriptViewMessage;
 }
 
-function tool(name: string): TranscriptViewMessage {
+function tool(name: string, extra: { command?: string; targetFilePath?: string } = {}): TranscriptViewMessage {
   return msg({
     type: 'tool_call',
     toolCall: {
@@ -15,8 +15,8 @@ function tool(name: string): TranscriptViewMessage {
       toolDisplayName: name,
       status: 'completed',
       description: null,
-      arguments: {},
-      targetFilePath: null,
+      arguments: extra.command ? { command: extra.command } : {},
+      targetFilePath: extra.targetFilePath ?? null,
       mcpServer: null,
       mcpTool: null,
       providerToolCallId: null,
@@ -41,6 +41,16 @@ describe('toParagraphs', () => {
     expect(paras[0].text).toBe('lock down writes');
     // consecutive tool calls collapse into a single aside line
     expect(paras[2].kind).toBe('aside');
+  });
+
+  it('carries per-tool command details on the aside, for click-to-expand', () => {
+    const paras = toParagraphs([
+      msg({ type: 'user_message', text: 'run the check' }),
+      tool('Bash', { command: 'npm run typecheck' }),
+      tool('Edit', { targetFilePath: 'a.ts' }),
+    ]);
+    const aside = paras.find((p) => p.kind === 'aside');
+    expect(aside?.details).toEqual(['$ npm run typecheck', 'Edit a.ts']);
   });
 });
 
