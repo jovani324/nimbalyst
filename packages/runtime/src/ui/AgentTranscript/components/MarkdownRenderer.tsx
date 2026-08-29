@@ -497,8 +497,69 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   // See nimbalyst/nimbalyst#462.
   const processedContent = useMemo(() => escapeCurrencyDollars(content), [content]);
 
+  // Hold the rendered markdown steady while the user has an active text
+  // selection inside this message.
+  //
+  // react-markdown re-parses on every streaming chunk and reconciles by
+  // sibling index (see the reconcile note at the top of this file), so each
+  // chunk replaces the very DOM text nodes the browser selection is anchored
+  // to. The selection collapses within a frame -- the user can't hold a
+  // selection long enough to right-click -> Copy. While a non-collapsed
+  // selection touches this renderer's subtree we keep showing the last content
+  // and stash the newest; once the selection clears we flush to the latest.
+  // Completed (non-streaming) messages never freeze: their `content` prop is
+  // stable, so `processedContent` never changes and the branch below is skipped.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const pendingContentRef = useRef<string | null>(null);
+  const [renderContent, setRenderContent] = useState(processedContent);
+  const [prevContent, setPrevContent] = useState(processedContent);
+
+  const hasActiveSelectionInside = useCallback((): boolean => {
+    const root = rootRef.current;
+    if (!root) return false;
+    const selection =
+      typeof window !== 'undefined' ? window.getSelection() : null;
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+      return false;
+    }
+    const { anchorNode, focusNode } = selection;
+    return (
+      (anchorNode != null && root.contains(anchorNode)) ||
+      (focusNode != null && root.contains(focusNode))
+    );
+  }, []);
+
+  // Adjust state during render (React restarts the render before committing, so
+  // this adds no extra DOM pass): when new streamed content arrives, apply it
+  // immediately unless the user is mid-selection in this message, in which case
+  // hold it back until the selection clears.
+  if (processedContent !== prevContent) {
+    setPrevContent(processedContent);
+    if (hasActiveSelectionInside()) {
+      pendingContentRef.current = processedContent;
+    } else {
+      pendingContentRef.current = null;
+      setRenderContent(processedContent);
+    }
+  }
+
+  // Flush any content held back during a selection once the selection leaves
+  // this message (collapses or moves elsewhere).
+  useEffect(() => {
+    const onSelectionChange = (): void => {
+      if (pendingContentRef.current !== null && !hasActiveSelectionInside()) {
+        setRenderContent(pendingContentRef.current);
+        pendingContentRef.current = null;
+      }
+    };
+    document.addEventListener('selectionchange', onSelectionChange);
+    return () =>
+      document.removeEventListener('selectionchange', onSelectionChange);
+  }, [hasActiveSelectionInside]);
+
   return (
     <div
+      ref={rootRef}
       className={`markdown-content text-[0.9375rem] leading-relaxed max-w-full overflow-x-hidden break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 ${isUser ? 'font-medium' : 'font-normal'} ${isSystemMessage ? 'opacity-85 font-mono text-[0.95em]' : ''}`}
       style={{
         color: 'var(--nim-text)'
@@ -895,7 +956,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
           ...contributions.components,
         }}
       >
-        {processedContent}
+        {renderContent}
       </ReactMarkdown>
     </div>
   );
