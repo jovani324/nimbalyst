@@ -30,6 +30,8 @@ import {
   saveReplyStyle,
   type ReplyStyle,
 } from './replyStyle';
+import { NotesPanel } from '@nimbalyst/runtime/notes/NotesPanel';
+import { createLocalStoragePersistence } from './notes/storage';
 
 /** Turn relay messages into the raw shape the host's own projector expects. */
 function toRawMessages(messages: RelayMessage[], sessionId: string): RawMessage[] {
@@ -236,6 +238,10 @@ function SessionView({
   const [sending, setSending] = useState(false);
   const [replyStyle, setReplyStyle] = useState<ReplyStyle>(() => loadReplyStyle());
   const [compacting, setCompacting] = useState(false);
+  const [tab, setTab] = useState<'session' | 'notes'>('session');
+  const notesStore = useMemo(() => createLocalStoragePersistence(), []);
+  const notesInitial = useMemo(() => notesStore.load(), [notesStore]);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const handleRef = useRef<SessionHandle | null>(null);
   // Guards against an out-of-order projection overwriting a newer one.
   const projectionToken = useRef(0);
@@ -320,6 +326,37 @@ function SessionView({
     }
   };
 
+  // The host's last reply, offered to the notes pane for a one-click clip.
+  const clipText = useMemo(() => {
+    for (let i = view.length - 1; i >= 0; i--) {
+      const m = view[i];
+      if (!m.toolCall && m.type !== 'user_message' && m.text?.trim()) return m.text;
+    }
+    return null;
+  }, [view]);
+
+  // Note -> session: land the text in the composer, never auto-send, then flip
+  // back so the user can review and press Send.
+  const sendToComposer = useCallback((text: string) => {
+    if (!text) return;
+    setPrompt((p) => (p.trim() ? `${p.trimEnd()}\n${text}` : text));
+    setTab('session');
+    // The composer only exists after the tab flips; wait a tick to focus it.
+    setTimeout(() => composerRef.current?.focus(), 0);
+  }, []);
+
+  // ⌥N flips between the transcript and the notes pad from anywhere.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.altKey && (e.code === 'KeyN' || e.key.toLowerCase() === 'n')) {
+        e.preventDefault();
+        setTab((t) => (t === 'notes' ? 'session' : 'notes'));
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   return (
     <div className="controller-session">
       <div className="controller-session-header">
@@ -338,6 +375,16 @@ function SessionView({
 
       {error && <div className="controller-error">{error}</div>}
 
+      <div className={`controller-notes-wrap${tab === 'notes' ? '' : ' controller-hidden'}`}>
+        <NotesPanel
+          initialState={notesInitial}
+          onPersist={notesStore.save}
+          onSendToComposer={sendToComposer}
+          clipText={clipText}
+          onExit={() => setTab('session')}
+        />
+      </div>
+      <div className={`controller-session-main${tab === 'session' ? '' : ' controller-hidden'}`}>
       <div className="controller-transcript">
         {view.length === 0 && !error && <div className="controller-muted">No messages yet.</div>}
         {view.map((m) => (
@@ -356,6 +403,7 @@ function SessionView({
 
       <div className="controller-composer">
         <textarea
+          ref={composerRef}
           className="controller-composer-input"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
@@ -386,6 +434,30 @@ function SessionView({
         </button>
         <button className="controller-composer-send" onClick={() => void send()} disabled={sending || !prompt.trim()}>
           {sending ? '…' : 'Send'}
+        </button>
+      </div>
+      </div>
+
+      <div className="controller-tabbar" role="tablist">
+        <button
+          role="tab"
+          aria-selected={tab === 'session'}
+          aria-label="Session transcript"
+          title="Session transcript (⌥N)"
+          className={`controller-tabbar-btn${tab === 'session' ? ' is-active' : ''}`}
+          onClick={() => setTab('session')}
+        >
+          {'≡'}
+        </button>
+        <button
+          role="tab"
+          aria-selected={tab === 'notes'}
+          aria-label="Notes"
+          title="Notes (⌥N)"
+          className={`controller-tabbar-btn${tab === 'notes' ? ' is-active' : ''}`}
+          onClick={() => setTab('notes')}
+        >
+          {'✎'}
         </button>
       </div>
     </div>

@@ -320,3 +320,42 @@ input {
   font-size: 11px;
   color: var(--controller-muted);
 }
+
+/* ---- session/notes regions + bottom tab bar ---- */
+/* Both regions stay mounted so a debounced note save is never dropped on a
+   toggle; the inactive one is simply display:none. */
+.controller-hidden {
+  display: none !important;
+}
+
+.controller-notes-wrap,
+.controller-session-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.controller-tabbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 1.75rem;
+  flex: none;
+  border-top: 1px solid var(--controller-border);
+}
+
+.controller-tabbar-btn {
+  border: none;
+  background: transparent;
+  padding: 1px 10px;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--controller-muted);
+  border-radius: 5px;
+}
+
+.controller-tabbar-btn.is-active {
+  color: var(--controller-accent);
+}

@@ -39,6 +39,8 @@ import {
 import type { SpeechDigest } from '@nimbalyst/runtime/ai/prompts/speechDigest';
 import { RemoteTerminalPane } from './RemoteTerminalPane';
 import { RemoteFileViewer } from './RemoteFileViewer';
+import { NotesPanel } from '@nimbalyst/runtime/notes/NotesPanel';
+import { useControllerNotes } from './controllerNotes';
 import { toPayload } from './controllerImages';
 import { useControllerPrivacy, AUTO_BLUR_IDLE_MS, type ControllerPrivacySettings } from './controllerPrivacy';
 import {
@@ -139,6 +141,35 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   const [refreshing, setRefreshing] = useState(false);
   const [paneHovered, setPaneHovered] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
+  const [showNotes, setShowNotes] = useState(false);
+  const notes = useControllerNotes();
+  // The host's last reply, offered to the notes pane for a one-click clip.
+  const noteClipText = useMemo(() => {
+    for (let i = viewMessages.length - 1; i >= 0; i--) {
+      const m = viewMessages[i];
+      if (!m.toolCall && m.type !== 'user_message' && m.text?.trim()) return m.text;
+    }
+    return null;
+  }, [viewMessages]);
+  // Note -> session: land the text in the composer, never auto-send, and drop
+  // back to the transcript so the user can review and send.
+  const sendNoteToComposer = useCallback((text: string) => {
+    if (!text) return;
+    setDraft((d) => (d.trim() ? `${d.trimEnd()}\n${text}` : text));
+    setShowNotes(false);
+  }, []);
+  // ⌥N flips the notes pane from anywhere in the popover. (react's KeyboardEvent
+  // type is imported above and shadows the DOM one, so name the global here.)
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.altKey && (e.code === 'KeyN' || e.key.toLowerCase() === 'n')) {
+        e.preventDefault();
+        setShowNotes((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   const [openFile, setOpenFile] = useState<{ path: string; line?: number } | null>(null);
   // A picture cannot render in the source viewer, so it opens on the host's
   // default app. The bytes only exist over there; the popover machine may not
@@ -547,7 +578,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   };
 
   return (
-    <div className="remote-session-transcript flex flex-col flex-1 min-h-0" data-testid="remote-session-transcript">
+    <div className="remote-session-transcript relative flex flex-col flex-1 min-h-0" data-testid="remote-session-transcript">
       {/* Header. Deliberately understated: no bar of its own — no fill, no rule
           under it — and ghost actions plus a ghost title that only come up to
           full contrast on hover, so a glance at the popover reads as text
@@ -718,6 +749,27 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
 
       {showTerminal && (
         <RemoteTerminalPane sessionId={sessionId} onClose={() => setShowTerminal(false)} />
+      )}
+
+      {/* Notes scratchpad. Full-height overlay that replaces the session region
+          when the header toggle is on (mockup A). Kept mounted once loaded and
+          only hidden when off, so a debounced save is never dropped by toggling
+          away mid-keystroke; absolute so it never disturbs the transcript's
+          layout underneath. Header is h-8 (2rem); sit just below it. */}
+      {notes.ready && (
+        <div
+          className={`remote-session-notes-pane absolute left-0 right-0 flex flex-col${showNotes ? '' : ' hidden'}`}
+          style={{ top: '2rem', bottom: '1.75rem', background: 'var(--nim-bg)' }}
+          data-testid="remote-session-notes-pane"
+        >
+          <NotesPanel
+            initialState={notes.initialState}
+            onPersist={notes.persist}
+            onSendToComposer={sendNoteToComposer}
+            clipText={noteClipText}
+            onExit={() => setShowNotes(false)}
+          />
+        </div>
       )}
 
       {/* Pending interactive prompt. InteractivePromptWidget is sized for the
@@ -931,6 +983,38 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
         </div>
       </div>
       )}
+
+      {/* Bottom bar: the session/notes toggle lives here (not the header) so it
+          reads as a quiet tab strip and stays reachable in both views. ⌥N flips
+          it from anywhere. */}
+      <div
+        className="remote-session-tabbar flex items-center justify-center gap-1 border-t shrink-0"
+        style={{ height: '1.75rem', borderColor: 'var(--nim-border)' }}
+        data-testid="remote-session-tabbar"
+      >
+        <button
+          className="text-[12px] px-2 rounded"
+          style={{ color: !showNotes ? 'var(--nim-primary)' : 'var(--nim-text-muted)' }}
+          onClick={() => setShowNotes(false)}
+          data-testid="remote-session-tab-session"
+          title="Session transcript (⌥N)"
+          aria-label="Session transcript"
+          aria-pressed={!showNotes}
+        >
+          {'≡'}
+        </button>
+        <button
+          className="text-[12px] px-2 rounded"
+          style={{ color: showNotes ? 'var(--nim-primary)' : 'var(--nim-text-muted)' }}
+          onClick={() => setShowNotes(true)}
+          data-testid="remote-session-notes-button"
+          title="Scratchpad notes (⌥N)"
+          aria-label="Scratchpad notes"
+          aria-pressed={showNotes}
+        >
+          {'✎'}
+        </button>
+      </div>
     </div>
   );
 }

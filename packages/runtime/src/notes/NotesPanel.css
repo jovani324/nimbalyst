@@ -1,0 +1,263 @@
+/**
+ * Notes pane styling -- deliberately understated so it blends into the
+ * controller's ghost aesthetic instead of reading as a loud panel dropped on
+ * top. Transparent surfaces, hairline rules, no filled buttons, no focus glow.
+ *
+ * Host-token-aware: it uses the Electron controller's `--nim-*` variables when
+ * present and falls back to a neutral scheme for the standalone web build, so
+ * one stylesheet stays discreet in both. Imported by NotesPanel.tsx, so both
+ * builds pick it up with no edit to their (merge-hot) global stylesheets.
+ */
+.nimba-notes {
+  --nn-accent: var(--nim-primary, #7f8794);
+  --nn-fg: var(--nim-text, #d8d8dc);
+  --nn-muted: var(--nim-text-muted, #83838a);
+  --nn-border: var(--nim-border, rgb(128 128 128 / 0.18));
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: transparent;
+  color: var(--nn-fg);
+}
+
+.nimba-notes-blue {
+  --nn-accent: #5b8cf5;
+}
+.nimba-notes-amber {
+  --nn-accent: #d9a441;
+}
+.nimba-notes-green {
+  --nn-accent: #46c08a;
+}
+.nimba-notes-pink {
+  --nn-accent: #d878a8;
+}
+
+.nimba-notes-muted {
+  color: var(--nn-muted);
+  font-size: 11px;
+}
+
+.nimba-notes-empty {
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px;
+}
+
+/* Ghost buttons: text only, dim until hover -- same language as the controller
+   header actions. No fills, no borders, nothing that grabs the eye. */
+.nimba-notes button {
+  font: inherit;
+  color: var(--nn-muted);
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+
+.nimba-notes button:hover:not(:disabled) {
+  color: var(--nn-fg);
+}
+
+.nimba-notes button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.nimba-notes-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 4px 6px 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.nimba-notes-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.nimba-notes-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  max-width: 120px;
+  padding: 3px 4px !important;
+  font-size: 11px;
+  color: var(--nn-muted);
+  border-bottom: 1px solid transparent !important;
+  border-radius: 0 !important;
+}
+
+.nimba-notes-tab.is-active {
+  color: var(--nn-fg);
+  /* A single hairline in the note's accent -- the only place colour appears. */
+  border-bottom-color: var(--nn-accent) !important;
+}
+
+.nimba-notes-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nimba-notes-tab-close {
+  flex: none;
+  opacity: 0;
+  font-size: 12px;
+  line-height: 1;
+  transition: opacity 100ms ease;
+}
+
+.nimba-notes-tab:hover .nimba-notes-tab-close,
+.nimba-notes-tab.is-active .nimba-notes-tab-close {
+  opacity: 0.5;
+}
+
+.nimba-notes-tab-close:hover {
+  opacity: 1;
+}
+
+.nimba-notes-add {
+  flex: none;
+  align-self: center;
+  font-size: 13px;
+  color: var(--nn-muted);
+}
+
+.nimba-notes-body {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  margin: 0;
+  padding: 8px 10px;
+  border: none;
+  outline: none; /* kill the host's bright focus ring -- discretion over affordance */
+  background: transparent;
+  color: var(--nn-fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.nimba-notes-body::placeholder {
+  color: var(--nn-muted);
+  opacity: 0.6;
+}
+
+/* Toolbar hides until you hover the pane, so at rest the note is just text. */
+.nimba-notes-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 6px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.nimba-notes:hover .nimba-notes-toolbar,
+.nimba-notes-body:focus ~ .nimba-notes-toolbar {
+  opacity: 1;
+}
+
+.nimba-notes-accents {
+  display: flex;
+  gap: 5px;
+  flex: 1;
+}
+
+.nimba-notes-accent {
+  width: 10px;
+  height: 10px;
+  padding: 0 !important;
+  border-radius: 50%;
+  opacity: 0.55;
+}
+
+.nimba-notes-accent:hover,
+.nimba-notes-accent.is-active {
+  opacity: 1;
+}
+
+.nimba-notes-accent.is-active {
+  box-shadow: 0 0 0 1.5px var(--nn-fg);
+}
+
+.nimba-notes-accent-blue {
+  background: #5b8cf5;
+}
+.nimba-notes-accent-amber {
+  background: #d9a441;
+}
+.nimba-notes-accent-green {
+  background: #46c08a;
+}
+.nimba-notes-accent-pink {
+  background: #d878a8;
+}
+
+.nimba-notes-clip,
+.nimba-notes-send,
+.nimba-notes-help-btn {
+  font-size: 11px;
+}
+
+/* Shortcuts cheat-sheet. A dim scrim over the pane; click anywhere to close. */
+.nimba-notes-help {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 0.35);
+}
+
+.nimba-notes-help-card {
+  max-width: 92%;
+  max-height: 90%;
+  overflow-y: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--nn-border);
+  border-radius: 8px;
+  background: var(--nim-bg, #1e1e20);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.35);
+}
+
+.nimba-notes-help-title {
+  margin-bottom: 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--nn-muted);
+}
+
+.nimba-notes-help-list {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+}
+
+.nimba-notes-help-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.nimba-notes-help-keys {
+  flex: none;
+  min-width: 104px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--nn-fg);
+}
+
+.nimba-notes-help-label {
+  margin: 0;
+  font-size: 11px;
+  color: var(--nn-muted);
+}
