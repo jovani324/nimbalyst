@@ -86,12 +86,24 @@ export function applyChoiceDirective(text: string): string {
 }
 
 /**
- * Remove a trailing style directive for display. The directive is plumbing the
- * agent needs, not text the sender wrote, so the transcript hides it. Strips
- * from the marker (and the blank line applyReplyStyle put before it) to the end.
+ * Remove trailing directive plumbing for display. Both the style and the choice
+ * directive are appended by the composer, not typed by the sender, so the
+ * transcript hides them. Strips from whichever marker comes first (the choice
+ * directive can ride alone, without a style directive above it) to the end.
+ *
+ * One thing after the directive IS the sender's: when a prompt carries images,
+ * the host tacks `@filename` references onto the same line as the directive
+ * (see MobileSessionControlHandler). Those are what a reader clicks to open the
+ * picture, so a trailing run of them survives the strip.
  */
 export function stripReplyStyle(text: string): string {
-  const at = text.indexOf(MARKER);
-  if (at < 0) return text;
-  return text.slice(0, at).replace(/\s+$/, '');
+  const marks = [text.indexOf(MARKER), text.indexOf(CHOICES_MARKER)].filter((i) => i >= 0);
+  if (marks.length === 0) return text;
+  const at = Math.min(...marks);
+  const before = text.slice(0, at).replace(/\s+$/, '');
+  // Attachment refs the host appended after the directive, e.g. " @shot.png".
+  const refs = text.slice(at).match(/(?:\s@\S+)+\s*$/);
+  const tail = refs ? refs[0].trim() : '';
+  if (!tail) return before;
+  return before ? `${before} ${tail}` : tail;
 }

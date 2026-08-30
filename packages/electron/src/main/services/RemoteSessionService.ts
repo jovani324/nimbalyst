@@ -94,6 +94,8 @@ interface RemoteSessionState {
   pendingWorktrees: Map<string, (response: CreateWorktreeResponse) => void>;
   /** Pending file reads awaiting the host's answer, keyed by requestId. */
   pendingFileReads: Map<string, (response: RemoteFileResponse) => void>;
+  /** Pending default-app file opens awaiting the host's answer, keyed by requestId. */
+  pendingFileOpens: Map<string, (response: RemoteFileOpenResponse) => void>;
   /** Pending draft compactions awaiting the host's rewrite, keyed by requestId. */
   pendingCompactions: Map<string, (response: RemoteCompactResponse) => void>;
   /** Pending speech digests awaiting the host's summary, keyed by requestId. */
@@ -103,6 +105,11 @@ interface RemoteSessionState {
 /** What the host sends back for a file the controller asked to see. */
 export type RemoteFileResponse =
   | { success: true; path: string; text: string; truncated: boolean }
+  | { success: false; error: string };
+
+/** What the host sends back for a picture the controller asked it to open. */
+export type RemoteFileOpenResponse =
+  | { success: true; path: string }
   | { success: false; error: string };
 
 /** What the host sends back for a draft prompt it compacted. */
@@ -122,6 +129,7 @@ const state: RemoteSessionState = {
   pendingCreates: new Map(),
   pendingWorktrees: new Map(),
   pendingFileReads: new Map(),
+  pendingFileOpens: new Map(),
   pendingCompactions: new Map(),
   pendingDigests: new Map(),
 };
@@ -214,6 +222,18 @@ export function ensureRemoteSubscriptions(): boolean {
                 truncated: payload.truncated === true,
               }
             : { success: false, error: String(payload.error ?? 'The host could not read that file.') },
+        );
+        return;
+      }
+      if (message.type === 'file_opened' || message.type === 'file_open_error') {
+        const payload = message.payload ?? {};
+        const resolver = state.pendingFileOpens.get(String(payload.requestId ?? ''));
+        if (!resolver) return;
+        state.pendingFileOpens.delete(String(payload.requestId));
+        resolver(
+          message.type === 'file_opened'
+            ? { success: true, path: String(payload.path ?? '') }
+            : { success: false, error: String(payload.error ?? 'The host could not open that file.') },
         );
         return;
       }
@@ -550,6 +570,31 @@ export async function readRemoteFile(sessionId: string, filePath: string): Promi
   });
 
   await sendControl({ sessionId, type: 'file_read', payload: { requestId, path: filePath } });
+  return response;
+}
+
+/**
+ * Ask the host to open a picture in its OS default app. The bytes only exist on
+ * the host (an attachment it staged, or a repo image), so it does the opening —
+ * the controller machine may not have the file at all. Fire-and-report: the
+ * promise carries whether the open landed, so a failure can surface a message.
+ */
+export async function openRemoteFile(sessionId: string, filePath: string): Promise<RemoteFileOpenResponse> {
+  ensureRemoteSubscriptions();
+  const requestId = randomUUID();
+
+  const response = new Promise<RemoteFileOpenResponse>((resolve) => {
+    const timer = setTimeout(() => {
+      state.pendingFileOpens.delete(requestId);
+      resolve({ success: false, error: 'The host did not answer in time.' });
+    }, 20_000);
+    state.pendingFileOpens.set(requestId, (res) => {
+      clearTimeout(timer);
+      resolve(res);
+    });
+  });
+
+  await sendControl({ sessionId, type: 'file_open', payload: { requestId, path: filePath } });
   return response;
 }
 

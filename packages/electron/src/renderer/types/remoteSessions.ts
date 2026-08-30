@@ -138,6 +138,11 @@ export type RemoteFileResponse =
   | { success: true; path: string; text: string; truncated: boolean }
   | { success: false; error: string };
 
+/** Whether the host managed to open a picture in its OS default app. */
+export type RemoteFileOpenResponse =
+  | { success: true; path: string }
+  | { success: false; error: string };
+
 /** What the host sends back for a draft prompt it compacted. */
 export type RemoteCompactResponse =
   | { success: true; text: string }

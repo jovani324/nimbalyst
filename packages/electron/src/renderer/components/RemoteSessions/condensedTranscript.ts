@@ -161,22 +161,40 @@ const FILE_EXTENSIONS = new Set([
   'sql', 'prisma', 'graphql', 'gql', 'proto', 'gradle', 'podspec',
 ]);
 
+/**
+ * Extensions that are pictures, not source. Kept apart from FILE_EXTENSIONS
+ * because they open differently: a picture cannot render in the source viewer,
+ * so it goes to the host's OS default app instead.
+ */
+const IMAGE_EXTENSIONS = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'heic', 'avif', 'tiff', 'tif', 'ico',
+]);
+
 /** A clickable piece of a plain-text row. */
 export type LinkPart =
   | { kind: 'url'; href: string; key: string }
-  | { kind: 'file'; path: string; line?: number; text: string; key: string };
+  | { kind: 'file'; path: string; line?: number; isImage?: true; text: string; key: string };
 
 /**
  * Read a file reference out of a standalone token (`src/a.ts:42`), or null if it
  * isn't one. Shared with the transcript's click delegation so an inline-code
  * path in rendered Markdown opens the same way a plain-text one does.
  */
-export function parseFileRef(token: string): { path: string; line?: number } | null {
-  const trimmed = token.trim();
+export function parseFileRef(token: string): { path: string; line?: number; isImage?: true } | null {
+  // An attachment mention (`@shot.png`) wears an @ the file on disk does not;
+  // strip it from the path but leave the shown token alone.
+  const trimmed = token.trim().replace(/^@/, '');
   const match = /^((?:[\w.@~-]+\/)*[\w.@-]+\.([A-Za-z][A-Za-z0-9]{0,7}))(?::(\d+))?(?::\d+)?$/.exec(trimmed);
   if (!match) return null;
-  if (!FILE_EXTENSIONS.has(match[2].toLowerCase())) return null;
-  return { path: match[1], line: match[3] ? Number(match[3]) : undefined };
+  const ext = match[2].toLowerCase();
+  if (!FILE_EXTENSIONS.has(ext) && !IMAGE_EXTENSIONS.has(ext)) return null;
+  // `isImage: true`-or-absent (never false) so existing toEqual assertions on
+  // source-file parts stay exact.
+  return {
+    path: match[1],
+    line: match[3] ? Number(match[3]) : undefined,
+    ...(IMAGE_EXTENSIONS.has(ext) ? { isImage: true as const } : {}),
+  };
 }
 
 /**
@@ -198,7 +216,14 @@ function linkifyFileRefs(text: string, offset: number): Array<string | LinkPart>
     if (!ref) continue;
     const from = start + (match[0].length - withoutLead.length);
     if (from > last) out.push(text.slice(last, from));
-    out.push({ kind: 'file', path: ref.path, line: ref.line, text: token, key: `f${offset + from}-${token}` });
+    out.push({
+      kind: 'file',
+      path: ref.path,
+      line: ref.line,
+      ...(ref.isImage ? { isImage: true as const } : {}),
+      text: token,
+      key: `f${offset + from}-${token}`,
+    });
     last = from + token.length;
   }
   if (last < text.length) out.push(text.slice(last));
