@@ -129,7 +129,7 @@ export function TextSoapTranscript({
   // (unchanged, the way it was); tool asides match it.
   const inkFor = (kind: TextSoapPara['kind']) =>
     kind === 'you'
-      ? 'color-mix(in srgb, var(--nim-text-muted) 62%, var(--nim-bg))'
+      ? 'color-mix(in srgb, var(--nim-text-muted) 82%, var(--nim-bg))'
       : 'var(--nim-text-muted)';
 
   return (
@@ -141,8 +141,21 @@ export function TextSoapTranscript({
         style={{ background: 'var(--nim-bg)', fontFamily: 'var(--nim-controller-font)' }}
       >
         {paragraphs.map((p, i) => {
-          const canExpand = p.kind === 'aside' && !!p.details && p.details.length > 0;
+          const asideExpand = p.kind === 'aside' && !!p.details && p.details.length > 0;
+          const replyCollapse = p.kind === 'assistant' && !!p.summary;
+          const collapsible = asideExpand || replyCollapse;
           const open = expanded.has(i);
+          const collapsed = replyCollapse && !open;
+          const body = p.kind === 'aside' ? `// ${p.text}` : collapsed ? p.summary! : p.text;
+          const hint = !collapsible
+            ? undefined
+            : asideExpand
+              ? open
+                ? 'Hide the commands that ran'
+                : 'Show the commands that ran'
+              : open
+                ? 'Collapse this reply'
+                : 'Show the full reply';
           return (
             <div key={i} className="textsoap-para flex items-start px-1 leading-relaxed">
               <span
@@ -157,17 +170,20 @@ export function TextSoapTranscript({
                   color: inkFor(p.kind),
                   whiteSpace: 'pre-wrap',
                   fontStyle: p.kind === 'aside' ? 'italic' : undefined,
-                  cursor: canExpand ? 'pointer' : undefined,
+                  cursor: collapsible ? 'pointer' : undefined,
                 }}
-                onClick={canExpand ? () => toggleExpanded(i) : undefined}
-                data-testid={canExpand ? 'textsoap-expand' : undefined}
-                title={canExpand ? (open ? 'Hide the commands that ran' : 'Show the commands that ran') : undefined}
+                onClick={collapsible ? () => toggleExpanded(i) : undefined}
+                data-testid={collapsible ? 'textsoap-expand' : undefined}
+                title={hint}
               >
-                {p.kind === 'aside' ? `// ${p.text}` : p.text}
+                {body}
+                {collapsed && !body.endsWith('…') && (
+                  <span style={{ color: 'var(--nim-text-muted)', opacity: 0.7 }}> …</span>
+                )}
                 <span className="textsoap-pilcrow" style={{ color: 'var(--nim-primary)', opacity: 0.5, marginLeft: 2 }}>
                   ¶
                 </span>
-                {canExpand && open && (
+                {asideExpand && open && (
                   <span className="textsoap-tool-detail block mt-1" style={{ fontStyle: 'normal' }}>
                     {p.details!.map((d, di) => (
                       <span

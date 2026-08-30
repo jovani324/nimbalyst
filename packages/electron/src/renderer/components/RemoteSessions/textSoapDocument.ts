@@ -8,13 +8,15 @@
  * curious onlooker who clicks one sees a plausible result.
  */
 import type { TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/transcript';
-import { toCondensedBlocks, summarizeToolGroup } from './condensedTranscript';
+import { toCondensedBlocks, summarizeToolGroup, summarizeAssistant } from './condensedTranscript';
 
 export type TextSoapPara = {
   kind: 'you' | 'assistant' | 'aside';
   text: string;
   /** For 'aside' (a folded tool run): the per-tool command lines, shown on expand. */
   details?: string[];
+  /** For a long assistant reply: a one-line skim shown until the line is expanded. */
+  summary?: string;
 };
 
 /** One human-readable line per tool call — the command or the target it touched. */
@@ -44,8 +46,13 @@ export function toParagraphs(messages: TranscriptViewMessage[]): TextSoapPara[] 
     }
     const m = block.message;
     if (m.type === 'user_message') out.push({ kind: 'you', text: m.text ?? '' });
-    else if (m.type === 'assistant_message') out.push({ kind: 'assistant', text: m.text ?? '' });
-    else if (m.type === 'subagent') out.push({ kind: 'aside', text: 'delegated to a subagent' });
+    else if (m.type === 'assistant_message') {
+      // Long replies fold to a one-line skim (like the other themes' condensed
+      // view); short ones show whole. summarizeAssistant strips markdown + clamps.
+      const text = m.text ?? '';
+      const long = text.includes('\n') || text.length > 180;
+      out.push(long ? { kind: 'assistant', text, summary: summarizeAssistant(text, 160) } : { kind: 'assistant', text });
+    } else if (m.type === 'subagent') out.push({ kind: 'aside', text: 'delegated to a subagent' });
     // interactive_prompt is answered by the parent's widget, not shown as prose.
   }
   return out.filter((p) => p.text.trim().length > 0);

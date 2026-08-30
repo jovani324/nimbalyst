@@ -43,6 +43,16 @@ describe('toParagraphs', () => {
     expect(paras[2].kind).toBe('aside');
   });
 
+  it('folds a long assistant reply to a one-line summary, leaves short ones whole', () => {
+    const long = 'First line of the plan.\n' + 'more detail '.repeat(30);
+    const paras = toParagraphs([
+      msg({ type: 'assistant_message', text: long }),
+      msg({ type: 'assistant_message', text: 'done' }),
+    ]);
+    expect(paras[0].summary).toBe('First line of the plan.');
+    expect(paras[1].summary).toBeUndefined();
+  });
+
   it('carries per-tool command details on the aside, for click-to-expand', () => {
     const paras = toParagraphs([
       msg({ type: 'user_message', text: 'run the check' }),
