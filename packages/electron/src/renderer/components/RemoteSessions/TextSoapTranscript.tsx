@@ -90,12 +90,19 @@ export function TextSoapTranscript({
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (!e.ctrlKey || !e.altKey || e.metaKey) return;
       const el = composerRef.current;
-      if (!el || document.activeElement === el) return;
+      if (!el) return;
+      const already = document.activeElement === el;
       const ch = charFor(e);
-      if (ch === null) return;
-      e.preventDefault();
-      el.focus();
-      setDraft((d) => d + ch);
+      if (ch !== null) {
+        // Held Ctrl+Alt + a letter: focus and type the character in one go.
+        e.preventDefault();
+        if (!already) el.focus();
+        setDraft((d) => d + ch);
+      } else if (!already) {
+        // Just Ctrl+Alt (or with a non-printable key): move focus so the next
+        // keystrokes land in the composer even after the modifiers are released.
+        el.focus();
+      }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
