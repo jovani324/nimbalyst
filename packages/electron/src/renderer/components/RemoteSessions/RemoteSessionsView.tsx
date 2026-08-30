@@ -22,7 +22,7 @@ import type { RemoteSessionIndexEntry } from '../../types/remoteSessions';
 import { RemoteSessionTranscript } from './RemoteSessionTranscript';
 import { NewRemoteSessionDialog } from './NewRemoteSessionDialog';
 import { filterSessionsByProject } from './sessionSearch';
-import { disguisedName } from './controllerDisguise';
+import { disguisedName, disguisedFolder } from './controllerDisguise';
 import { useControllerPrivacy } from './controllerPrivacy';
 
 interface RemoteSessionsViewProps {
@@ -364,7 +364,9 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
                   <span className="shrink-0" style={{ width: 8 }}>
                     {collapsed ? '▸' : '▾'}
                   </span>
-                  <span className="truncate">{projectName(projectId)}</span>
+                  <span className="truncate">
+                    {privacy.disguiseTitles ? disguisedFolder(projectId) : projectName(projectId)}
+                  </span>
                   <span className="shrink-0" style={{ opacity: 0.7 }}>
                     {sessions.length}
                   </span>

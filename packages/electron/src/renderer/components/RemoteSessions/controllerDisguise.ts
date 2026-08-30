@@ -77,6 +77,13 @@ export function disguisedName(sessionId: string): string {
   return `${dir}/${name}.${ext}`;
 }
 
+/** A stable, plausible folder to show in place of a project/workspace name, so a
+ *  disguised session list reads as a file tree rather than named workspaces. */
+export function disguisedFolder(projectId: string): string {
+  const rand = seeded(`${projectId}:folder`);
+  return DIRS[Math.floor(rand() * DIRS.length)];
+}
+
 const CODE_LINES = [
   'import { createClient } from "./client";',
   'import type { Options, Result } from "./types";',
