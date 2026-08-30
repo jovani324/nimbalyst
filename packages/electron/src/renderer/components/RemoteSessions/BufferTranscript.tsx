@@ -49,9 +49,7 @@ export function BufferTranscript({
   isExecuting,
   draft,
   setDraft,
-  onSend,
   onKeyDown,
-  canSend,
   sending,
   replyStyle,
   onCycleReplyStyle,
@@ -233,27 +231,30 @@ export function BufferTranscript({
           color: 'var(--nim-text-muted)',
         }}
       >
+        {/* AI controls tucked in as subtle status glyphs, then editor tokens —
+            reads like an editor's status bar, not a row of Ultra/Mute buttons.
+            No visible send: Shift+Enter sends, like a real editor buffer. */}
         <button
-          className="buffer-reply-style px-2.5 py-1"
-          style={{ borderRight: '1px solid var(--nim-border)', color: replyStyle === 'default' ? 'var(--nim-text-muted)' : 'var(--nim-primary)' }}
+          className="buffer-reply-style px-2 py-1"
+          style={{ color: replyStyle === 'default' ? 'var(--nim-text-muted)' : 'var(--nim-primary)' }}
           onClick={onCycleReplyStyle}
           data-testid="buffer-reply-style"
-          title="How terse the agent answers"
+          title={`Reply length — ${REPLY_STYLE_LABELS[replyStyle]}`}
         >
-          {REPLY_STYLE_LABELS[replyStyle]}
+          ≡
         </button>
         <button
-          className="buffer-speech-mode px-2.5 py-1"
-          style={{ borderRight: '1px solid var(--nim-border)', color: speechMode === 'off' ? 'var(--nim-text-muted)' : 'var(--nim-primary)' }}
+          className="buffer-speech-mode px-2 py-1"
+          style={{ color: speechMode === 'off' ? 'var(--nim-text-muted)' : 'var(--nim-primary)' }}
           onClick={onCycleSpeech}
           data-testid="buffer-speech-mode"
-          title="Read replies aloud"
+          title={`Read aloud — ${SPEECH_MODE_LABELS[speechMode]}`}
         >
-          {SPEECH_MODE_LABELS[speechMode]}
+          ♪
         </button>
         <button
-          className="buffer-compact px-2.5 py-1"
-          style={{ borderRight: '1px solid var(--nim-border)', color: draft.trim() && !compacting ? 'var(--nim-text-muted)' : 'var(--nim-border)' }}
+          className="buffer-compact px-2 py-1"
+          style={{ color: draft.trim() && !compacting ? 'var(--nim-text-muted)' : 'var(--nim-border)' }}
           onClick={onCompact}
           disabled={compacting || sending || !draft.trim()}
           data-testid="buffer-compact"
@@ -262,17 +263,10 @@ export function BufferTranscript({
           {compacting ? '…' : '⤳'}
         </button>
         <span className="flex-1" />
-        <span className="px-2.5 py-1" style={{ borderLeft: '1px solid var(--nim-border)' }}>Ln {line + 1}, Col {draft.length + 1}</span>
-        <button
-          className="buffer-send px-2.5 py-1"
-          style={{ borderLeft: '1px solid var(--nim-border)', color: canSend ? 'var(--nim-primary)' : 'var(--nim-text-muted)' }}
-          onClick={onSend}
-          disabled={!canSend}
-          data-testid="buffer-send"
-          title="Send (Shift+Enter)"
-        >
-          ⏎
-        </button>
+        <span className="px-2 py-1">Ln {line + 1}, Col {draft.length + 1}</span>
+        <span className="px-2 py-1">Spaces: 2</span>
+        <span className="px-2 py-1">UTF-8</span>
+        <span className="px-2 py-1">LF</span>
       </div>
     </div>
   );

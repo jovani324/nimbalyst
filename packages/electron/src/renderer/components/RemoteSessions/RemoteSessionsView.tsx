@@ -236,9 +236,6 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
             >
               ☰
             </button>
-            <span className="text-[11px] truncate" style={{ color: 'var(--nim-text-muted)' }}>
-              Remote Sessions
-            </span>
           </div>
           <div className="flex items-center">
             <button
