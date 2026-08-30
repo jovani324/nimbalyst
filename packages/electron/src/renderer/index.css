@@ -619,6 +619,20 @@ body[data-dev-mode="true"] .nav-quick-access::before {
   opacity: 0.9;
 }
 
+/* Header icon order + grouping, done with flexbox `order` so the JSX stays put:
+ * live/view · tools & export · appearance. A left margin on each group's leader
+ * makes the group break (invisible at rest since the icons are hidden). */
+[data-controller-popover] [data-testid="remote-session-refresh-button"]      { order: 1; }
+[data-controller-popover] [data-testid="remote-session-pin-button"]          { order: 2; }
+[data-controller-popover] [data-testid="remote-session-mask-button"]         { order: 3; }
+[data-controller-popover] [data-testid="remote-session-terminal-button"]     { order: 11; margin-left: 8px; }
+[data-controller-popover] [data-testid="remote-session-copy-md-button"]      { order: 12; }
+[data-controller-popover] [data-testid="remote-session-open-editor-button"]  { order: 13; }
+[data-controller-popover] [data-testid="remote-session-summarize-button"]    { order: 14; }
+[data-controller-popover] [data-testid="remote-session-cancel-button"]       { order: 15; }
+[data-controller-popover] [data-testid="remote-session-layout-cycle"]        { order: 21; margin-left: 8px; }
+[data-controller-popover] [data-testid="remote-session-privacy-button"]      { order: 22; }
+
 /* Composer: terseness / speech / compact / send hide until you're in it. */
 [data-controller-popover] .remote-session-reply-style,
 [data-controller-popover] .remote-session-speech-mode,

@@ -19,6 +19,13 @@ import { redactSecrets } from './controllerPrivacy';
 import { REPLY_STYLE_LABELS, type ReplyStyle } from './controllerReplyStyle';
 import { SPEECH_MODE_LABELS, type SpeechMode } from './controllerSpeech';
 
+/** Rough per-word token widths for a line, to fake a code minimap. */
+function miniSegments(text: string): number[] {
+  const words = text.split(/\s+/).filter(Boolean).slice(0, 7);
+  const out = words.map((w) => Math.min(14, Math.max(2, w.length)));
+  return out.length ? out : [3];
+}
+
 interface Choice {
   label: string;
   prompt: string;
@@ -125,6 +132,7 @@ export function BufferTranscript({
 
   return (
     <div className="buffer-transcript flex-1 min-h-0 flex flex-col" data-testid="buffer-transcript">
+      <div className="flex-1 min-h-0 flex">
       <div
         ref={docRef}
         className="buffer-code flex-1 min-h-0 overflow-y-auto py-2 select-text"
@@ -218,6 +226,24 @@ export function BufferTranscript({
             data-testid="buffer-composer-input"
           />
         </div>
+      </div>
+      {/* Minimap — a fake code overview like a real editor. Decorative. */}
+      <div
+        className="buffer-minimap shrink-0 overflow-hidden select-none"
+        style={{ width: 58, background: 'var(--nim-bg)', borderLeft: '1px solid var(--nim-border)', padding: '6px 5px' }}
+        aria-hidden="true"
+      >
+        {paragraphs.map((p, i) => {
+          const color = p.kind === 'you' ? 'var(--nim-success)' : p.kind === 'aside' ? 'var(--nim-border)' : 'var(--nim-text-muted)';
+          return (
+            <div key={i} className="flex items-center" style={{ gap: 2, height: 3, marginBottom: 2, paddingLeft: p.kind === 'you' ? 0 : 4 }}>
+              {miniSegments(p.text).map((w, j) => (
+                <span key={j} style={{ width: w, height: 2, background: color, borderRadius: 1, opacity: 0.5 }} />
+              ))}
+            </div>
+          );
+        })}
+      </div>
       </div>
 
       {/* Status bar — controls tucked away, editor-style. */}
