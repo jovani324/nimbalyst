@@ -124,11 +124,13 @@ export function TextSoapTranscript({
     });
 
   const composerLine = paragraphs.length + 1;
-  // Your own prompts sit quieter than the agent's output — less to read back, and
-  // less to catch a passing eye. Agent prose gets the normal ink; you and the tool
-  // asides stay muted.
+  // Your own prompts sit quietest — dimmer than the agent's reply, so a passing eye
+  // lands on the answer, not the question. The agent's prose keeps its muted ink
+  // (unchanged, the way it was); tool asides match it.
   const inkFor = (kind: TextSoapPara['kind']) =>
-    kind === 'assistant' ? 'var(--nim-text)' : 'var(--nim-text-muted)';
+    kind === 'you'
+      ? 'color-mix(in srgb, var(--nim-text-muted) 62%, var(--nim-bg))'
+      : 'var(--nim-text-muted)';
 
   return (
     <div className="textsoap-transcript flex-1 min-h-0 flex" data-testid="textsoap-transcript">
