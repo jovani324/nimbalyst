@@ -721,7 +721,7 @@ export default function App() {
     const focusComposer = () => {
       setTimeout(() => {
         const el = document.querySelector<HTMLTextAreaElement>(
-          '[data-testid="remote-session-composer-input"]',
+          '[data-testid="remote-session-composer-input"], [data-testid="textsoap-composer-input"]',
         );
         el?.focus();
       }, 50);
