@@ -611,8 +611,11 @@ body[data-dev-mode="true"] .nav-quick-access::before {
   opacity: 0;
   transition: opacity 140ms ease;
 }
-[data-controller-popover] .remote-session-transcript-header:hover .remote-session-header-action:not(:disabled),
-[data-controller-popover] .remote-sessions-list-header:hover button:not(:disabled) {
+/* Reveal on hovering the whole tab, not just the header row: the header is a
+ * window-drag region, which swallows :hover, so only the no-drag buttons at the
+ * far right would otherwise trigger it. Hovering anywhere in the pane works. */
+[data-controller-popover] .remote-session-transcript:hover .remote-session-header-action:not(:disabled),
+[data-controller-popover] .remote-sessions-list:hover .remote-sessions-list-header button:not(:disabled) {
   opacity: 0.9;
 }
 
@@ -647,7 +650,7 @@ body[data-dev-mode="true"] .nav-quick-access::before {
   opacity: 0.4;
   transition: opacity 120ms ease;
 }
-[data-controller-popover] .remote-session-transcript-header:hover .remote-session-header-title {
+[data-controller-popover] .remote-session-transcript:hover .remote-session-header-title {
   opacity: 1;
 }
 

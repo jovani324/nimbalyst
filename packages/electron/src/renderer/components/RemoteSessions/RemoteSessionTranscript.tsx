@@ -677,16 +677,20 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
           >
             {refreshing ? '…' : '⟳'}
           </button>
-          <button
-            className={HEADER_ACTION_CLASS}
-            style={{ color: masked ? 'var(--nim-primary)' : 'var(--nim-text-muted)' }}
-            onClick={() => setMasked((m) => !m)}
-            data-testid="remote-session-mask-button"
-            title={masked ? 'Reveal messages' : 'Blur messages for privacy'}
-            aria-pressed={masked}
-          >
-            {masked ? '🙈' : '👁'}
-          </button>
+          {/* The blur/eye toggle only makes sense for the chat themes — TextSoap
+              and Buffer are their own disguise, so hide it there. */}
+          {!fullDisguise && (
+            <button
+              className={HEADER_ACTION_CLASS}
+              style={{ color: masked ? 'var(--nim-primary)' : 'var(--nim-text-muted)' }}
+              onClick={() => setMasked((m) => !m)}
+              data-testid="remote-session-mask-button"
+              title={masked ? 'Reveal messages' : 'Blur messages for privacy'}
+              aria-pressed={masked}
+            >
+              {masked ? '🙈' : '👁'}
+            </button>
+          )}
           <button
             className={HEADER_ACTION_CLASS}
             style={{ color: pinned ? 'var(--nim-primary)' : 'var(--nim-text-muted)' }}
