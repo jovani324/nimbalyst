@@ -8,7 +8,7 @@
  * and the remoteSessions atoms — this view owns no local session state.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import {
   remoteSessionsByProjectAtom,
@@ -45,6 +45,43 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
   const searchRef = useRef<HTMLInputElement>(null);
   const { settings: privacy } = useControllerPrivacy();
+
+  // Session-list width — draggable, persisted, and collapses to the rail when
+  // dragged narrow. Clamped so it can't swallow the transcript or vanish.
+  const [listWidth, setListWidth] = useState(288);
+  const listWidthRef = useRef(288);
+  listWidthRef.current = listWidth;
+  useEffect(() => {
+    let live = true;
+    void window.electronAPI
+      ?.invoke?.('app-settings:get', 'controllerSessionsListWidth')
+      .then((w) => {
+        if (live && typeof w === 'number' && w >= 160 && w <= 460) setListWidth(w);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+  const startListResize = (e: ReactPointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = listWidthRef.current;
+    const onMove = (ev: PointerEvent) => {
+      const next = startW + (ev.clientX - startX);
+      if (next < 140) {
+        setListCollapsed(true); // dragged past the floor → fold to the icon rail
+        return;
+      }
+      setListWidth(Math.min(460, Math.max(160, next)));
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      void window.electronAPI?.invoke?.('app-settings:set', 'controllerSessionsListWidth', listWidthRef.current);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
 
   const refresh = useCallback(async () => {
     if (!window.electronAPI?.remoteSessions) return;
@@ -177,8 +214,9 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
 
       {/* Left: session list */}
       <div
-        className="remote-sessions-list flex flex-col w-72 min-w-56 border-r overflow-hidden"
+        className="remote-sessions-list flex flex-col border-r overflow-hidden shrink-0"
         style={{
+          width: listWidth,
           borderColor: 'var(--nim-border)',
           background: 'var(--nim-bg-secondary)',
           display: listCollapsed ? 'none' : undefined,
@@ -349,6 +387,18 @@ export function RemoteSessionsView({ isActive }: RemoteSessionsViewProps) {
           })}
         </div>
       </div>
+
+      {/* Drag handle — resize the session list; drag it fully closed to fold to
+          the rail. Hidden while collapsed (the rail's burger reopens it). */}
+      {!listCollapsed && (
+        <div
+          className="remote-sessions-list-resize shrink-0"
+          style={{ width: 5, cursor: 'col-resize', background: 'var(--nim-border)', opacity: 0.5 }}
+          onPointerDown={startListResize}
+          data-testid="remote-sessions-list-resize"
+          title="Drag to resize · drag closed to fold"
+        />
+      )}
 
       {/* Right: transcript / composer */}
       <div className="remote-sessions-detail flex flex-col flex-1 min-w-0 min-h-0" style={{ background: 'var(--nim-bg)' }}>
