@@ -570,6 +570,17 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   const textsoap = isTextSoap(appearance.theme);
   const buffer = isBuffer(appearance.theme);
   const fullDisguise = textsoap || buffer;
+  // Remember the last chat theme so cycling back from a disguise restores it.
+  const lastChatThemeRef = useRef<ControllerTheme>('midnight');
+  useEffect(() => {
+    if (!isDisguiseLayout(appearance.theme)) lastChatThemeRef.current = appearance.theme;
+  }, [appearance.theme]);
+  // One-tap layout switch (header button): chat → TextSoap → Buffer → chat.
+  const cycleLayout = () => {
+    const next: ControllerTheme = textsoap ? 'buffer' : buffer ? lastChatThemeRef.current : 'textsoap';
+    setTheme(next);
+  };
+  const layoutLabel = buffer ? 'buf' : textsoap ? 'soap' : 'chat';
   // Reveal mode governs how the transcript hides for a public glance. Disguise
   // (a page of plausible source, dropped when you point at the pane) is always on;
   // the blur modes act only while hidden — auto-hide on idle, or the eye toggle.
@@ -647,6 +658,15 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
           )}
         </div>
         <div className="flex items-center shrink-0 relative">
+          <button
+            className={HEADER_ACTION_CLASS}
+            style={{ color: fullDisguise ? 'var(--nim-primary)' : 'var(--nim-text-muted)' }}
+            onClick={cycleLayout}
+            data-testid="remote-session-layout-cycle"
+            title="Switch layout: chat → TextSoap → Buffer"
+          >
+            {layoutLabel}
+          </button>
           <button
             className={HEADER_ACTION_CLASS}
             style={{ color: 'var(--nim-text-muted)' }}
