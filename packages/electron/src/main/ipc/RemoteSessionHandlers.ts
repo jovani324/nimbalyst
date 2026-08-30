@@ -57,6 +57,7 @@ import {
   openRemoteFile,
   compactRemotePrompt,
   requestRemoteSpeechDigest,
+  requestRemoteSummarizeReply,
   cancelRemoteSession,
   archiveRemoteSession,
   respondToRemotePrompt,
@@ -253,6 +254,16 @@ export function registerRemoteSessionHandlers() {
         throw new Error('remote-sessions:speech-digest requires sessionId, messageId and text');
       }
       return requestRemoteSpeechDigest(payload.sessionId, payload.messageId, payload.text);
+    },
+  );
+
+  safeHandle(
+    'remote-sessions:summarize-reply',
+    async (_event, payload: { sessionId: string; messageId: string; text: string }) => {
+      if (!payload?.sessionId || !payload?.messageId || !payload?.text) {
+        throw new Error('remote-sessions:summarize-reply requires sessionId, messageId and text');
+      }
+      return requestRemoteSummarizeReply(payload.sessionId, payload.messageId, payload.text);
     },
   );
 

@@ -53,16 +53,30 @@ export function NotesPanel({
   onPersist,
   onSendToComposer,
   clipText,
+  incomingNote,
+  onIncomingNoteConsumed,
   onExit,
 }: {
   initialState?: NotesState;
   onPersist?: (state: NotesState) => void;
   onSendToComposer: (text: string) => void;
   clipText: string | null;
+  /** When set, drop this text into a brand-new note (e.g. a reply summary). */
+  incomingNote?: string | null;
+  onIncomingNoteConsumed?: () => void;
   onExit?: () => void;
 }) {
   const [state, dispatch] = useReducer(notesReducer, initialState ?? emptyNotesState);
   const [showHelp, setShowHelp] = useState(false);
+
+  // A note pushed in from outside (a summary) becomes a fresh tab with that body.
+  useEffect(() => {
+    if (!incomingNote) return;
+    const id = newId();
+    dispatch({ type: 'add', id, now: Date.now() });
+    dispatch({ type: 'edit', id, body: incomingNote, now: Date.now() });
+    onIncomingNoteConsumed?.();
+  }, [incomingNote, onIncomingNoteConsumed]);
 
   // One debounced writer. Skips the first render so mounting is never a
   // redundant write of what we just seeded.

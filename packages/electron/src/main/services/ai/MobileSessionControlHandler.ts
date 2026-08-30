@@ -33,6 +33,7 @@ import { handleRemoteTerminalControl, closeAllRemoteTerminals } from '../RemoteT
 import { handleRemoteFileControl } from '../RemoteFileService';
 import { handleRemotePromptCompactControl } from '../RemotePromptCompactService';
 import { handleRemoteSpeechDigestControl } from '../RemoteSpeechDigestService';
+import { handleRemoteSummarizeReplyControl } from '../RemoteReplySummaryService';
 import { getGitSubprocessEnv } from '../gitEnv';
 import { findWindowByWorkspace } from '../../window/WindowManager';
 import { getDatabase } from '../../database/initialize';
@@ -201,6 +202,7 @@ function handleControlMessage(
   if (handleRemoteFileControl(message)) return;
   if (handleRemotePromptCompactControl(message)) return;
   if (handleRemoteSpeechDigestControl(message)) return;
+  if (handleRemoteSummarizeReplyControl(message)) return;
 
   switch (message.type) {
     case 'cancel':

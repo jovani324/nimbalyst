@@ -42,6 +42,7 @@ import type {
 import type { SpeechDigest } from '@nimbalyst/runtime/ai/prompts/speechDigest';
 import { getPersonalDocSyncConfig, getSyncProvider } from './SyncManager';
 import { decryptDigestPayload } from './RemoteSpeechDigestService';
+import { decryptSummaryPayload } from './RemoteReplySummaryService';
 import { isControllerMode } from '../utils/store';
 import { logger } from '../utils/logger';
 
@@ -100,6 +101,8 @@ interface RemoteSessionState {
   pendingCompactions: Map<string, (response: RemoteCompactResponse) => void>;
   /** Pending speech digests awaiting the host's summary, keyed by requestId. */
   pendingDigests: Map<string, (response: RemoteDigestResponse) => void>;
+  /** Pending reply summaries awaiting the host's text, keyed by requestId. */
+  pendingSummaries: Map<string, (response: RemoteSummarizeResponse) => void>;
 }
 
 /** What the host sends back for a file the controller asked to see. */
@@ -122,6 +125,11 @@ export type RemoteDigestResponse =
   | { success: true; messageId: string; digest: SpeechDigest }
   | { success: false; messageId: string; error: string };
 
+/** What the host sends back for a reply it summarized. */
+export type RemoteSummarizeResponse =
+  | { success: true; messageId: string; summary: string }
+  | { success: false; messageId: string; error: string };
+
 const state: RemoteSessionState = {
   indexSubscribed: false,
   transcriptCleanups: new Map(),
@@ -132,6 +140,7 @@ const state: RemoteSessionState = {
   pendingFileOpens: new Map(),
   pendingCompactions: new Map(),
   pendingDigests: new Map(),
+  pendingSummaries: new Map(),
 };
 
 function broadcast(channel: string, payload: unknown): void {
@@ -270,6 +279,28 @@ export function ensureRemoteSubscriptions(): boolean {
         }
         decryptDigestPayload(payload.encrypted, payload.iv, key).then(
           (digest) => resolver({ success: true, messageId, digest }),
+          (err) => resolver({ success: false, messageId, error: err instanceof Error ? err.message : String(err) }),
+        );
+      }
+      if (message.type === 'reply_summarized' || message.type === 'reply_summarize_error') {
+        const payload = message.payload ?? {};
+        const requestId = String(payload.requestId ?? '');
+        const resolver = state.pendingSummaries.get(requestId);
+        if (!resolver) return;
+        state.pendingSummaries.delete(requestId);
+        const messageId = String(payload.messageId ?? '');
+        if (message.type !== 'reply_summarized') {
+          resolver({ success: false, messageId, error: String(payload.error ?? 'The host could not summarize that reply.') });
+          return;
+        }
+        // The summary is ciphertext on the wire, like the digest.
+        const key = getPersonalDocSyncConfig()?.encryptionKeyRaw;
+        if (!key || typeof payload.encrypted !== 'string' || typeof payload.iv !== 'string') {
+          resolver({ success: false, messageId, error: 'The summary could not be decrypted.' });
+          return;
+        }
+        decryptSummaryPayload(payload.encrypted, payload.iv, key).then(
+          (summary) => resolver({ success: true, messageId, summary }),
           (err) => resolver({ success: false, messageId, error: err instanceof Error ? err.message : String(err) }),
         );
       }
@@ -657,6 +688,30 @@ export async function requestRemoteSpeechDigest(
   });
 
   await sendControl({ sessionId, type: 'speech_digest', payload: { requestId, messageId, text } });
+  return response;
+}
+
+/** Ask the host to summarize one reply into a couple of plain sentences. */
+export async function requestRemoteSummarizeReply(
+  sessionId: string,
+  messageId: string,
+  text: string,
+): Promise<RemoteSummarizeResponse> {
+  ensureRemoteSubscriptions();
+  const requestId = randomUUID();
+
+  const response = new Promise<RemoteSummarizeResponse>((resolve) => {
+    const timer = setTimeout(() => {
+      state.pendingSummaries.delete(requestId);
+      resolve({ success: false, messageId, error: 'The host did not answer in time.' });
+    }, 120_000);
+    state.pendingSummaries.set(requestId, (res) => {
+      clearTimeout(timer);
+      resolve(res);
+    });
+  });
+
+  await sendControl({ sessionId, type: 'summarize_reply', payload: { requestId, messageId, text } });
   return response;
 }
 

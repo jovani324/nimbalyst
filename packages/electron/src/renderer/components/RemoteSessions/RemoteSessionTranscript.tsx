@@ -148,6 +148,9 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   const [paneHovered, setPaneHovered] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
   const [showNotes, setShowNotes] = useState(false);
+  const [summarizing, setSummarizing] = useState(false);
+  // A reply summary waiting to be dropped into a fresh note by the Notes panel.
+  const [pendingNote, setPendingNote] = useState<string | null>(null);
   const notes = useControllerNotes();
   // The host's last reply, offered to the notes pane for a one-click clip.
   const noteClipText = useMemo(() => {
@@ -469,6 +472,29 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
     }
   };
 
+  // Ask the host to summarize the last reply, drop it into a fresh note, and open
+  // Notes — where the summary can be sent back to the composer to answer from.
+  const handleSummarize = async () => {
+    const api = window.electronAPI?.remoteSessions;
+    const target = pickDigestTarget(viewMessages, isExecuting);
+    if (!api?.summarizeReply || !target || summarizing) return;
+    setSummarizing(true);
+    setActionError(null);
+    try {
+      const result = await api.summarizeReply(sessionId, target.id, target.text);
+      if (result?.success) {
+        setPendingNote(result.summary);
+        setShowNotes(true);
+      } else {
+        setActionError(result?.error ?? 'Could not summarize the reply.');
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Could not summarize the reply.');
+    } finally {
+      setSummarizing(false);
+    }
+  };
+
   const handleComposerKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     // Shift+Enter sends; plain Enter inserts a newline.
     if (e.key === 'Enter' && e.shiftKey) {
@@ -698,6 +724,17 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
           <button
             className={HEADER_ACTION_CLASS}
             style={{ color: 'var(--nim-text-muted)' }}
+            onClick={() => void handleSummarize()}
+            disabled={viewMessages.length === 0 || summarizing}
+            data-testid="remote-session-summarize-button"
+            title="Summarize the last reply into a new note"
+            aria-label="Summarize the last reply into a new note"
+          >
+            {summarizing ? '…' : '≣'}
+          </button>
+          <button
+            className={HEADER_ACTION_CLASS}
+            style={{ color: 'var(--nim-text-muted)' }}
             onClick={() => void handleOpenInEditor()}
             disabled={viewMessages.length === 0}
             data-testid="remote-session-open-editor-button"
@@ -815,6 +852,8 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
             onPersist={notes.persist}
             onSendToComposer={sendNoteToComposer}
             clipText={noteClipText}
+            incomingNote={pendingNote}
+            onIncomingNoteConsumed={() => setPendingNote(null)}
             onExit={() => setShowNotes(false)}
           />
         </div>

@@ -153,6 +153,11 @@ export type RemoteDigestResponse =
   | { success: true; messageId: string; digest: import('@nimbalyst/runtime/ai/prompts/speechDigest').SpeechDigest }
   | { success: false; messageId: string; error: string };
 
+/** What the host sends back for a reply it summarized into plain sentences. */
+export type RemoteSummarizeResponse =
+  | { success: true; messageId: string; summary: string }
+  | { success: false; messageId: string; error: string };
+
 /** Output or lifecycle news from a shell the host opened for this controller. */
 export interface RemoteTerminalEvent {
   sessionId: string;
