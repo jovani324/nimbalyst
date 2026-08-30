@@ -21,7 +21,7 @@ import {
   type Accent,
   type NotesState,
 } from './model';
-import { parseSlash, stripTrailingCommand } from './slash';
+import { parseSlash, stripTrailingCommand, takeReplyAfterSeparator } from './slash';
 import './NotesPanel.css';
 
 const SAVE_DEBOUNCE_MS = 300;
@@ -99,7 +99,7 @@ export function NotesPanel({
       if (!cmd || !note) return false;
       switch (cmd.command) {
         case 'send':
-          onSendToComposer(stripTrailingCommand(body).trim());
+          onSendToComposer(takeReplyAfterSeparator(stripTrailingCommand(body)));
           return true;
         case 'new':
           dispatch({ type: 'add', id: newId(), now: Date.now() });
@@ -154,7 +154,7 @@ export function NotesPanel({
     const k = e.key.toLowerCase();
     if (!e.shiftKey && !e.altKey && e.key === 'Enter') {
       e.preventDefault();
-      onSendToComposer(note.body.trim());
+      onSendToComposer(takeReplyAfterSeparator(note.body));
     } else if (e.shiftKey && k === 'c') {
       e.preventDefault();
       clip();
@@ -292,7 +292,7 @@ export function NotesPanel({
         </button>
         <button
           className="nimba-notes-send"
-          onClick={() => onSendToComposer(note.body.trim())}
+          onClick={() => onSendToComposer(takeReplyAfterSeparator(note.body))}
           disabled={!note.body.trim()}
           aria-label="Send to composer"
           title="Send: push this note into the composer (⌘↩)"

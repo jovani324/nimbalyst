@@ -844,7 +844,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
       {notes.ready && (
         <div
           className={`remote-session-notes-pane absolute left-0 right-0 flex flex-col${showNotes ? '' : ' hidden'}`}
-          style={{ top: '2rem', bottom: '1.75rem', background: 'var(--nim-bg)' }}
+          style={{ top: '2rem', bottom: 0, background: 'var(--nim-bg)' }}
           data-testid="remote-session-notes-pane"
         >
           <NotesPanel

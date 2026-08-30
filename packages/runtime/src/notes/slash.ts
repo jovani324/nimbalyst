@@ -53,3 +53,18 @@ export function stripTrailingCommand(body: string): string {
   }
   return body;
 }
+
+/**
+ * A note may hold a summary, a `---` rule, then your reply. Send only what's
+ * below the LAST `---` (your reply), so a summary the agent already has isn't
+ * echoed back into the session. No separator → send the whole body.
+ */
+export function takeReplyAfterSeparator(body: string): string {
+  const lines = body.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/^\s*---\s*$/.test(lines[i])) {
+      return lines.slice(i + 1).join('\n').trim();
+    }
+  }
+  return body.trim();
+}

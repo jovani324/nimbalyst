@@ -1,6 +1,20 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { parseSlash, stripTrailingCommand } from '@nimbalyst/runtime/notes/slash';
+import { parseSlash, stripTrailingCommand, takeReplyAfterSeparator } from '@nimbalyst/runtime/notes/slash';
+
+describe('takeReplyAfterSeparator', () => {
+  it('sends only what is below the last --- rule', () => {
+    expect(takeReplyAfterSeparator('summary line\n---\nmy actual reply')).toBe('my actual reply');
+  });
+
+  it('uses the last rule when there are several', () => {
+    expect(takeReplyAfterSeparator('a\n---\nb\n---\nc')).toBe('c');
+  });
+
+  it('sends the whole body when there is no separator', () => {
+    expect(takeReplyAfterSeparator('just a note')).toBe('just a note');
+  });
+});
 
 describe('parseSlash', () => {
   it('recognizes bare commands on the last line', () => {
