@@ -52,6 +52,8 @@ import {
 import {
   useControllerAppearance,
   isTextSoap,
+  isBuffer,
+  isDisguiseLayout,
   THEMES,
   FONTS,
   OPACITY_STEPS,
@@ -61,6 +63,7 @@ import {
   type ControllerTheme,
 } from './controllerAppearance';
 import { TextSoapTranscript } from './TextSoapTranscript';
+import { BufferTranscript } from './BufferTranscript';
 import {
   type PermissionResponseContent,
   type AskUserQuestionResponseContent,
@@ -561,10 +564,12 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   };
 
   const canSend = !sending && (!!draft.trim() || images.length > 0);
-  // TextSoap appearance swaps the chat-style body + composer for a document +
-  // cleaner-sidebar layout (see TextSoapTranscript). Any other appearance keeps
-  // the normal transcript, so the disguise is fully reversible.
+  // TextSoap and Buffer appearances swap the chat-style body + composer for a
+  // full-surface disguise (a document, or a code-editor buffer). Any other
+  // appearance keeps the normal transcript, so each disguise is fully reversible.
   const textsoap = isTextSoap(appearance.theme);
+  const buffer = isBuffer(appearance.theme);
+  const fullDisguise = textsoap || buffer;
   // Reveal mode governs how the transcript hides for a public glance. Disguise
   // (a page of plausible source, dropped when you point at the pane) is always on;
   // the blur modes act only while hidden — auto-hide on idle, or the eye toggle.
@@ -762,9 +767,9 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
           eye toggles masking; with hover-reveal on, messages blur individually
           and reveal on hover, otherwise the whole transcript blurs and a click
           reveals it. Secret-looking strings are redacted independently. In
-          TextSoap mode the body + composer are replaced by TextSoapTranscript
-          below, so this pane is skipped. */}
-      {!textsoap && (
+          TextSoap / Buffer modes replace the body + composer with their own
+          full-surface disguise below, so this pane is skipped. */}
+      {!fullDisguise && (
         <div
           ref={transcriptPaneRef}
           className="flex-1 min-h-0 flex flex-col relative"
@@ -934,10 +939,36 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
         />
       )}
 
+      {/* Buffer appearance: the transcript as a code-editor buffer. Same handlers. */}
+      {buffer && (
+        <BufferTranscript
+          messages={viewMessages}
+          isExecuting={isExecuting}
+          draft={draft}
+          setDraft={setDraft}
+          onSend={() => void handleSend()}
+          onKeyDown={handleComposerKeyDown}
+          canSend={canSend}
+          sending={sending}
+          replyStyle={replyStyle}
+          onCycleReplyStyle={() => setReplyStyle(nextReplyStyle(replyStyle))}
+          speechMode={speech.mode}
+          onCycleSpeech={() => {
+            speech.hush();
+            speech.setMode(nextSpeechMode(speech.mode));
+          }}
+          onCompact={() => void handleCompact()}
+          compacting={compacting}
+          choices={digest && !isExecuting ? digest.digest.choices : []}
+          onChoice={(prompt) => void sendText(prompt)}
+          redact={privacy.redactSecrets}
+        />
+      )}
+
       {/* Composer. Kept as quiet as the header: a single-line box, a short
           placeholder (the full hint lives in the tooltip) and a ghost send
           glyph instead of a filled button. */}
-      {!textsoap && (
+      {!fullDisguise && (
       <div className="remote-session-composer flex flex-col gap-1.5 px-2 py-2 border-t shrink-0" style={{ borderColor: 'var(--nim-border)' }}>
         <ComposerImageStrip {...composerImages} />
         {digest && (
@@ -1160,9 +1191,9 @@ function ControllerSettingsMenu({
     { key: 'redactSecrets', label: 'Redact secrets (keys, emails…)' },
     { key: 'disguiseTitles', label: 'Titles as file paths' },
   ];
-  // TextSoap is its own disguise (a document, not a transcript), so the reveal
-  // modes and idle auto-hide do nothing there — hide them. Redact + title-disguise stay.
-  const textsoap = isTextSoap(appearance.theme);
+  // TextSoap and Buffer are their own disguise, so the reveal modes and idle
+  // auto-hide do nothing there — hide them. Redact + title-disguise stay.
+  const textsoap = isDisguiseLayout(appearance.theme);
   const rows = textsoap ? allRows.filter((r) => r.key !== 'autoBlurOnUnfocus') : allRows;
   const heading = (text: string) => (
     <div className="px-2 pt-2 pb-1 text-[10px] uppercase tracking-wide" style={{ color: 'var(--nim-text-muted)' }}>

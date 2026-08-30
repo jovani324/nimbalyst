@@ -21,7 +21,8 @@ export type ControllerTheme =
   | 'sage'
   | 'ink'
   | 'gruvbox-soft-dark'
-  | 'textsoap';
+  | 'textsoap'
+  | 'buffer';
 export type ControllerFont = 'mono' | 'system' | 'serif';
 
 export interface ControllerAppearance {
@@ -53,15 +54,27 @@ export const THEMES: Array<{ id: ControllerTheme; label: string }> = [
   { id: 'ink', label: 'Ink' },
   { id: 'gruvbox-soft-dark', label: 'Gruvbox' },
   { id: 'textsoap', label: 'TextSoap' },
+  { id: 'buffer', label: 'Buffer' },
 ];
 
 /**
- * TextSoap is the one appearance that also changes layout: the transcript renders
- * as a text-utility document with a "cleaner" sidebar rather than the chat-style
- * composer. Components branch on this so the disguise is opt-in and reversible.
+ * TextSoap and Buffer are the appearances that also change layout: the transcript
+ * renders as a mundane surface (a text-utility document, or a code editor buffer)
+ * rather than the chat-style composer. Components branch on these so each disguise
+ * is opt-in and reversible.
  */
 export function isTextSoap(theme: ControllerTheme): boolean {
   return theme === 'textsoap';
+}
+
+/** Buffer renders the transcript as a code-editor buffer (see BufferTranscript). */
+export function isBuffer(theme: ControllerTheme): boolean {
+  return theme === 'buffer';
+}
+
+/** True for any appearance that swaps the chat body + composer for a full-surface disguise. */
+export function isDisguiseLayout(theme: ControllerTheme): boolean {
+  return isTextSoap(theme) || isBuffer(theme);
 }
 
 export const FONTS: Array<{ id: ControllerFont; label: string; stack: string }> = [
@@ -279,6 +292,22 @@ const THEME_PALETTES: Record<ControllerTheme, Record<string, string>> = {
     '--nim-success': '#98971a',
     '--nim-warning': '#d79921',
     '--nim-error': '#cc241d',
+  },
+  // Buffer: a plain dark code-editor. Muted grey ink, a soft blue accent, and a
+  // green for the "added" (your) lines — reads as a file open in an editor.
+  buffer: {
+    '--nim-bg': '#1e1e1e',
+    '--nim-bg-secondary': '#252526',
+    '--nim-bg-tertiary': '#2d2d2e',
+    '--nim-bg-hover': '#2a2d2e',
+    '--nim-bg-selected': '#2d2d2e',
+    '--nim-text': '#d4d4d4',
+    '--nim-text-muted': '#858585',
+    '--nim-border': '#333333',
+    '--nim-primary': '#569cd6',
+    '--nim-success': '#6a9955',
+    '--nim-warning': '#cca700',
+    '--nim-error': '#f48771',
   },
 };
 
