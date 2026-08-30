@@ -8,26 +8,61 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 
+/**
+ * How the transcript hides itself for a glance in public:
+ *  - uniform:       dim the whole pane as one; a hover lifts it back.
+ *  - reading-light: keep it dim; a soft light around the cursor reveals nearby lines.
+ *  - per-message:   blur each message; the one under the pointer sharpens.
+ *  - disguise:      show a page of plausible source until you point at the pane.
+ * The first three take effect only while hidden (auto-hide on idle, or the eye
+ * toggle); 'disguise' is always on until hovered.
+ */
+export type ControllerRevealMode = 'uniform' | 'reading-light' | 'per-message' | 'disguise';
+
+export const REVEAL_MODES: Array<{ id: ControllerRevealMode; label: string }> = [
+  { id: 'uniform', label: 'Uniform' },
+  { id: 'reading-light', label: 'Reading light' },
+  { id: 'per-message', label: 'Per message' },
+  { id: 'disguise', label: 'Disguise' },
+];
+
 export interface ControllerPrivacySettings {
-  /** Blur the transcript automatically when the popover loses focus or goes idle. */
+  /** Hide the transcript automatically when the popover loses focus or goes idle. */
   autoBlurOnUnfocus: boolean;
-  /** When blurred, reveal messages one at a time on hover instead of all at once. */
-  hoverReveal: boolean;
-  /** Mask token/key/email-looking strings even when the transcript is not blurred. */
+  /** How the transcript hides and reveals (see ControllerRevealMode). */
+  revealMode: ControllerRevealMode;
+  /** Mask token/key/email-looking strings even when the transcript is not hidden. */
   redactSecrets: boolean;
   /** Show session titles as plausible file paths; the real title on hover. */
   disguiseTitles: boolean;
-  /** Show a page of source in place of the transcript until you point at it. */
-  disguiseTranscript: boolean;
 }
 
 export const DEFAULT_PRIVACY: ControllerPrivacySettings = {
   autoBlurOnUnfocus: true,
-  hoverReveal: true,
+  revealMode: 'uniform',
   redactSecrets: true,
   disguiseTitles: false,
-  disguiseTranscript: false,
 };
+
+/**
+ * Merge stored settings over defaults, migrating the pre-revealMode shape: the
+ * old `disguiseTranscript` boolean becomes `revealMode: 'disguise'`. The old
+ * `hoverReveal` boolean was on by default, so it signalled no real choice — every
+ * other install (and new ones) lands on the improved 'uniform' default instead of
+ * the patchy per-message blur.
+ */
+export function normalizeControllerPrivacy(
+  stored: Partial<ControllerPrivacySettings> & { hoverReveal?: boolean; disguiseTranscript?: boolean } = {},
+): ControllerPrivacySettings {
+  const revealMode: ControllerRevealMode =
+    stored.revealMode ?? (stored.disguiseTranscript ? 'disguise' : DEFAULT_PRIVACY.revealMode);
+  return {
+    autoBlurOnUnfocus: stored.autoBlurOnUnfocus ?? DEFAULT_PRIVACY.autoBlurOnUnfocus,
+    revealMode,
+    redactSecrets: stored.redactSecrets ?? DEFAULT_PRIVACY.redactSecrets,
+    disguiseTitles: stored.disguiseTitles ?? DEFAULT_PRIVACY.disguiseTitles,
+  };
+}
 
 const PRIVACY_KEY = 'controllerPrivacy';
 
@@ -61,9 +96,9 @@ export function redactSecrets(text: string): string {
 export async function loadControllerPrivacy(): Promise<ControllerPrivacySettings> {
   try {
     const stored = (await window.electronAPI?.invoke?.('app-settings:get', PRIVACY_KEY)) as
-      | Partial<ControllerPrivacySettings>
+      | (Partial<ControllerPrivacySettings> & { hoverReveal?: boolean; disguiseTranscript?: boolean })
       | undefined;
-    return { ...DEFAULT_PRIVACY, ...(stored ?? {}) };
+    return normalizeControllerPrivacy(stored ?? {});
   } catch {
     return DEFAULT_PRIVACY;
   }
@@ -99,6 +134,7 @@ function publish(next: ControllerPrivacySettings): void {
 export function useControllerPrivacy(): {
   settings: ControllerPrivacySettings;
   toggle: (key: keyof ControllerPrivacySettings) => void;
+  set: <K extends keyof ControllerPrivacySettings>(key: K, value: ControllerPrivacySettings[K]) => void;
 } {
   const [settings, setSettings] = useState<ControllerPrivacySettings>(current);
 
@@ -121,5 +157,14 @@ export function useControllerPrivacy(): {
     publish(next);
   }, []);
 
-  return { settings, toggle };
+  const set = useCallback(
+    <K extends keyof ControllerPrivacySettings>(key: K, value: ControllerPrivacySettings[K]) => {
+      const next = { ...current, [key]: value };
+      void saveControllerPrivacy(next);
+      publish(next);
+    },
+    [],
+  );
+
+  return { settings, toggle, set };
 }

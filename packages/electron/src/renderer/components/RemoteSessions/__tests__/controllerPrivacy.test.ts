@@ -1,6 +1,25 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
-import { redactSecrets } from '../controllerPrivacy';
+import { redactSecrets, normalizeControllerPrivacy } from '../controllerPrivacy';
+
+describe('normalizeControllerPrivacy (revealMode migration)', () => {
+  it('maps the legacy disguiseTranscript flag to disguise mode', () => {
+    expect(normalizeControllerPrivacy({ disguiseTranscript: true }).revealMode).toBe('disguise');
+  });
+
+  it('lands legacy installs (no revealMode) on the uniform default', () => {
+    // hoverReveal was on by default, so it signalled no real choice.
+    expect(normalizeControllerPrivacy({ hoverReveal: true }).revealMode).toBe('uniform');
+    expect(normalizeControllerPrivacy({}).revealMode).toBe('uniform');
+  });
+
+  it('keeps an explicit revealMode and preserves the other fields', () => {
+    const s = normalizeControllerPrivacy({ revealMode: 'per-message', redactSecrets: false });
+    expect(s.revealMode).toBe('per-message');
+    expect(s.redactSecrets).toBe(false);
+    expect(s.autoBlurOnUnfocus).toBe(true); // default fills the gap
+  });
+});
 
 describe('redactSecrets', () => {
   it('masks emails', () => {

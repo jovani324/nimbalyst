@@ -42,7 +42,13 @@ import { RemoteFileViewer } from './RemoteFileViewer';
 import { NotesPanel } from '@nimbalyst/runtime/notes/NotesPanel';
 import { useControllerNotes } from './controllerNotes';
 import { toPayload } from './controllerImages';
-import { useControllerPrivacy, AUTO_BLUR_IDLE_MS, type ControllerPrivacySettings } from './controllerPrivacy';
+import {
+  useControllerPrivacy,
+  AUTO_BLUR_IDLE_MS,
+  REVEAL_MODES,
+  type ControllerPrivacySettings,
+  type ControllerRevealMode,
+} from './controllerPrivacy';
 import {
   useControllerAppearance,
   isTextSoap,
@@ -188,7 +194,8 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   );
   const [pinned, setPinned] = useState(false);
   const transcriptPaneRef = useRef<HTMLDivElement>(null);
-  const { settings: privacy, toggle: togglePrivacy } = useControllerPrivacy();
+  const { settings: privacy, toggle: togglePrivacy, set: setPrivacy } = useControllerPrivacy();
+  const overlayRef = useRef<HTMLDivElement>(null);
   const { appearance, setTheme, setOpacity, setFont, setTextScale } = useControllerAppearance();
 
   // Auto-blur when you look away: mask on window blur, on the popover hiding, and
@@ -532,11 +539,19 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   // cleaner-sidebar layout (see TextSoapTranscript). Any other appearance keeps
   // the normal transcript, so the disguise is fully reversible.
   const textsoap = isTextSoap(appearance.theme);
-  // Whole-transcript blur (as opposed to per-message hover-reveal).
-  const globalBlur = masked && !privacy.hoverReveal;
-  // The disguise is the quieter cousin of the blur: a pane of plausible source
-  // instead of an obviously-smeared one, dropped the moment you point at it.
-  const disguised = privacy.disguiseTranscript && !paneHovered;
+  // Reveal mode governs how the transcript hides for a public glance. Disguise
+  // (a page of plausible source, dropped when you point at the pane) is always on;
+  // the blur modes act only while hidden — auto-hide on idle, or the eye toggle.
+  const revealMode = privacy.revealMode;
+  const disguised = revealMode === 'disguise' && !paneHovered;
+  // Uniform lifts the whole pane as one on hover (no patchwork); reading-light
+  // keeps it dim with a soft light around the cursor; per-message blurs each turn.
+  const uniformBlur = masked && revealMode === 'uniform' && !paneHovered;
+  const readingLight = masked && revealMode === 'reading-light';
+  const perMessageBlur = masked && revealMode === 'per-message';
+  // A click anywhere clears the mask for the whole-pane modes (per-message reveals
+  // by hovering each turn instead).
+  const clickToReveal = uniformBlur || readingLight;
   const headerTitle = privacy.disguiseTitles
     ? disguisedName(sessionId)
     : session?.title || 'Session';
@@ -660,6 +675,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
             <ControllerSettingsMenu
               settings={privacy}
               onToggle={togglePrivacy}
+              onRevealMode={(m) => setPrivacy('revealMode', m)}
               appearance={appearance}
               onTheme={setTheme}
               onOpacity={setOpacity}
@@ -714,16 +730,35 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
       {!textsoap && (
         <div
           ref={transcriptPaneRef}
-          className="flex-1 min-h-0 flex flex-col"
+          className="flex-1 min-h-0 flex flex-col relative"
           style={{
-            filter: globalBlur ? 'blur(7px)' : undefined,
-            transition: 'filter 120ms ease',
-            cursor: globalBlur ? 'pointer' : undefined,
+            filter: uniformBlur ? 'blur(7px)' : undefined,
+            transition: 'filter 200ms ease',
+            cursor: clickToReveal ? 'pointer' : undefined,
           }}
-          onClick={globalBlur ? () => setMasked(false) : undefined}
+          onClick={clickToReveal ? () => setMasked(false) : undefined}
           onMouseEnter={() => setPaneHovered(true)}
-          onMouseLeave={() => setPaneHovered(false)}
-          title={globalBlur ? 'Click to reveal' : undefined}
+          onMouseLeave={() => {
+            setPaneHovered(false);
+            const ov = overlayRef.current;
+            if (ov) {
+              ov.style.setProperty('--mx', '-9999px');
+              ov.style.setProperty('--my', '-9999px');
+            }
+          }}
+          onMouseMove={
+            readingLight
+              ? (e) => {
+                  const el = transcriptPaneRef.current;
+                  const ov = overlayRef.current;
+                  if (!el || !ov) return;
+                  const r = el.getBoundingClientRect();
+                  ov.style.setProperty('--mx', `${e.clientX - r.left}px`);
+                  ov.style.setProperty('--my', `${e.clientY - r.top}px`);
+                }
+              : undefined
+          }
+          title={clickToReveal ? 'Click to reveal' : undefined}
         >
           {disguised ? (
             <DisguisedSource sessionId={sessionId} />
@@ -739,9 +774,22 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
               messages={viewMessages}
               isProcessing={isExecuting}
               redact={privacy.redactSecrets}
-              perMessageBlur={masked && privacy.hoverReveal}
+              perMessageBlur={perMessageBlur}
               onOpenFile={(path, line) => setOpenFile({ path, line })}
               onOpenExternalFile={openExternalFile}
+            />
+          )}
+          {/* Reading light: a soft window that follows the cursor over an otherwise
+              dimmed pane. pointer-events off so it never eats clicks. */}
+          {readingLight && (
+            <div
+              ref={overlayRef}
+              className="remote-session-reading-light absolute inset-0 pointer-events-none"
+              style={{
+                zIndex: 5,
+                background:
+                  'radial-gradient(circle at var(--mx, 50%) var(--my, 50%), transparent 0px, transparent 48px, color-mix(in srgb, var(--nim-bg) 94%, transparent) 132px)',
+              }}
             />
           )}
         </div>
@@ -1049,6 +1097,7 @@ function DisguisedSource({ sessionId }: { sessionId: string }) {
 function ControllerSettingsMenu({
   settings,
   onToggle,
+  onRevealMode,
   appearance,
   onTheme,
   onOpacity,
@@ -1058,6 +1107,7 @@ function ControllerSettingsMenu({
 }: {
   settings: ControllerPrivacySettings;
   onToggle: (key: keyof ControllerPrivacySettings) => void;
+  onRevealMode: (mode: ControllerRevealMode) => void;
   appearance: ControllerAppearance;
   onTheme: (theme: ControllerTheme) => void;
   onOpacity: (opacity: number) => void;
@@ -1065,43 +1115,25 @@ function ControllerSettingsMenu({
   onTextScale: (scale: number) => void;
   onClose: () => void;
 }) {
-  const allRows: Array<{ key: keyof ControllerPrivacySettings; label: string }> = [
-    { key: 'autoBlurOnUnfocus', label: 'Auto-blur when idle / unfocused' },
-    { key: 'hoverReveal', label: 'Hover to reveal (per message)' },
+  // Only the boolean settings render as checkboxes; revealMode has its own picker.
+  type BooleanPrivacyKey = 'autoBlurOnUnfocus' | 'redactSecrets' | 'disguiseTitles';
+  const allRows: Array<{ key: BooleanPrivacyKey; label: string }> = [
+    { key: 'autoBlurOnUnfocus', label: 'Auto-hide when idle / unfocused' },
     { key: 'redactSecrets', label: 'Redact secrets (keys, emails…)' },
     { key: 'disguiseTitles', label: 'Titles as file paths' },
-    { key: 'disguiseTranscript', label: 'Transcript as source until hovered' },
   ];
-  // TextSoap is its own disguise (a document, not a transcript), so the blur /
-  // hover-reveal / source-swap toggles do nothing there — hide them to avoid
-  // offering controls that no-op. Redact and title-disguise still apply.
+  // TextSoap is its own disguise (a document, not a transcript), so the reveal
+  // modes and idle auto-hide do nothing there — hide them. Redact + title-disguise stay.
   const textsoap = isTextSoap(appearance.theme);
-  const hiddenInTextSoap = new Set<keyof ControllerPrivacySettings>([
-    'autoBlurOnUnfocus',
-    'hoverReveal',
-    'disguiseTranscript',
-  ]);
-  const rows = textsoap ? allRows.filter((r) => !hiddenInTextSoap.has(r.key)) : allRows;
+  const rows = textsoap ? allRows.filter((r) => r.key !== 'autoBlurOnUnfocus') : allRows;
   const heading = (text: string) => (
     <div className="px-2 pt-2 pb-1 text-[10px] uppercase tracking-wide" style={{ color: 'var(--nim-text-muted)' }}>
       {text}
     </div>
   );
-  // Sub-label inside Privacy — separates the two families (blur vs redact/disguise).
-  const subheading = (text: string) => (
-    <div
-      className="px-2 pt-1 pb-0.5 text-[9px] uppercase tracking-wide"
-      style={{ color: 'var(--nim-text-muted)', opacity: 0.7 }}
-    >
-      {text}
-    </div>
-  );
   // Fixed-width label gutter so every Look row's controls line up on one column.
   const lblStyle = { color: 'var(--nim-text-muted)', flex: '0 0 68px' };
-  const blurKeys = new Set<keyof ControllerPrivacySettings>(['autoBlurOnUnfocus', 'hoverReveal']);
-  const blurRows = rows.filter((r) => blurKeys.has(r.key));
-  const maskRows = rows.filter((r) => !blurKeys.has(r.key));
-  const renderPrivacyRow = (r: { key: keyof ControllerPrivacySettings; label: string }) => (
+  const renderPrivacyRow = (r: { key: BooleanPrivacyKey; label: string }) => (
     <button
       key={r.key}
       className="flex items-center gap-2 w-full text-left px-2 py-1.5 rounded hover:opacity-90"
@@ -1196,10 +1228,27 @@ function ControllerSettingsMenu({
         </div>
         <div className="my-1 h-px" style={{ background: 'var(--nim-border)' }} />
         {heading('Privacy')}
-        {blurRows.length > 0 && subheading('Blur')}
-        {blurRows.map(renderPrivacyRow)}
-        {maskRows.length > 0 && subheading('Redact / disguise')}
-        {maskRows.map(renderPrivacyRow)}
+        {!textsoap && (
+          <div className="flex flex-wrap items-center gap-1 px-2 pb-1">
+            <span style={lblStyle}>Reveal</span>
+            {REVEAL_MODES.map((m) => (
+              <button
+                key={m.id}
+                className="controller-reveal-option px-2 py-0.5 rounded"
+                style={{
+                  border: '1px solid var(--nim-border)',
+                  background: settings.revealMode === m.id ? 'var(--nim-bg-selected)' : 'transparent',
+                  color: settings.revealMode === m.id ? 'var(--nim-primary)' : 'var(--nim-text)',
+                }}
+                onClick={() => onRevealMode(m.id)}
+                title="How the transcript hides for a glance in public"
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+        )}
+        {rows.map(renderPrivacyRow)}
         {/* Popover is drag-resizable; this returns it to stock dimensions. It
             changes the window, not the skin — so it sits in its own footer, not
             under Look next to the text-scale control. */}
