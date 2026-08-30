@@ -601,20 +601,38 @@ body[data-dev-mode="true"] .nav-quick-access::before {
   background: var(--nim-bg-secondary);
 }
 
-/* Header actions and the send glyph stay faint until pointed at, so the
- * controller reads as a pane of text rather than a toolbar. */
-.remote-session-header-action,
-.remote-session-send-button {
-  opacity: 0.45;
-  transition: opacity 120ms ease;
+/* Discreet chrome: the header icons and the composer's mode buttons stay out of
+ * sight until you point at their row, so at rest the popover reads as a pane of
+ * text with a plain input line — not a toolbar over an AI-chat composer. They
+ * reappear the moment the mouse enters the header / composer (or the input is
+ * focused), so nothing is lost, just hidden. */
+[data-controller-popover] .remote-session-header-action,
+[data-controller-popover] .remote-sessions-list-header button {
+  opacity: 0;
+  transition: opacity 140ms ease;
 }
-.remote-session-header-action:hover:not(:disabled),
-.remote-session-send-button:hover:not(:disabled) {
-  opacity: 1;
+[data-controller-popover] .remote-session-transcript-header:hover .remote-session-header-action:not(:disabled),
+[data-controller-popover] .remote-sessions-list-header:hover button:not(:disabled) {
+  opacity: 0.9;
 }
-.remote-session-header-action:disabled,
-.remote-session-send-button:disabled {
-  opacity: 0.2;
+
+/* Composer: terseness / speech / compact / send hide until you're in it. */
+[data-controller-popover] .remote-session-reply-style,
+[data-controller-popover] .remote-session-speech-mode,
+[data-controller-popover] .remote-session-compact-button,
+[data-controller-popover] .remote-session-send-button {
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+[data-controller-popover] .remote-session-composer:hover .remote-session-reply-style,
+[data-controller-popover] .remote-session-composer:hover .remote-session-speech-mode,
+[data-controller-popover] .remote-session-composer:hover .remote-session-compact-button,
+[data-controller-popover] .remote-session-composer:hover .remote-session-send-button,
+[data-controller-popover] .remote-session-composer:focus-within .remote-session-reply-style,
+[data-controller-popover] .remote-session-composer:focus-within .remote-session-speech-mode,
+[data-controller-popover] .remote-session-composer:focus-within .remote-session-compact-button,
+[data-controller-popover] .remote-session-composer:focus-within .remote-session-send-button {
+  opacity: 0.9;
 }
 
 /* The transcript header must not read as a titlebar: no fill of its own, and a

@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 <!-- Changes to existing functionality go here -->
-- Controller mode is quieter to look at and easier to live in — a slimmer header and composer, collapsible project groups ordered by the workspace you touched last, a marker on sessions waiting for your answer, a session list you can drag to resize or fold to a rail, a popover you can resize (with a reset back to the default size) or pin open so it stops vanishing when you click away, a choice of how the transcript hides for a public glance (a uniform dim, a reading light that follows the cursor, per-message blur, or a page of source), a choice of font and text size, links that open in your browser, file references you can tap to read the real file from the host, selectable text anywhere in the transcript, and keys to jump through a long one.
+- Controller mode is quieter to look at and easier to live in — a header and composer whose controls stay out of sight until you reach for them, collapsible project groups ordered by the workspace you touched last, a marker on sessions waiting for your answer, a session list you can drag to resize or fold to a rail, a popover you can resize (with a reset back to the default size) or pin open so it stops vanishing when you click away, a choice of how the transcript hides for a public glance (a uniform dim, a reading light that follows the cursor, per-message blur, or a page of source), a choice of font and text size, links that open in your browser, file references you can tap to read the real file from the host, selectable text anywhere in the transcript, and keys to jump through a long one.
 
 ### Fixed
 <!-- Bug fixes go here -->
