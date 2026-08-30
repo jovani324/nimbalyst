@@ -30,7 +30,7 @@ export interface TextSoapTranscriptProps {
   messages: TranscriptViewMessage[];
   isExecuting: boolean;
   draft: string;
-  setDraft: (value: string) => void;
+  setDraft: (value: string | ((prev: string) => string)) => void;
   onSend: () => void;
   onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
   canSend: boolean;
@@ -72,6 +72,34 @@ export function TextSoapTranscript({
     return redact ? paras.map((p) => ({ ...p, text: redactSecrets(p.text) })) : paras;
   }, [messages, redact]);
   const docRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+
+  // Ctrl+Alt + a letter/number jumps straight into the composer and types the
+  // character there — no need to reach for the cursor. Derived from the physical
+  // key (e.code) so macOS Option-key remapping doesn't turn letters into accents.
+  useEffect(() => {
+    const charFor = (e: globalThis.KeyboardEvent): string | null => {
+      if (e.code.startsWith('Key')) {
+        const l = e.code.slice(3).toLowerCase();
+        return e.shiftKey ? l.toUpperCase() : l;
+      }
+      if (e.code === 'Space') return ' ';
+      if (e.code.startsWith('Digit')) return e.code.slice(5);
+      return null;
+    };
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (!e.ctrlKey || !e.altKey || e.metaKey) return;
+      const el = composerRef.current;
+      if (!el || document.activeElement === el) return;
+      const ch = charFor(e);
+      if (ch === null) return;
+      e.preventDefault();
+      el.focus();
+      setDraft((d) => d + ch);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [setDraft]);
 
   // Cleaner-sidebar width — draggable, persisted in app-settings so it survives
   // reloads. Clamped so it can't swallow the document or shrink to nothing.
@@ -215,6 +243,7 @@ export function TextSoapTranscript({
             {composerLine}
           </span>
           <textarea
+            ref={composerRef}
             className="textsoap-composer-input flex-1 resize-none bg-transparent outline-none text-[12.5px] leading-relaxed"
             style={{ color: 'var(--nim-text)', caretColor: 'var(--nim-primary)', maxHeight: 200, fontFamily: 'inherit' }}
             rows={1}

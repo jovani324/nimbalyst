@@ -978,7 +978,6 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
               maxHeight: 160,
             }}
             rows={1}
-            placeholder="Reply…"
             title="Shift+Enter to send · paste an image to attach"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
