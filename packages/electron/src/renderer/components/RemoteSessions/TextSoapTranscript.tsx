@@ -153,24 +153,20 @@ export function TextSoapTranscript({
               </span>
               <span
                 className="textsoap-paratext flex-1 text-[12.5px]"
-                style={{ color: inkFor(p.kind), whiteSpace: 'pre-wrap', fontStyle: p.kind === 'aside' ? 'italic' : undefined }}
+                style={{
+                  color: inkFor(p.kind),
+                  whiteSpace: 'pre-wrap',
+                  fontStyle: p.kind === 'aside' ? 'italic' : undefined,
+                  cursor: canExpand ? 'pointer' : undefined,
+                }}
+                onClick={canExpand ? () => toggleExpanded(i) : undefined}
+                data-testid={canExpand ? 'textsoap-expand' : undefined}
+                title={canExpand ? (open ? 'Hide the commands that ran' : 'Show the commands that ran') : undefined}
               >
                 {p.kind === 'aside' ? `// ${p.text}` : p.text}
-                {canExpand ? (
-                  <button
-                    className="textsoap-expand align-baseline"
-                    style={{ color: 'var(--nim-primary)', marginLeft: 6, fontStyle: 'normal' }}
-                    onClick={() => toggleExpanded(i)}
-                    data-testid="textsoap-expand"
-                    title={open ? 'Hide the commands that ran' : 'Show the commands that ran'}
-                  >
-                    {open ? '◉' : '◯'}
-                  </button>
-                ) : (
-                  <span className="textsoap-pilcrow" style={{ color: 'var(--nim-primary)', opacity: 0.5, marginLeft: 2 }}>
-                    ¶
-                  </span>
-                )}
+                <span className="textsoap-pilcrow" style={{ color: 'var(--nim-primary)', opacity: 0.5, marginLeft: 2 }}>
+                  ¶
+                </span>
                 {canExpand && open && (
                   <span className="textsoap-tool-detail block mt-1" style={{ fontStyle: 'normal' }}>
                     {p.details!.map((d, di) => (
