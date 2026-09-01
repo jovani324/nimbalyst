@@ -46,6 +46,10 @@ export interface TextSoapTranscriptProps {
   onChoice: (prompt: string) => void;
   /** Redact secret-looking strings (keys, emails) from the document text. */
   redact: boolean;
+  /** Reply summaries, kept in the document as their own paragraphs. */
+  summaries: string[];
+  onSummarize: () => void;
+  summarizing: boolean;
 }
 
 export function TextSoapTranscript({
@@ -66,6 +70,9 @@ export function TextSoapTranscript({
   choices,
   onChoice,
   redact,
+  summaries,
+  onSummarize,
+  summarizing,
 }: TextSoapTranscriptProps) {
   const paragraphs = useMemo(() => {
     const paras = toParagraphs(messages);
@@ -158,7 +165,7 @@ export function TextSoapTranscript({
       return next;
     });
 
-  const composerLine = paragraphs.length + 1;
+  const composerLine = paragraphs.length + summaries.length + 1;
   // Your own prompts sit quietest — dimmer than the agent's reply, so a passing eye
   // lands on the answer, not the question. The agent's prose keeps its muted ink
   // (unchanged, the way it was); tool asides match it.
@@ -240,6 +247,27 @@ export function TextSoapTranscript({
             </div>
           );
         })}
+
+        {/* Reply summaries live right in the document, as their own paragraphs. */}
+        {summaries.map((s, si) => (
+          <div key={`sum-${si}`} className="textsoap-summary-para flex items-start px-1 leading-relaxed">
+            <span
+              className="textsoap-linenum shrink-0 text-right pr-3 select-none text-[11px] pt-[2px]"
+              style={{ width: 40, color: 'var(--nim-text-muted)', opacity: 0.55 }}
+            >
+              {paragraphs.length + si + 1}
+            </span>
+            <span
+              className="textsoap-paratext flex-1 text-[12.5px]"
+              style={{ color: 'var(--nim-text)', whiteSpace: 'pre-wrap' }}
+            >
+              {s}
+              <span className="textsoap-pilcrow" style={{ color: 'var(--nim-primary)', opacity: 0.5, marginLeft: 2 }}>
+                ¶
+              </span>
+            </span>
+          </div>
+        ))}
 
         {/* Composer — the live last paragraph */}
         <div className="textsoap-composer-para flex items-start px-1">
@@ -345,6 +373,16 @@ export function TextSoapTranscript({
           title="Rewrite the draft into terse shorthand — does not send"
         >
           {compacting ? 'Condensing…' : 'Condense Draft'}
+        </button>
+        <button
+          className="textsoap-distill text-left px-4 py-1.5 text-[13px]"
+          style={{ color: 'var(--nim-text)' }}
+          onClick={onSummarize}
+          disabled={summarizing}
+          data-testid="textsoap-distill"
+          title="Distill the last reply into the document (⌃⇧S)"
+        >
+          {summarizing ? 'Distilling…' : 'Distill Reply'}
         </button>
 
         {choices.map((c, i) => (

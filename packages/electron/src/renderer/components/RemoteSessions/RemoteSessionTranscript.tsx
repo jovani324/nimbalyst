@@ -154,6 +154,8 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   const [summarizing, setSummarizing] = useState(false);
   // A reply summary waiting to be dropped into a fresh note by the Notes panel.
   const [pendingNote, setPendingNote] = useState<string | null>(null);
+  // In TextSoap the summary stays in the document instead of a separate panel.
+  const [docSummaries, setDocSummaries] = useState<string[]>([]);
   const notes = useControllerNotes();
   // The host's last reply, offered to the notes pane for a one-click clip.
   const noteClipText = useMemo(() => {
@@ -486,17 +488,39 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
     try {
       const result = await api.summarizeReply(sessionId, target.id, target.text);
       if (result?.success) {
-        setPendingNote(result.summary);
-        setShowNotes(true);
+        if (isTextSoap(appearance.theme)) {
+          // One-surface: the summary joins the document; reply on the composer line.
+          setDocSummaries((s) => [...s, result.summary]);
+        } else {
+          // Pre-seed the reply separator so you just type below it and /send.
+          setPendingNote(`${result.summary}\n\n---\n`);
+          setShowNotes(true);
+        }
       } else {
-        setActionError(result?.error ?? 'Could not summarize the reply.');
+        setActionError(result?.error ?? 'Could not distill that reply.');
       }
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Could not summarize the reply.');
+      setActionError(err instanceof Error ? err.message : 'Could not distill that reply.');
     } finally {
       setSummarizing(false);
     }
   };
+
+  // Ctrl+Shift+S distills the last reply with nothing clicked — the discreet path.
+  // (Ctrl+Alt is already the TextSoap composer chord, so this avoids that combo.)
+  const summarizeRef = useRef(handleSummarize);
+  summarizeRef.current = handleSummarize;
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (!isActive) return;
+      if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.code === 'KeyS') {
+        e.preventDefault();
+        void summarizeRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [isActive]);
 
   const handleComposerKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     // Shift+Enter sends; plain Enter inserts a newline.
@@ -756,8 +780,8 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
             onClick={() => void handleSummarize()}
             disabled={viewMessages.length === 0 || summarizing}
             data-testid="remote-session-summarize-button"
-            title="Summarize the last reply into a new note"
-            aria-label="Summarize the last reply into a new note"
+            title="Distill to a note (⌃⇧S)"
+            aria-label="Distill to a note"
           >
             {summarizing ? '…' : '≣'}
           </button>
@@ -960,6 +984,9 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
           choices={digest && !isExecuting ? digest.digest.choices : []}
           onChoice={(prompt) => void sendText(prompt)}
           redact={privacy.redactSecrets}
+          summaries={docSummaries}
+          onSummarize={() => void handleSummarize()}
+          summarizing={summarizing}
         />
       )}
 

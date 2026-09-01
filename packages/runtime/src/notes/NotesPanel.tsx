@@ -69,13 +69,24 @@ export function NotesPanel({
   const [state, dispatch] = useReducer(notesReducer, initialState ?? emptyNotesState);
   const [showHelp, setShowHelp] = useState(false);
 
-  // A note pushed in from outside (a summary) becomes a fresh tab with that body.
+  const bodyRef = useRef<HTMLTextAreaElement>(null);
+
+  // A note pushed in from outside (a summary) becomes a fresh tab with that body,
+  // caret dropped at the end so you can type your reply below the --- straight away.
   useEffect(() => {
     if (!incomingNote) return;
     const id = newId();
     dispatch({ type: 'add', id, now: Date.now() });
     dispatch({ type: 'edit', id, body: incomingNote, now: Date.now() });
     onIncomingNoteConsumed?.();
+    requestAnimationFrame(() => {
+      const ta = bodyRef.current;
+      if (ta) {
+        ta.focus();
+        const end = ta.value.length;
+        ta.setSelectionRange(end, end);
+      }
+    });
   }, [incomingNote, onIncomingNoteConsumed]);
 
   // One debounced writer. Skips the first render so mounting is never a
@@ -252,6 +263,7 @@ export function NotesPanel({
       </div>
 
       <textarea
+        ref={bodyRef}
         className="nimba-notes-body"
         value={note.body}
         spellCheck={false}
