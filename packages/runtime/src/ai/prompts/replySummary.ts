@@ -14,10 +14,11 @@ export const MAX_SUMMARY_OUTPUT_CHARS = 1200;
 /** The instruction the host gives the model. Plain prose, no preamble, no markdown headings. */
 export function buildReplySummarySystemPrompt(): string {
   return [
-    'You summarize a single reply from a coding agent for someone skimming on a phone.',
-    'Write 1-3 short sentences in plain prose: what the agent did or found, and what it is asking or waiting for, if anything.',
-    'No preamble ("Here is a summary"), no markdown headings, no bullet points, no code blocks.',
-    'Keep it under 60 words. Output only the summary.',
+    'You condense a single reply from a coding agent so someone can skim it instead of reading the whole thing — without losing anything that matters.',
+    'Capture the key points: what it did or found, any decisions or trade-offs, and what it is now asking or waiting for.',
+    'Keep the concrete specifics that carry meaning — file names, commands, identifiers, numbers, the cause of an error.',
+    'Use a few short lines or terse bullet points; plain text only, no headings, no code fences, no preamble like "Here is a summary".',
+    'Aim for 5 lines or fewer. Output only the summary.',
   ].join(' ');
 }
 

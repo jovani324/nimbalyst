@@ -519,18 +519,16 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   // A few keystroke-driven moves, so the discreet workflow needs no visible AI
   // chrome. Ctrl+Shift is used throughout (Ctrl+Alt is the TextSoap composer chord).
   //   S — distill the last reply       H — hide (instant mask)
-  //   1/2/3 — send a quick reply
+  //   1/2/3 — drop a quick reply into the composer to edit, then send yourself
   const QUICK_REPLIES = ['Proceed.', 'Commit and push.', 'Explain in more detail.'];
   const quickReply = (i: number) => {
     const text = QUICK_REPLIES[i];
-    if (text) void sendText(text);
+    if (text) setDraft((d) => (d.trim() ? `${d.trimEnd()} ${text}` : text));
   };
   const summarizeRef = useRef(handleSummarize);
   summarizeRef.current = handleSummarize;
   const quickReplyRef = useRef(quickReply);
   quickReplyRef.current = quickReply;
-  // Answer a pending tool-permission prompt without the widget on screen.
-  const answerPermRef = useRef<(decision: 'allow' | 'deny') => void>(() => {});
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (!isActive || !e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return;
@@ -542,14 +540,6 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
         case 'KeyH':
           e.preventDefault();
           setMasked(true);
-          break;
-        case 'KeyY':
-          e.preventDefault();
-          answerPermRef.current('allow');
-          break;
-        case 'KeyN':
-          e.preventDefault();
-          answerPermRef.current('deny');
           break;
         case 'Digit1':
           e.preventDefault();
@@ -626,22 +616,6 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
       setPromptSubmitting(false);
     }
   };
-
-  // Discreet approve/deny for a pending tool-permission prompt (Ctrl+Shift+Y/N).
-  const answerPermission = (decision: 'allow' | 'deny') => {
-    if (!pendingPrompt || pendingPrompt.promptType !== 'permission_request') return;
-    const requestId = (pendingPrompt.content as { requestId?: string }).requestId;
-    if (!requestId) return;
-    void handlePromptResponse({
-      type: 'permission_response',
-      requestId,
-      decision,
-      scope: 'once',
-      respondedAt: Date.now(),
-      respondedBy: 'mobile',
-    });
-  };
-  answerPermRef.current = answerPermission;
 
   const handleCommitResponse = async (proposalId: string, response: CommitProposalResponse) => {
     const api = window.electronAPI?.remoteSessions;
