@@ -35,6 +35,8 @@ export interface ControllerPrivacySettings {
   redactSecrets: boolean;
   /** Show session titles as plausible file paths; the real title on hover. */
   disguiseTitles: boolean;
+  /** Distill each finished reply into a note/document automatically. */
+  autoDistill: boolean;
 }
 
 export const DEFAULT_PRIVACY: ControllerPrivacySettings = {
@@ -42,6 +44,7 @@ export const DEFAULT_PRIVACY: ControllerPrivacySettings = {
   revealMode: 'uniform',
   redactSecrets: true,
   disguiseTitles: false,
+  autoDistill: false,
 };
 
 /**
@@ -61,6 +64,7 @@ export function normalizeControllerPrivacy(
     revealMode,
     redactSecrets: stored.redactSecrets ?? DEFAULT_PRIVACY.redactSecrets,
     disguiseTitles: stored.disguiseTitles ?? DEFAULT_PRIVACY.disguiseTitles,
+    autoDistill: stored.autoDistill ?? DEFAULT_PRIVACY.autoDistill,
   };
 }
 

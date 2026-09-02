@@ -489,7 +489,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
 
   // Ask the host to summarize the last reply, drop it into a fresh note, and open
   // Notes — where the summary can be sent back to the composer to answer from.
-  const handleSummarize = async () => {
+  const handleSummarize = async (opts?: { silent?: boolean }) => {
     const api = window.electronAPI?.remoteSessions;
     const target = pickDigestTarget(viewMessages, isExecuting);
     if (!api?.summarizeReply || !target || summarizing) return;
@@ -504,7 +504,7 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
         } else {
           // Pre-seed the reply separator so you just type below it and /send.
           setPendingNote(`${result.summary}\n\n---\n`);
-          setShowNotes(true);
+          if (!opts?.silent) setShowNotes(true);
         }
       } else {
         setActionError(result?.error ?? 'Could not distill that reply.');
@@ -529,6 +529,8 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   summarizeRef.current = handleSummarize;
   const quickReplyRef = useRef(quickReply);
   quickReplyRef.current = quickReply;
+  // Answer a pending tool-permission prompt without the widget on screen.
+  const answerPermRef = useRef<(decision: 'allow' | 'deny') => void>(() => {});
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (!isActive || !e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return;
@@ -540,6 +542,14 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
         case 'KeyH':
           e.preventDefault();
           setMasked(true);
+          break;
+        case 'KeyY':
+          e.preventDefault();
+          answerPermRef.current('allow');
+          break;
+        case 'KeyN':
+          e.preventDefault();
+          answerPermRef.current('deny');
           break;
         case 'Digit1':
           e.preventDefault();
@@ -558,6 +568,17 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
   }, [isActive]);
+
+  // Auto-distill: when a reply finishes and the toggle is on, quietly file its
+  // summary (no panel steal), once per reply.
+  const autoDistilledRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!privacy.autoDistill) return;
+    const target = pickDigestTarget(viewMessages, isExecuting);
+    if (!target || autoDistilledRef.current === target.id) return;
+    autoDistilledRef.current = target.id;
+    void summarizeRef.current({ silent: true });
+  }, [privacy.autoDistill, viewMessages, isExecuting]);
 
   const handleComposerKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     // Shift+Enter sends; plain Enter inserts a newline.
@@ -605,6 +626,22 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
       setPromptSubmitting(false);
     }
   };
+
+  // Discreet approve/deny for a pending tool-permission prompt (Ctrl+Shift+Y/N).
+  const answerPermission = (decision: 'allow' | 'deny') => {
+    if (!pendingPrompt || pendingPrompt.promptType !== 'permission_request') return;
+    const requestId = (pendingPrompt.content as { requestId?: string }).requestId;
+    if (!requestId) return;
+    void handlePromptResponse({
+      type: 'permission_response',
+      requestId,
+      decision,
+      scope: 'once',
+      respondedAt: Date.now(),
+      respondedBy: 'mobile',
+    });
+  };
+  answerPermRef.current = answerPermission;
 
   const handleCommitResponse = async (proposalId: string, response: CommitProposalResponse) => {
     const api = window.electronAPI?.remoteSessions;
@@ -1333,11 +1370,12 @@ function ControllerSettingsMenu({
   onClose: () => void;
 }) {
   // Only the boolean settings render as checkboxes; revealMode has its own picker.
-  type BooleanPrivacyKey = 'autoBlurOnUnfocus' | 'redactSecrets' | 'disguiseTitles';
+  type BooleanPrivacyKey = 'autoBlurOnUnfocus' | 'redactSecrets' | 'disguiseTitles' | 'autoDistill';
   const allRows: Array<{ key: BooleanPrivacyKey; label: string }> = [
     { key: 'autoBlurOnUnfocus', label: 'Auto-hide when idle / unfocused' },
     { key: 'redactSecrets', label: 'Redact secrets (keys, emails…)' },
     { key: 'disguiseTitles', label: 'Titles as file paths' },
+    { key: 'autoDistill', label: 'Distill each reply automatically' },
   ];
   // TextSoap and Buffer are their own disguise, so the reveal modes and idle
   // auto-hide do nothing there — hide them. Redact + title-disguise stay.
