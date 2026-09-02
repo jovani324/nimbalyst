@@ -30,11 +30,17 @@ import { disguisedCode, disguisedName } from './controllerDisguise';
 import {
   applyChoiceDirective,
   composeUtterance,
+  nextSpeechLanguage,
   nextSpeechMode,
+  OPENAI_SPEECH_VOICES,
   pickDigestTarget,
   shouldSpeak,
+  SPEECH_ENGINE_LABELS,
+  SPEECH_ENGINES,
+  SPEECH_LANGUAGE_SHORT,
   SPEECH_MODE_LABELS,
   useControllerSpeech,
+  type SpeechEngine,
 } from './controllerSpeech';
 import type { SpeechDigest } from '@nimbalyst/runtime/ai/prompts/speechDigest';
 import { RemoteTerminalPane } from './RemoteTerminalPane';
@@ -380,11 +386,15 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
   useEffect(() => {
     const api = window.electronAPI?.remoteSessions;
     const target = pickDigestTarget(viewMessages, isExecuting);
-    if (!api?.speechDigest || !target || digestedId.current === target.id) return;
-    digestedId.current = target.id;
+    if (!api?.speechDigest || !target) return;
+    // Key the guard by language too, so switching to Egyptian Arabic re-digests
+    // the same reply in the new language instead of reusing the English one.
+    const digestKey = `${target.id}:${speech.language}`;
+    if (digestedId.current === digestKey) return;
+    digestedId.current = digestKey;
     let live = true;
     void api
-      .speechDigest(sessionId, target.id, target.text)
+      .speechDigest(sessionId, target.id, target.text, speech.language)
       .then((result) => {
         if (!live || !result.success) return;
         setDigest({ messageId: result.messageId, digest: result.digest });
@@ -506,16 +516,43 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
     }
   };
 
-  // Ctrl+Shift+S distills the last reply with nothing clicked — the discreet path.
-  // (Ctrl+Alt is already the TextSoap composer chord, so this avoids that combo.)
+  // A few keystroke-driven moves, so the discreet workflow needs no visible AI
+  // chrome. Ctrl+Shift is used throughout (Ctrl+Alt is the TextSoap composer chord).
+  //   S — distill the last reply       H — hide (instant mask)
+  //   1/2/3 — send a quick reply
+  const QUICK_REPLIES = ['Proceed.', 'Commit and push.', 'Explain in more detail.'];
+  const quickReply = (i: number) => {
+    const text = QUICK_REPLIES[i];
+    if (text) void sendText(text);
+  };
   const summarizeRef = useRef(handleSummarize);
   summarizeRef.current = handleSummarize;
+  const quickReplyRef = useRef(quickReply);
+  quickReplyRef.current = quickReply;
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
-      if (!isActive) return;
-      if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.code === 'KeyS') {
-        e.preventDefault();
-        void summarizeRef.current();
+      if (!isActive || !e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return;
+      switch (e.code) {
+        case 'KeyS':
+          e.preventDefault();
+          void summarizeRef.current();
+          break;
+        case 'KeyH':
+          e.preventDefault();
+          setMasked(true);
+          break;
+        case 'Digit1':
+          e.preventDefault();
+          quickReplyRef.current(0);
+          break;
+        case 'Digit2':
+          e.preventDefault();
+          quickReplyRef.current(1);
+          break;
+        case 'Digit3':
+          e.preventDefault();
+          quickReplyRef.current(2);
+          break;
       }
     };
     window.addEventListener('keydown', onKey, true);
@@ -1127,6 +1164,66 @@ export function RemoteSessionTranscript({ sessionId, isActive }: RemoteSessionTr
           >
             {SPEECH_MODE_LABELS[speech.mode]}
           </button>
+          {speech.mode !== 'off' && (
+            <>
+              <select
+                className="remote-session-speech-engine text-[11px] px-1 py-1 rounded shrink-0"
+                style={{
+                  background: 'var(--nim-bg-secondary)',
+                  color: speech.engine === 'local' ? 'var(--nim-text-muted)' : 'var(--nim-primary)',
+                  border: '1px solid var(--nim-border)',
+                }}
+                value={speech.engine}
+                onChange={(e) => {
+                  speech.hush();
+                  speech.setEngine(e.target.value as SpeechEngine);
+                }}
+                data-testid="remote-session-speech-engine"
+                title="Which voice reads replies. Local is offline; Edge neural is free and speaks Egyptian Arabic; OpenAI needs a key."
+              >
+                {SPEECH_ENGINES.map((eng) => (
+                  <option key={eng} value={eng}>
+                    {SPEECH_ENGINE_LABELS[eng]}
+                  </option>
+                ))}
+              </select>
+              <button
+                className="remote-session-speech-language text-[11px] px-1.5 py-1 rounded shrink-0"
+                style={{ color: speech.language === 'en' ? 'var(--nim-text-muted)' : 'var(--nim-primary)' }}
+                onClick={() => {
+                  speech.hush();
+                  speech.setLanguage(nextSpeechLanguage(speech.language));
+                }}
+                data-testid="remote-session-speech-language"
+                title="The language replies are spoken in. Cycles English and Egyptian Arabic."
+              >
+                {SPEECH_LANGUAGE_SHORT[speech.language]}
+              </button>
+              {speech.engine === 'openai' && (
+                <select
+                  className="remote-session-speech-voice text-[11px] px-1 py-1 rounded shrink-0"
+                  style={{
+                    background: 'var(--nim-bg-secondary)',
+                    color: 'var(--nim-text)',
+                    border: '1px solid var(--nim-border)',
+                  }}
+                  value={speech.voice}
+                  onChange={(e) => {
+                    speech.hush();
+                    speech.setVoice(e.target.value as (typeof OPENAI_SPEECH_VOICES)[number]);
+                  }}
+                  data-testid="remote-session-speech-voice"
+                  title="The AI voice used to read replies."
+                >
+                  {OPENAI_SPEECH_VOICES.map((v) => (
+                    <option key={v} value={v}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </>
+          )}
           <button
             className="remote-session-compact-button text-[11px] px-1.5 py-1 rounded shrink-0"
             style={{ color: 'var(--nim-text-muted)' }}

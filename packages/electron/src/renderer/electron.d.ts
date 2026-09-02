@@ -791,6 +791,7 @@ interface ElectronAPI {
       sessionId: string,
       messageId: string,
       text: string,
+      language?: string,
     ) => Promise<import('./types/remoteSessions').RemoteDigestResponse>;
     summarizeReply: (
       sessionId: string,
@@ -799,6 +800,7 @@ interface ElectronAPI {
     ) => Promise<import('./types/remoteSessions').RemoteSummarizeResponse>;
     speak: (
       text: string,
+      options?: { engine?: string; language?: string; voice?: string },
     ) => Promise<{ success: boolean; fallback?: boolean; error?: string }>;
     stopSpeak: () => Promise<{ success: boolean }>;
     pauseSpeak: () => Promise<{ success: boolean }>;

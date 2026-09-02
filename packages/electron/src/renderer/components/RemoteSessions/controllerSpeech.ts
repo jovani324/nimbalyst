@@ -10,7 +10,13 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/transcript';
-import { spokenChoices, type SpeechDigest } from '@nimbalyst/runtime/ai/prompts/speechDigest';
+import {
+  isSpeechLanguage,
+  spokenChoices,
+  SPEECH_LANGUAGES,
+  type SpeechDigest,
+  type SpeechLanguage,
+} from '@nimbalyst/runtime/ai/prompts/speechDigest';
 
 export { applyChoiceDirective } from '@nimbalyst/runtime/ai/prompts/replyStyle';
 
@@ -31,6 +37,77 @@ export function isSpeechMode(value: unknown): value is SpeechMode {
 
 export function nextSpeechMode(mode: SpeechMode): SpeechMode {
   return SPEECH_MODES[(SPEECH_MODES.indexOf(mode) + 1) % SPEECH_MODES.length];
+}
+
+/**
+ * Which voice reads the digest, and how much it costs:
+ *   'local'  -- offline piper on this machine, browser synth fallback. Free.
+ *   'edge'   -- Microsoft Edge's neural voices; human, real Egyptian Arabic,
+ *               no API key. Free (an unofficial endpoint, so best-effort).
+ *   'openai' -- OpenAI's voice; needs a configured OpenAI key. Paid.
+ * 'local' is the default, so this stays opt-in; each cloud engine falls back to
+ * the browser voice on any failure.
+ */
+export type SpeechEngine = 'local' | 'edge' | 'openai';
+
+export const SPEECH_ENGINES: SpeechEngine[] = ['local', 'edge', 'openai'];
+
+export const SPEECH_ENGINE_LABELS: Record<SpeechEngine, string> = {
+  local: 'Local (free)',
+  edge: 'Edge neural (free)',
+  openai: 'OpenAI (paid)',
+};
+
+export function isSpeechEngine(value: unknown): value is SpeechEngine {
+  return typeof value === 'string' && (SPEECH_ENGINES as string[]).includes(value);
+}
+
+export function nextSpeechEngine(engine: SpeechEngine): SpeechEngine {
+  return SPEECH_ENGINES[(SPEECH_ENGINES.indexOf(engine) + 1) % SPEECH_ENGINES.length];
+}
+
+export type { SpeechLanguage } from '@nimbalyst/runtime/ai/prompts/speechDigest';
+
+export { SPEECH_LANGUAGES } from '@nimbalyst/runtime/ai/prompts/speechDigest';
+
+export const SPEECH_LANGUAGE_LABELS: Record<SpeechLanguage, string> = {
+  en: 'English',
+  'ar-EG': 'Egyptian Arabic',
+};
+
+/** The compact label shown on the cycling button. */
+export const SPEECH_LANGUAGE_SHORT: Record<SpeechLanguage, string> = {
+  en: 'EN',
+  'ar-EG': 'AR',
+};
+
+export function nextSpeechLanguage(language: SpeechLanguage): SpeechLanguage {
+  return SPEECH_LANGUAGES[(SPEECH_LANGUAGES.indexOf(language) + 1) % SPEECH_LANGUAGES.length];
+}
+
+/** BCP-47 tag for the browser speechSynthesis fallback. */
+export function synthLangForLanguage(language: SpeechLanguage): string {
+  return language === 'ar-EG' ? 'ar-EG' : 'en-US';
+}
+
+/** The OpenAI TTS voices offered in the picker. Keep in sync with OpenAiSpeechService. */
+export const OPENAI_SPEECH_VOICES = [
+  'alloy',
+  'ash',
+  'ballad',
+  'coral',
+  'echo',
+  'fable',
+  'nova',
+  'onyx',
+  'sage',
+  'shimmer',
+] as const;
+export type OpenAiSpeechVoice = (typeof OPENAI_SPEECH_VOICES)[number];
+export const DEFAULT_OPENAI_SPEECH_VOICE: OpenAiSpeechVoice = 'alloy';
+
+export function isOpenAiSpeechVoice(value: unknown): value is OpenAiSpeechVoice {
+  return typeof value === 'string' && (OPENAI_SPEECH_VOICES as readonly string[]).includes(value);
 }
 
 /**
@@ -65,6 +142,9 @@ export function composeUtterance(digest: SpeechDigest): string {
 }
 
 const KEY = 'controllerSpeechMode';
+const ENGINE_KEY = 'controllerSpeechEngine';
+const LANGUAGE_KEY = 'controllerSpeechLanguage';
+const VOICE_KEY = 'controllerSpeechVoice';
 
 /**
  * Persisted mode plus the player. `speak` replaces whatever is playing — one
@@ -75,6 +155,12 @@ const KEY = 'controllerSpeechMode';
 export function useControllerSpeech(): {
   mode: SpeechMode;
   setMode: (mode: SpeechMode) => void;
+  engine: SpeechEngine;
+  setEngine: (engine: SpeechEngine) => void;
+  language: SpeechLanguage;
+  setLanguage: (language: SpeechLanguage) => void;
+  voice: OpenAiSpeechVoice;
+  setVoice: (voice: OpenAiSpeechVoice) => void;
   speak: (text: string) => void;
   chime: () => void;
   hush: () => void;
@@ -85,6 +171,17 @@ export function useControllerSpeech(): {
   resume: () => void;
 } {
   const [mode, setModeState] = useState<SpeechMode>('off');
+  const [engine, setEngineState] = useState<SpeechEngine>('local');
+  const [language, setLanguageState] = useState<SpeechLanguage>('en');
+  const [voice, setVoiceState] = useState<OpenAiSpeechVoice>(DEFAULT_OPENAI_SPEECH_VOICE);
+  // Read at speak time so `speak` stays stable (the transcript keys its digest
+  // effect on it) while still sending the latest engine/language/voice.
+  const engineRef = useRef(engine);
+  engineRef.current = engine;
+  const languageRef = useRef(language);
+  languageRef.current = language;
+  const voiceRef = useRef(voice);
+  voiceRef.current = voice;
   const audioContext = useRef<AudioContext | null>(null);
   const [isSpeaking, setSpeaking] = useState(false);
   const [paused, setPaused] = useState(false);
@@ -96,11 +193,22 @@ export function useControllerSpeech(): {
   useEffect(() => {
     let live = true;
     void (async () => {
+      const invoke = window.electronAPI?.invoke;
+      if (!invoke) return;
       try {
-        const stored = await window.electronAPI?.invoke?.('app-settings:get', KEY);
-        if (live && isSpeechMode(stored)) setModeState(stored);
+        const [storedMode, storedEngine, storedLanguage, storedVoice] = await Promise.all([
+          invoke('app-settings:get', KEY),
+          invoke('app-settings:get', ENGINE_KEY),
+          invoke('app-settings:get', LANGUAGE_KEY),
+          invoke('app-settings:get', VOICE_KEY),
+        ]);
+        if (!live) return;
+        if (isSpeechMode(storedMode)) setModeState(storedMode);
+        if (isSpeechEngine(storedEngine)) setEngineState(storedEngine);
+        if (isSpeechLanguage(storedLanguage)) setLanguageState(storedLanguage);
+        if (isOpenAiSpeechVoice(storedVoice)) setVoiceState(storedVoice);
       } catch {
-        /* the in-memory default is a fine answer */
+        /* the in-memory defaults are a fine answer */
       }
     })();
     return () => {
@@ -111,6 +219,27 @@ export function useControllerSpeech(): {
   const setMode = useCallback((next: SpeechMode) => {
     setModeState(next);
     void window.electronAPI?.invoke?.('app-settings:set', KEY, next)?.catch?.(() => {
+      /* non-fatal */
+    });
+  }, []);
+
+  const setEngine = useCallback((next: SpeechEngine) => {
+    setEngineState(next);
+    void window.electronAPI?.invoke?.('app-settings:set', ENGINE_KEY, next)?.catch?.(() => {
+      /* non-fatal */
+    });
+  }, []);
+
+  const setLanguage = useCallback((next: SpeechLanguage) => {
+    setLanguageState(next);
+    void window.electronAPI?.invoke?.('app-settings:set', LANGUAGE_KEY, next)?.catch?.(() => {
+      /* non-fatal */
+    });
+  }, []);
+
+  const setVoice = useCallback((next: OpenAiSpeechVoice) => {
+    setVoiceState(next);
+    void window.electronAPI?.invoke?.('app-settings:set', VOICE_KEY, next)?.catch?.(() => {
       /* non-fatal */
     });
   }, []);
@@ -139,6 +268,17 @@ export function useControllerSpeech(): {
     }
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 1.05;
+    // Steer the fallback voice to the chosen language so Egyptian Arabic digests
+    // are not read aloud by an English voice.
+    const bcp47 = synthLangForLanguage(languageRef.current);
+    utterance.lang = bcp47;
+    try {
+      const prefix = bcp47.toLowerCase().split('-')[0];
+      const match = window.speechSynthesis?.getVoices?.().find((v) => v.lang?.toLowerCase().startsWith(prefix));
+      if (match) utterance.voice = match;
+    } catch {
+      /* no voice list here; the lang hint still steers the default */
+    }
     utterance.onend = () => {
       if (gen === speakGen.current) {
         setSpeaking(false);
@@ -163,7 +303,11 @@ export function useControllerSpeech(): {
       const api = window.electronAPI?.remoteSessions;
       if (api?.speak) {
         void api
-          .speak(trimmed)
+          .speak(trimmed, {
+            engine: engineRef.current,
+            language: languageRef.current,
+            voice: voiceRef.current,
+          })
           .then((result) => {
             if (gen !== speakGen.current) return; // superseded or stopped
             if (!result?.success && result?.fallback) {
@@ -245,7 +389,41 @@ export function useControllerSpeech(): {
 
   // Stable identity: the component keys effects on this object.
   return useMemo(
-    () => ({ mode, setMode, speak, chime, hush, isSpeaking, paused, stop, pause, resume }),
-    [mode, setMode, speak, chime, hush, isSpeaking, paused, stop, pause, resume]
+    () => ({
+      mode,
+      setMode,
+      engine,
+      setEngine,
+      language,
+      setLanguage,
+      voice,
+      setVoice,
+      speak,
+      chime,
+      hush,
+      isSpeaking,
+      paused,
+      stop,
+      pause,
+      resume,
+    }),
+    [
+      mode,
+      setMode,
+      engine,
+      setEngine,
+      language,
+      setLanguage,
+      voice,
+      setVoice,
+      speak,
+      chime,
+      hush,
+      isSpeaking,
+      paused,
+      stop,
+      pause,
+      resume,
+    ]
   );
 }

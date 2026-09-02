@@ -16,10 +16,12 @@ import { existsSync } from 'fs';
 import os from 'os';
 import {
   buildSpeechDigestSystemPrompt,
+  isSpeechLanguage,
   parseSpeechDigest,
   SPEECH_DIGEST_SCHEMA,
   toSpeakable,
   type SpeechDigest,
+  type SpeechLanguage,
 } from '@nimbalyst/runtime/ai/prompts/speechDigest';
 import { getPersonalDocSyncConfig, getSyncProvider } from './SyncManager';
 import { resolveSessionCwd } from './RemoteTerminalService';
@@ -36,12 +38,15 @@ export const DIGEST_TIMEOUT_MS = 90_000;
 export const SPEECH_DIGEST_MODEL = 'haiku';
 const CACHE_LIMIT = 200;
 
-const SHARED_ARGS = ['-p', '--append-system-prompt', buildSpeechDigestSystemPrompt()];
+/** The system prompt is language-specific, so the args are built per request. */
+function sharedArgs(language: SpeechLanguage): string[] {
+  return ['-p', '--append-system-prompt', buildSpeechDigestSystemPrompt(language)];
+}
 
 /** Full flags: no settings, no tools, schema-enforced JSON, cheap model. */
-export function buildDigestArgs(): string[] {
+export function buildDigestArgs(language: SpeechLanguage = 'en'): string[] {
   return [
-    ...SHARED_ARGS,
+    ...sharedArgs(language),
     '--setting-sources',
     '',
     '--tools',
@@ -54,13 +59,13 @@ export function buildDigestArgs(): string[] {
 }
 
 /** What an older CLI can run: the parser copes with prose around the JSON. */
-export function buildLegacyDigestArgs(): string[] {
-  return [...SHARED_ARGS, '--model', SPEECH_DIGEST_MODEL];
+export function buildLegacyDigestArgs(language: SpeechLanguage = 'en'): string[] {
+  return [...sharedArgs(language), '--model', SPEECH_DIGEST_MODEL];
 }
 
 /** Last rung: no model pin either. */
-export function buildBareDigestArgs(): string[] {
-  return [...SHARED_ARGS];
+export function buildBareDigestArgs(language: SpeechLanguage = 'en'): string[] {
+  return [...sharedArgs(language)];
 }
 
 export function isUnknownOptionError(stderr: string): boolean {
@@ -76,6 +81,8 @@ export interface RunDigestOptions {
   executable?: string;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  /** The language to speak the digest in. Defaults to English. */
+  language?: SpeechLanguage;
 }
 
 function firstMeaningfulLine(text: string): string {
@@ -96,10 +103,11 @@ export async function runDigest(text: string, options: RunDigestOptions): Promis
     options.executable ??
     resolveClaudeExecutablePath({ homedir: os.homedir(), pathExists: existsSync, enhancedPath: getEnhancedPath() });
 
+  const language = options.language ?? 'en';
   const ladder: Array<{ args: string[]; retryOn: (stderr: string) => boolean }> = [
-    { args: buildDigestArgs(), retryOn: (e) => isUnknownOptionError(e) || isUnknownModelError(e) },
-    { args: buildLegacyDigestArgs(), retryOn: isUnknownModelError },
-    { args: buildBareDigestArgs(), retryOn: () => false },
+    { args: buildDigestArgs(language), retryOn: (e) => isUnknownOptionError(e) || isUnknownModelError(e) },
+    { args: buildLegacyDigestArgs(language), retryOn: isUnknownModelError },
+    { args: buildBareDigestArgs(language), retryOn: () => false },
   ];
 
   let output = '';
@@ -243,7 +251,13 @@ async function send(sessionId: string, type: string, payload: Record<string, unk
   }
 }
 
-async function digestForDevice(sessionId: string, requestId: string, messageId: string, text: string): Promise<void> {
+async function digestForDevice(
+  sessionId: string,
+  requestId: string,
+  messageId: string,
+  text: string,
+  language: SpeechLanguage,
+): Promise<void> {
   const key = getPersonalDocSyncConfig()?.encryptionKeyRaw;
   if (!key) {
     await send(sessionId, 'speech_digest_error', { requestId, messageId, error: 'The host has no encryption key.' });
@@ -253,7 +267,9 @@ async function digestForDevice(sessionId: string, requestId: string, messageId: 
   // Namespace the cache by session: message ids are per-session (m.id ?? index),
   // so two sessions share id "3" and an un-namespaced key hands one session the
   // other's digest -- the reply you hear then belongs to a different session.
-  const cacheKey = `${sessionId}:${messageId}`;
+  // The language is part of the key too: the same reply spoken in English and in
+  // Arabic are different digests and must not overwrite each other.
+  const cacheKey = `${sessionId}:${messageId}:${language}`;
   const cached = cache.get(cacheKey);
   if (cached) {
     await send(sessionId, 'speech_digested', { requestId, messageId, ...(await encryptDigestPayload(cached, key)) });
@@ -284,7 +300,7 @@ async function digestForDevice(sessionId: string, requestId: string, messageId: 
 
   try {
     const cwd = await resolveSessionCwd(sessionId);
-    const digest = await runDigest(shaped, { cwd });
+    const digest = await runDigest(shaped, { cwd, language });
     remember(cacheKey, digest);
     await send(sessionId, 'speech_digested', { requestId, messageId, ...(await encryptDigestPayload(digest, key)) });
   } catch (err) {
@@ -310,6 +326,15 @@ export function handleRemoteSpeechDigestControl(message: {
   const requestId = String(payload.requestId ?? '');
   if (!requestId) return true;
 
-  void digestForDevice(message.sessionId, requestId, String(payload.messageId ?? ''), String(payload.text ?? ''));
+  // Absent or unknown language falls back to English, so an older controller
+  // that never sends the field keeps working.
+  const language: SpeechLanguage = isSpeechLanguage(payload.language) ? payload.language : 'en';
+  void digestForDevice(
+    message.sessionId,
+    requestId,
+    String(payload.messageId ?? ''),
+    String(payload.text ?? ''),
+    language,
+  );
   return true;
 }

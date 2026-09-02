@@ -6,7 +6,18 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/transcript';
-import { composeUtterance, nextSpeechMode, pickDigestTarget, shouldSpeak, SPEECH_MODES } from '../controllerSpeech';
+import {
+  composeUtterance,
+  nextSpeechEngine,
+  nextSpeechLanguage,
+  nextSpeechMode,
+  pickDigestTarget,
+  shouldSpeak,
+  SPEECH_ENGINES,
+  SPEECH_LANGUAGES,
+  SPEECH_MODES,
+  synthLangForLanguage,
+} from '../controllerSpeech';
 
 const vm = (id: number, type: TranscriptViewMessage['type'], text?: string) =>
   ({ id, sequence: id, createdAt: new Date(0), type, text, subagentId: null }) as TranscriptViewMessage;
@@ -47,5 +58,23 @@ describe('shouldSpeak / composeUtterance', () => {
     let mode = SPEECH_MODES[0];
     for (let i = 0; i < SPEECH_MODES.length; i++) mode = nextSpeechMode(mode);
     expect(mode).toBe(SPEECH_MODES[0]);
+  });
+});
+
+describe('engine, language and voice selection', () => {
+  it('cycles engine and language back to the start', () => {
+    let engine = SPEECH_ENGINES[0];
+    for (let i = 0; i < SPEECH_ENGINES.length; i++) engine = nextSpeechEngine(engine);
+    expect(engine).toBe(SPEECH_ENGINES[0]);
+
+    let language = SPEECH_LANGUAGES[0];
+    for (let i = 0; i < SPEECH_LANGUAGES.length; i++) language = nextSpeechLanguage(language);
+    expect(language).toBe(SPEECH_LANGUAGES[0]);
+  });
+
+  it('maps the speech language to a BCP-47 tag for the browser fallback', () => {
+    expect(synthLangForLanguage('en')).toBe('en-US');
+    // Egyptian Arabic must not fall back to an English voice.
+    expect(synthLangForLanguage('ar-EG')).toBe('ar-EG');
   });
 });

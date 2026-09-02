@@ -672,6 +672,7 @@ export async function requestRemoteSpeechDigest(
   sessionId: string,
   messageId: string,
   text: string,
+  language?: string,
 ): Promise<RemoteDigestResponse> {
   ensureRemoteSubscriptions();
   const requestId = randomUUID();
@@ -687,7 +688,7 @@ export async function requestRemoteSpeechDigest(
     });
   });
 
-  await sendControl({ sessionId, type: 'speech_digest', payload: { requestId, messageId, text } });
+  await sendControl({ sessionId, type: 'speech_digest', payload: { requestId, messageId, text, language } });
   return response;
 }
 

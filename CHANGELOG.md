@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 <!-- New features go here -->
 - Controller mode can paste an image into a reply or a new session's first prompt to send it along, search sessions by title, project, or id, approve the commits an agent proposes, open a shell on the host in the session's own directory, start a session that continues under the one you have open or on a fresh branch, ask for shorter agent replies, compact a long draft prompt down to shorthand before sending it, summarize the last reply into a new note you can answer from, and disguise itself as an open editor — file-path session names and a page of source until you point at the pane — or as a text-cleaning utility (a plain document you type into, controls tucked into the sidebar as cleaners) or a code-editor buffer (your prompts as added lines, replies as comments, the composer as the last line).
-- Controller mode can read the agent's replies aloud — a few spoken sentences on what it did and what it needs, ending with numbered answers you can tap, only when it is waiting on you or for every reply — and asks the agent to end with numbered options so those answers are real ones.
+- Controller mode can read the agent's replies aloud — a few spoken sentences on what it did and what it needs, ending with numbered answers you can tap, only when it is waiting on you or for every reply — now in a choice of natural voices (a free neural voice, or your own OpenAI voice) and in English or Egyptian Arabic, and asks the agent to end with numbered options so those answers are real ones.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

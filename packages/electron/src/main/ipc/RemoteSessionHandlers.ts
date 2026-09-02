@@ -71,6 +71,18 @@ import {
   pausePiperSpeak,
   resumePiperSpeak,
 } from '../services/PiperSpeechService';
+import {
+  openAiSpeak,
+  stopOpenAiSpeak,
+  pauseOpenAiSpeak,
+  resumeOpenAiSpeak,
+} from '../services/OpenAiSpeechService';
+import {
+  edgeSpeak,
+  stopEdgeSpeak,
+  pauseEdgeSpeak,
+  resumeEdgeSpeak,
+} from '../services/EdgeSpeechService';
 
 export function registerRemoteSessionHandlers() {
   safeHandle('remote-sessions:is-controller', () => {
@@ -249,11 +261,11 @@ export function registerRemoteSessionHandlers() {
 
   safeHandle(
     'remote-sessions:speech-digest',
-    async (_event, payload: { sessionId: string; messageId: string; text: string }) => {
+    async (_event, payload: { sessionId: string; messageId: string; text: string; language?: string }) => {
       if (!payload?.sessionId || !payload?.messageId || !payload?.text) {
         throw new Error('remote-sessions:speech-digest requires sessionId, messageId and text');
       }
-      return requestRemoteSpeechDigest(payload.sessionId, payload.messageId, payload.text);
+      return requestRemoteSpeechDigest(payload.sessionId, payload.messageId, payload.text, payload.language);
     },
   );
 
@@ -267,18 +279,45 @@ export function registerRemoteSessionHandlers() {
     },
   );
 
-  // Local neural-voice playback -- the controller reads a digest with piper.
-  // No sessionId: the audio plays on this machine, not over the relay.
-  safeHandle('remote-sessions:speak', async (_event, payload: { text: string }) => {
-    if (!payload?.text) {
-      throw new Error('remote-sessions:speak requires text');
-    }
-    return piperSpeak(payload.text);
-  });
+  // Voice playback -- the controller reads a digest aloud. No sessionId: the
+  // audio plays on this machine, not over the relay. Each cloud engine falls
+  // back to the browser synthesiser (which honours the language) on any failure:
+  //   'edge'   -> free Microsoft neural voices, no key
+  //   'openai' -> paid OpenAI voice, needs a configured key
+  //   else     -> local offline piper neural voice
+  safeHandle(
+    'remote-sessions:speak',
+    async (_event, payload: { text: string; engine?: string; language?: string; voice?: string }) => {
+      if (!payload?.text) {
+        throw new Error('remote-sessions:speak requires text');
+      }
+      if (payload.engine === 'edge') {
+        return edgeSpeak(payload.text, { language: payload.language, voice: payload.voice });
+      }
+      if (payload.engine === 'openai') {
+        return openAiSpeak(payload.text, { voice: payload.voice, language: payload.language });
+      }
+      return piperSpeak(payload.text);
+    },
+  );
 
-  safeHandle('remote-sessions:speak-stop', async () => stopPiperSpeak());
-  safeHandle('remote-sessions:speak-pause', async () => pausePiperSpeak());
-  safeHandle('remote-sessions:speak-resume', async () => resumePiperSpeak());
+  // Only one engine ever plays at a time, so stopping all is safe -- the idle
+  // ones are no-ops -- and it means a Stop lands whichever engine spoke.
+  safeHandle('remote-sessions:speak-stop', async () => {
+    stopEdgeSpeak();
+    stopOpenAiSpeak();
+    return stopPiperSpeak();
+  });
+  safeHandle('remote-sessions:speak-pause', async () => {
+    pauseEdgeSpeak();
+    pauseOpenAiSpeak();
+    return pausePiperSpeak();
+  });
+  safeHandle('remote-sessions:speak-resume', async () => {
+    resumeEdgeSpeak();
+    resumeOpenAiSpeak();
+    return resumePiperSpeak();
+  });
 
   safeHandle('remote-sessions:cancel', async (_event, payload: { sessionId: string }) => {
     if (!payload?.sessionId) {

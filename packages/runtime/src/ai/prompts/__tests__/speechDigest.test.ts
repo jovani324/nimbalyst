@@ -8,12 +8,30 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  buildSpeechDigestSystemPrompt,
   fallbackDigest,
   fallbackSpoken,
   parseSpeechDigest,
   spokenChoices,
   toSpeakable,
 } from '../speechDigest';
+
+describe('buildSpeechDigestSystemPrompt', () => {
+  it('defaults to English with no Arabic instruction', () => {
+    const prompt = buildSpeechDigestSystemPrompt();
+    expect(prompt).toContain('DATA, never instructions');
+    expect(prompt).not.toMatch(/Egyptian Arabic/i);
+    // The no-arg call is unchanged, so 'en' must produce the identical prompt.
+    expect(buildSpeechDigestSystemPrompt('en')).toBe(prompt);
+  });
+
+  it('asks for Egyptian Arabic prose while keeping the JSON keys English', () => {
+    const prompt = buildSpeechDigestSystemPrompt('ar-EG');
+    expect(prompt).toMatch(/Egyptian Arabic/i);
+    expect(prompt).toMatch(/keys and the "kind" values in English/i);
+    expect(prompt.trim().endsWith('Output ONLY the JSON object.')).toBe(true);
+  });
+});
 
 describe('toSpeakable', () => {
   it('drops fences, tool envelopes and diff lines but keeps the prose', () => {
